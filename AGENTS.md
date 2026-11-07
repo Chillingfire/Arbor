@@ -13,3 +13,7 @@ Default canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `read
 ### Domain docs
 
 Single-context: one root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
+### GitHub text
+
+End every issue body, PR description, and comment you post on GitHub with the line `_AI-assisted comment_`.
