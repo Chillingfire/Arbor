@@ -1,0 +1,11 @@
+[package]
+name = "arbor-tools"
+description = "Agent tools for the Planner and Scaffolder, confined to the Session worktree."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

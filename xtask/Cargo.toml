@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+description = "Dev tooling for the Arbor workspace."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
