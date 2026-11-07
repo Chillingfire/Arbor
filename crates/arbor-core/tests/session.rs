@@ -1,0 +1,225 @@
+mod common;
+
+use arbor_core::{ApplyError, Effect, Event, Session, WorkUnitId};
+use common::{plan, request, work_unit};
+
+fn apply_all(session: &mut Session, events: &[Event]) -> Vec<Effect> {
+    events
+        .iter()
+        .flat_map(|event| session.apply(event).unwrap())
+        .collect()
+}
+
+#[test]
+fn starting_a_session_runs_the_planner() {
+    let mut session = Session::new();
+    let effects = session
+        .apply(&Event::SessionStarted { request: request() })
+        .unwrap();
+    assert_eq!(effects, [Effect::RunPlanner { feedback: None }]);
+}
+
+#[test]
+fn happy_path_runs_plan_scaffold_write_to_done() {
+    let mut session = Session::new();
+    let effects = apply_all(
+        &mut session,
+        &[
+            Event::SessionStarted { request: request() },
+            Event::PlanSubmitted {
+                plan: plan(&["Add flag"]),
+            },
+            Event::PlanApproved {
+                task_order: vec![0],
+            },
+            Event::WorkUnitsSubmitted {
+                work_units: vec![work_unit(1)],
+            },
+            Event::ScaffoldChecksPassed,
+            Event::ScaffoldApproved,
+            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitCommitted {
+                id: WorkUnitId(1),
+                commit: "abc123".into(),
+            },
+            Event::TaskChecksPassed,
+        ],
+    );
+    assert_eq!(
+        effects,
+        [
+            Effect::RunPlanner { feedback: None },
+            Effect::ShowPlanCheckpoint,
+            Effect::RunScaffolder {
+                task: 0,
+                feedback: None
+            },
+            Effect::RunScaffoldChecks { task: 0 },
+            Effect::ShowScaffoldCheckpoint { task: 0 },
+            Effect::RunWriter { id: WorkUnitId(1) },
+            Effect::CommitWorkUnit { id: WorkUnitId(1) },
+            Effect::RunTaskChecks { task: 0 },
+            Effect::EndSession,
+        ]
+    );
+    assert!(session.is_done());
+}
+
+/// A Session at its Plan Checkpoint, for a Plan with the given Tasks.
+fn at_plan_checkpoint(task_titles: &[&str]) -> Session {
+    let mut session = Session::new();
+    apply_all(
+        &mut session,
+        &[
+            Event::SessionStarted { request: request() },
+            Event::PlanSubmitted {
+                plan: plan(task_titles),
+            },
+        ],
+    );
+    session
+}
+
+#[test]
+fn rejecting_the_plan_reruns_the_planner_with_feedback() {
+    let mut session = at_plan_checkpoint(&["Add flag"]);
+    let effects = session
+        .apply(&Event::CheckpointRejected {
+            feedback: "Also update the README".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        effects,
+        [Effect::RunPlanner {
+            feedback: Some("Also update the README".into())
+        }]
+    );
+}
+
+#[test]
+fn rejecting_the_scaffold_reruns_the_scaffolder_with_feedback() {
+    let mut session = at_plan_checkpoint(&["Add flag"]);
+    apply_all(
+        &mut session,
+        &[
+            Event::PlanApproved {
+                task_order: vec![0],
+            },
+            Event::WorkUnitsSubmitted {
+                work_units: vec![work_unit(1)],
+            },
+            Event::ScaffoldChecksPassed,
+        ],
+    );
+    let effects = session
+        .apply(&Event::CheckpointRejected {
+            feedback: "Split WU-1".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        effects,
+        [Effect::RunScaffolder {
+            task: 0,
+            feedback: Some("Split WU-1".into())
+        }]
+    );
+}
+
+#[test]
+fn approved_task_order_drops_and_reorders_tasks() {
+    let mut session = at_plan_checkpoint(&["A", "B", "C"]);
+    session
+        .apply(&Event::PlanApproved {
+            task_order: vec![2, 0],
+        })
+        .unwrap();
+    let titles: Vec<_> = session
+        .plan()
+        .unwrap()
+        .tasks
+        .iter()
+        .map(|task| task.title.as_str())
+        .collect();
+    assert_eq!(titles, ["C", "A"]);
+}
+
+#[test]
+fn work_units_and_tasks_run_in_order() {
+    let mut session = at_plan_checkpoint(&["A", "B"]);
+    let effects = apply_all(
+        &mut session,
+        &[
+            Event::PlanApproved {
+                task_order: vec![0, 1],
+            },
+            Event::WorkUnitsSubmitted {
+                work_units: vec![work_unit(1), work_unit(2)],
+            },
+            Event::ScaffoldChecksPassed,
+            Event::ScaffoldApproved,
+            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitCommitted {
+                id: WorkUnitId(1),
+                commit: "c1".into(),
+            },
+            Event::WorkUnitPassed { id: WorkUnitId(2) },
+            Event::WorkUnitCommitted {
+                id: WorkUnitId(2),
+                commit: "c2".into(),
+            },
+            Event::TaskChecksPassed,
+            Event::WorkUnitsSubmitted {
+                work_units: vec![work_unit(3)],
+            },
+            Event::ScaffoldChecksPassed,
+            Event::ScaffoldApproved,
+            Event::WorkUnitPassed { id: WorkUnitId(3) },
+            Event::WorkUnitCommitted {
+                id: WorkUnitId(3),
+                commit: "c3".into(),
+            },
+            Event::TaskChecksPassed,
+        ],
+    );
+    assert_eq!(
+        effects,
+        [
+            Effect::RunScaffolder {
+                task: 0,
+                feedback: None
+            },
+            Effect::RunScaffoldChecks { task: 0 },
+            Effect::ShowScaffoldCheckpoint { task: 0 },
+            Effect::RunWriter { id: WorkUnitId(1) },
+            Effect::CommitWorkUnit { id: WorkUnitId(1) },
+            Effect::RunWriter { id: WorkUnitId(2) },
+            Effect::CommitWorkUnit { id: WorkUnitId(2) },
+            Effect::RunTaskChecks { task: 0 },
+            Effect::RunScaffolder {
+                task: 1,
+                feedback: None
+            },
+            Effect::RunScaffoldChecks { task: 1 },
+            Effect::ShowScaffoldCheckpoint { task: 1 },
+            Effect::RunWriter { id: WorkUnitId(3) },
+            Effect::CommitWorkUnit { id: WorkUnitId(3) },
+            Effect::RunTaskChecks { task: 1 },
+            Effect::EndSession,
+        ]
+    );
+    let commits: Vec<_> = session.commits().iter().map(|(_, c)| c.as_str()).collect();
+    assert_eq!(commits, ["c1", "c2", "c3"]);
+}
+
+#[test]
+fn invalid_task_orders_are_refused_and_change_nothing() {
+    for task_order in [vec![], vec![3], vec![0, 0]] {
+        let mut session = at_plan_checkpoint(&["A", "B", "C"]);
+        let before = session.clone();
+        let result = session.apply(&Event::PlanApproved {
+            task_order: task_order.clone(),
+        });
+        assert_eq!(result, Err(ApplyError::InvalidTaskOrder { task_order }),);
+        assert_eq!(session, before);
+    }
+}
