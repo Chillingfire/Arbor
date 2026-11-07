@@ -135,9 +135,8 @@ impl std::error::Error for ConfigError {}
 /// The user config file. Every field is optional and unknown keys are errors.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct UserFile {
-    #[allow(dead_code)]
-    api_key: Option<String>,
+pub(crate) struct UserFile {
+    pub(crate) api_key: Option<String>,
     clarification_mode: Option<ClarificationMode>,
     #[serde(default)]
     roles: RolesFile,
@@ -190,7 +189,7 @@ struct ContextFile {
     files: Vec<String>,
 }
 
-fn parse<T: for<'de> Deserialize<'de> + Default>(
+pub(crate) fn parse<T: for<'de> Deserialize<'de> + Default>(
     text: Option<&str>,
     file: ConfigFile,
 ) -> Result<T, ConfigError> {
