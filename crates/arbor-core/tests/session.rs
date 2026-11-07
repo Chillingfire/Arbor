@@ -223,3 +223,90 @@ fn invalid_task_orders_are_refused_and_change_nothing() {
         assert_eq!(session, before);
     }
 }
+
+/// A Session at its Scaffold Checkpoint for Task 0, with the given Work Units.
+fn at_scaffold_checkpoint(work_unit_ids: &[u32]) -> Session {
+    let mut session = at_plan_checkpoint(&["A"]);
+    apply_all(
+        &mut session,
+        &[
+            Event::PlanApproved {
+                task_order: vec![0],
+            },
+            Event::WorkUnitsSubmitted {
+                work_units: work_unit_ids.iter().map(|&id| work_unit(id)).collect(),
+            },
+            Event::ScaffoldChecksPassed,
+        ],
+    );
+    session
+}
+
+#[test]
+fn events_out_of_order_are_refused_and_change_nothing() {
+    let mut session = at_plan_checkpoint(&["A"]);
+    let before = session.clone();
+    let event = Event::WorkUnitCommitted {
+        id: WorkUnitId(1),
+        commit: "c1".into(),
+    };
+    assert!(matches!(
+        session.apply(&event),
+        Err(ApplyError::Unexpected { .. })
+    ));
+    assert_eq!(session, before);
+}
+
+#[test]
+fn events_for_another_work_unit_are_refused() {
+    let mut session = at_scaffold_checkpoint(&[1, 2]);
+    session.apply(&Event::ScaffoldApproved).unwrap();
+    let before = session.clone();
+    assert_eq!(
+        session.apply(&Event::WorkUnitPassed { id: WorkUnitId(2) }),
+        Err(ApplyError::WrongWorkUnit {
+            expected: WorkUnitId(1),
+            got: WorkUnitId(2)
+        })
+    );
+    assert_eq!(session, before);
+
+    session
+        .apply(&Event::WorkUnitPassed { id: WorkUnitId(1) })
+        .unwrap();
+    assert_eq!(
+        session.apply(&Event::WorkUnitCommitted {
+            id: WorkUnitId(2),
+            commit: "c2".into()
+        }),
+        Err(ApplyError::WrongWorkUnit {
+            expected: WorkUnitId(1),
+            got: WorkUnitId(2)
+        })
+    );
+}
+
+#[test]
+fn duplicate_work_unit_ids_are_refused() {
+    let mut session = at_plan_checkpoint(&["A"]);
+    session
+        .apply(&Event::PlanApproved {
+            task_order: vec![0],
+        })
+        .unwrap();
+    assert_eq!(
+        session.apply(&Event::WorkUnitsSubmitted {
+            work_units: vec![work_unit(1), work_unit(1)],
+        }),
+        Err(ApplyError::DuplicateWorkUnit { id: WorkUnitId(1) })
+    );
+}
+
+#[test]
+fn a_task_without_work_units_goes_straight_to_task_checks() {
+    let mut session = at_scaffold_checkpoint(&[]);
+    assert_eq!(
+        session.apply(&Event::ScaffoldApproved).unwrap(),
+        [Effect::RunTaskChecks { task: 0 }]
+    );
+}

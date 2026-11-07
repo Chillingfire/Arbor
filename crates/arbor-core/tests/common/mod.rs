@@ -37,3 +37,39 @@ pub fn work_unit(id: u32) -> WorkUnit {
         test_filter: format!("wu_{id}"),
     }
 }
+
+/// Every event of a one-Task, two-Work-Unit Session, from start to done.
+pub fn full_session_events() -> Vec<arbor_core::Event> {
+    use arbor_core::Event;
+    vec![
+        Event::SessionStarted { request: request() },
+        Event::PlanSubmitted {
+            plan: plan(&["Add flag"]),
+        },
+        Event::CheckpointRejected {
+            feedback: "Mention the README".into(),
+        },
+        Event::PlanSubmitted {
+            plan: plan(&["Add flag", "Update README"]),
+        },
+        Event::PlanApproved {
+            task_order: vec![0],
+        },
+        Event::WorkUnitsSubmitted {
+            work_units: vec![work_unit(1), work_unit(2)],
+        },
+        Event::ScaffoldChecksPassed,
+        Event::ScaffoldApproved,
+        Event::WorkUnitPassed { id: WorkUnitId(1) },
+        Event::WorkUnitCommitted {
+            id: WorkUnitId(1),
+            commit: "c1".into(),
+        },
+        Event::WorkUnitPassed { id: WorkUnitId(2) },
+        Event::WorkUnitCommitted {
+            id: WorkUnitId(2),
+            commit: "c2".into(),
+        },
+        Event::TaskChecksPassed,
+    ]
+}
