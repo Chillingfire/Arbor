@@ -17,3 +17,7 @@ Single-context: one root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.
 ### GitHub text
 
 End every issue body, PR description, and comment you post on GitHub with the line `_AI-assisted comment_`.
+
+### Commits
+
+Keep each commit to at most about 600 changed lines, not counting generated files such as `Cargo.lock`. Split larger work into several commits that each build and pass the tests.
