@@ -1,4 +1,6 @@
 use std::fmt;
+use std::io;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
@@ -103,6 +105,10 @@ pub enum ConfigError {
     MissingFilterPlaceholder {
         template: String,
     },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -122,6 +128,7 @@ impl fmt::Display for ConfigError {
                 f,
                 "arbor.toml must not contain api_key; put it in the user config or OPENROUTER_API_KEY"
             ),
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::MissingFilterPlaceholder { template } => write!(
                 f,
                 "checks.unit_filtered must contain {FILTER_PLACEHOLDER}: {template:?}"
