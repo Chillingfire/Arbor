@@ -191,8 +191,6 @@ Constraints to respect:
 
 ## Still to come
 
-- **Next step (paused 2026-10-20):** create the GitHub issues. 30 drafts (24 implementation + 6 TODOs, with blockers) are in `docs/design/create-issues.py`.
-  1. Log in: `& "C:\Program Files\GitHub CLI\gh.exe" auth login` (gh 2.102.0 was installed via winget, and a new shell may have it on PATH as `gh`).
-  2. Preview: `python docs/design/create-issues.py gh --dry-run`.
-  3. Create: `python docs/design/create-issues.py "C:\Program Files\GitHub CLI\gh.exe"` (also creates missing triage labels).
-  - The design branch `design/initial-design` stays unpushed until the operator says otherwise.
+- **Next step:** create the GitHub issues once the design PR is merged to `main`. 30 drafts (24 implementation + 6 TODOs, with blockers) are in `docs/design/create-issues.py`.
+  1. Preview: `python docs/design/create-issues.py gh --dry-run`.
+  2. Create: `python docs/design/create-issues.py gh` (also creates missing triage labels).

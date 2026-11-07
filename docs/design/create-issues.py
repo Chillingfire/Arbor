@@ -7,8 +7,7 @@ import json
 import subprocess
 import sys
 
-DOCS = ("Design references (on branch `design/initial-design`, not yet pushed): "
-        "`docs/design/grilling-log.md`, `CONTEXT.md`, `docs/adr/`.")
+DOCS = "Design references: `docs/design/grilling-log.md`, `CONTEXT.md`, `docs/adr/`."
 
 # key, title, labels, blocked_by keys, body
 ISSUES = [
