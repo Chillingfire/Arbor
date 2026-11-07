@@ -1,0 +1,11 @@
+[package]
+name = "arbor-core"
+description = "Domain types and the pure Session state machine. No I/O: events in, effects out (ADR-0005)."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

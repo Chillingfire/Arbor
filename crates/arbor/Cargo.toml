@@ -1,0 +1,16 @@
+[package]
+name = "arbor"
+description = "A TUI harness that splits programming work across Planner, Scaffolder, and Writer LLM tiers."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arbor-core = { path = "../arbor-core" }
+arbor-git = { path = "../arbor-git" }
+arbor-llm = { path = "../arbor-llm" }
+arbor-tools = { path = "../arbor-tools" }
+arbor-tui = { path = "../arbor-tui" }
