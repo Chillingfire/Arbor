@@ -1,6 +1,6 @@
 [package]
 name = "arbor-git"
-description = "Git adapter: mainline, branches, worktrees, and commits."
+description = "Git adapter: mainline, branches, worktrees, commits, and reading GitHub issues."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -10,6 +10,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+arbor-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
