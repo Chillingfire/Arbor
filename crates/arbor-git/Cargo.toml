@@ -4,6 +4,7 @@ description = "Git adapter: mainline, branches, worktrees, and commits."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true

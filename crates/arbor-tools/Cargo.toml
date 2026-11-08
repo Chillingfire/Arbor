@@ -4,13 +4,14 @@ description = "Agent tools for the Planner and Scaffolder, confined to the Sessi
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-arbor-config = { path = "../arbor-config" }
-arbor-llm = { path = "../arbor-llm" }
+arbor-config.workspace = true
+arbor-llm.workspace = true
 globset = "0.4"
 ignore = "0.4"
 regex = "1"

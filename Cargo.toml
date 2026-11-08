@@ -6,8 +6,16 @@ members = ["crates/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/Chillingfire/Arbor"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+# Internal crates carry a version as well as a path so they can be published.
+arbor-config = { path = "crates/arbor-config", version = "0.1.0" }
+arbor-core = { path = "crates/arbor-core", version = "0.1.0" }
+arbor-git = { path = "crates/arbor-git", version = "0.1.0" }
+arbor-llm = { path = "crates/arbor-llm", version = "0.1.0" }
+arbor-tools = { path = "crates/arbor-tools", version = "0.1.0" }
+arbor-tui = { path = "crates/arbor-tui", version = "0.1.0" }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
