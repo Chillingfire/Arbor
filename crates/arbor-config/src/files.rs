@@ -1,10 +1,10 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use toml_edit::{DocumentMut, value};
+use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::{Config, ConfigError, ConfigFile, UserFile, parse};
+use crate::config::{Checks, Config, ConfigError, ConfigFile, UserFile, parse};
 
 /// The project config file, at the repository root.
 pub const PROJECT_CONFIG_FILE: &str = "arbor.toml";
@@ -17,6 +17,40 @@ impl Config {
         let project = read_optional(&project_root.join(PROJECT_CONFIG_FILE))?;
         Self::from_toml(user.as_deref(), project.as_deref())
     }
+}
+
+/// Writes `checks` into `arbor.toml` in `project_root` as its `[checks]` table, keeping everything
+/// else in the file as it was, and returns the file's path.
+pub fn save_project_checks(project_root: &Path, checks: &Checks) -> Result<PathBuf, ConfigError> {
+    let path = project_root.join(PROJECT_CONFIG_FILE);
+    let text = read_optional(&path)?.unwrap_or_default();
+    // Refuse to rewrite a file we can't read, so a typo never costs the operator their settings.
+    Config::from_toml(None, Some(&text))?;
+    let mut doc: DocumentMut = text.parse().expect("valid TOML parses as a document");
+    doc["checks"] = Item::Table(checks_table(checks));
+    let updated = doc.to_string();
+    Config::from_toml(None, Some(&updated))?;
+
+    fs::write(&path, updated).map_err(|source| ConfigError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
+}
+
+fn checks_table(checks: &Checks) -> Table {
+    let mut table = Table::new();
+    let commands = [
+        ("scaffold", &checks.scaffold),
+        ("unit", &checks.unit),
+        ("unit_filtered", &checks.unit_filtered),
+    ];
+    for (name, command) in commands {
+        if let Some(command) = command {
+            table[name] = value(command.as_str());
+        }
+    }
+    table
 }
 
 /// Writes the key into the user config at `path`, keeping everything else in the file as it was.
