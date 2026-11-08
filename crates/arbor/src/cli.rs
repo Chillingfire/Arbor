@@ -1,10 +1,13 @@
-//! Hand-rolled because Arbor takes two options; switch to `clap` once it has subcommands.
+//! Hand-rolled because Arbor takes one bare subcommand and two options; switch to `clap` once a
+//! subcommand takes arguments.
 
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Version,
+    /// Writes the project's Checks to `arbor.toml`.
+    Init,
     Issue(u64),
     /// `-` reads the handover from stdin.
     HandoverFile(String),
@@ -17,7 +20,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\nusage: arbor [--issue <number> | --handover-file <path>]",
+            "{}\nusage: arbor [init | --issue <number> | --handover-file <path>]",
             self.0
         )
     }
@@ -33,6 +36,12 @@ where
     let Some(first) = args.next() else {
         return Ok(Command::Version);
     };
+    if first == "init" {
+        return match args.next() {
+            Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
+            None => Ok(Command::Init),
+        };
+    }
     let (option, inline_value) = match first.split_once('=') {
         Some((option, value)) => (option.to_owned(), Some(value.to_owned())),
         None => (first.clone(), None),
@@ -90,6 +99,11 @@ mod tests {
     }
 
     #[test]
+    fn init_takes_no_arguments() {
+        assert_eq!(parse(["init"]), Ok(Command::Init));
+    }
+
+    #[test]
     fn bad_arguments_are_usage_errors() {
         for args in [
             vec!["--issue"],
@@ -104,6 +118,8 @@ mod tests {
             vec!["--handover-file="],
             vec!["--handover-file", "a.md", "b.md"],
             vec!["--handover", "a.md"],
+            vec!["init", "now"],
+            vec!["Init"],
         ] {
             let err = parse(args.clone()).unwrap_err();
             assert!(err.to_string().contains("usage: arbor"), "{args:?}");

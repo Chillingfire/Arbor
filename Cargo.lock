@@ -19,9 +19,12 @@ dependencies = [
  "arbor-core",
  "arbor-git",
  "arbor-llm",
+ "arbor-prompts",
+ "arbor-tiers",
  "arbor-tools",
  "arbor-tui",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

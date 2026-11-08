@@ -1,5 +1,6 @@
 mod cli;
 mod handover;
+mod init;
 
 use std::process::ExitCode;
 
@@ -20,6 +21,7 @@ fn main() -> ExitCode {
             println!("arbor {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        Command::Init => init::run(),
         Command::Issue(number) => start_from_issue(number),
         Command::HandoverFile(path) => match handover::read(&path) {
             Ok(request) => start(request),
