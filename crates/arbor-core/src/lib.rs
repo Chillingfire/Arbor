@@ -10,4 +10,6 @@ pub use cost::{Usage, UsageTotals, Usd};
 pub use event::Event;
 pub use log::{EventLog, ReadError, read_events};
 pub use session::{ApplyError, Effect, Phase, Session};
-pub use types::{Plan, Priority, Request, Snippet, Task, Tier, WorkUnit, WorkUnitId};
+pub use types::{
+    ASSUMPTION_PREFIX, Plan, Priority, Request, Snippet, Task, Tier, WorkUnit, WorkUnitId,
+};

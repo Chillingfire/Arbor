@@ -47,3 +47,16 @@ fn work_unit_schema_requires_its_spec_context_and_test_filter() {
         json!(["required", "helpful"])
     );
 }
+
+#[test]
+fn plan_schema_describes_its_fields_for_the_planner() {
+    let schema = schema_of::<Plan>();
+    for field in ["goal", "constraints", "tasks"] {
+        assert!(
+            schema["properties"][field]["description"].is_string(),
+            "{field} has no description"
+        );
+    }
+    let task = &schema["$defs"]["Task"]["properties"];
+    assert!(task["description"]["description"].is_string());
+}
