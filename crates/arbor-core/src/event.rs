@@ -37,7 +37,8 @@ pub enum Event {
     },
     TaskChecksPassed,
     /// One LLM call finished and its provider reported this usage. Recorded for every call,
-    /// including calls redone after a resume, since each one was paid for.
+    /// including calls redone after a resume, since each one was paid for. Written after the
+    /// call's outcome events, so a call that reaches the Budget Cap still lands its result.
     UsageRecorded {
         tier: Tier,
         usage: Usage,

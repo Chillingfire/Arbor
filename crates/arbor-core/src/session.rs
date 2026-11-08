@@ -32,7 +32,9 @@ pub enum Effect {
         task: usize,
     },
     /// The Budget Cap was reached: start no new LLM call, and ask the Human Operator to raise the
-    /// cap or stop. A call already in flight is left to finish and its usage recorded.
+    /// cap or stop. A call already in flight is left to finish and its usage recorded. Once the
+    /// cap is raised, the phase's own effect comes back; if it is the `Run*` effect of a run that
+    /// was cut off between calls, the runner continues that run rather than restarting it.
     ShowBudgetCheckpoint,
     EndSession,
 }
@@ -97,6 +99,11 @@ pub enum ApplyError {
         cap: Usd,
         spent: Usd,
     },
+    /// The budget Checkpoint is open, so only `BudgetCapSet`, `SessionStopped` and
+    /// `UsageRecorded` are accepted until it is resolved.
+    AtBudgetCheckpoint {
+        event: Box<Event>,
+    },
 }
 
 impl fmt::Display for ApplyError {
@@ -118,6 +125,9 @@ impl fmt::Display for ApplyError {
                 cap.dollars(),
                 spent.dollars()
             ),
+            Self::AtBudgetCheckpoint { event } => {
+                write!(f, "event {event:?} refused: the budget checkpoint is open")
+            }
         }
     }
 }
@@ -181,9 +191,14 @@ impl Session {
         self.budget_cap
     }
 
-    /// The Budget Cap is reached, so no new LLM call may start until the Human Operator raises
-    /// the cap or stops. Outcomes of the call that reached it are still applied, so the Session
-    /// may move on underneath; `pending` shows the budget Checkpoint until it is resolved.
+    /// The Budget Cap is reached, so nothing moves the Session on until the Human Operator raises
+    /// the cap or stops: `apply` refuses every event but `BudgetCapSet`, `SessionStopped` and
+    /// `UsageRecorded`.
+    ///
+    /// Ordering rule: the runner records a call's outcome events (e.g. `PlanSubmitted`, or
+    /// `WorkUnitPassed` once the Writer's code is spliced and checked) *before* that call's
+    /// `UsageRecorded`. So the call that reaches the cap still lands its result, and the
+    /// Checkpoint opens right after it.
     pub fn is_at_budget_checkpoint(&self) -> bool {
         is_live(&self.phase)
             && self
@@ -202,6 +217,15 @@ impl Session {
             phase: self.phase.clone(),
             event: Box::new(event.clone()),
         };
+        let resolves_or_records = matches!(
+            event,
+            Event::BudgetCapSet { .. } | Event::SessionStopped | Event::UsageRecorded { .. }
+        );
+        if self.is_at_budget_checkpoint() && !resolves_or_records {
+            return Err(ApplyError::AtBudgetCheckpoint {
+                event: Box::new(event.clone()),
+            });
+        }
         let next = match (&self.phase, event) {
             (Phase::NotStarted, Event::SessionStarted { request }) => {
                 self.request = Some(request.clone());

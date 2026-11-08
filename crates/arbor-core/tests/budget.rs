@@ -89,15 +89,58 @@ fn reaching_the_cap_opens_a_budget_checkpoint_after_the_call() {
 }
 
 #[test]
-fn the_outcome_of_the_call_that_reached_the_cap_still_lands() {
-    let mut session = at_budget_checkpoint();
-    // That last Planner call was the one that submitted the Plan.
+fn the_outcome_of_the_call_that_reached_the_cap_is_recorded_before_its_usage() {
+    let mut session = planning_with_cap();
+    // The Planner call that submits the Plan also crosses the cap. Its outcome goes in first.
     let effects = session
         .apply(&Event::PlanSubmitted { plan: plan(&["A"]) })
         .unwrap();
+    assert_eq!(effects, [Effect::ShowPlanCheckpoint]);
+    let effects = session.apply(&spent(Tier::Planner, 100)).unwrap();
     assert_eq!(effects, [Effect::ShowBudgetCheckpoint]);
     assert_eq!(*session.phase(), Phase::PlanCheckpoint);
     assert!(session.plan().is_some());
+}
+
+#[test]
+fn other_events_are_refused_at_a_budget_checkpoint() {
+    let mut session = planning_with_cap();
+    session
+        .apply(&Event::PlanSubmitted { plan: plan(&["A"]) })
+        .unwrap();
+    session.apply(&spent(Tier::Planner, 100)).unwrap();
+    for event in [
+        Event::PlanApproved {
+            task_order: vec![0],
+        },
+        Event::CheckpointRejected {
+            feedback: "Shorter".into(),
+        },
+    ] {
+        let before = session.clone();
+        assert_eq!(
+            session.apply(&event),
+            Err(ApplyError::AtBudgetCheckpoint {
+                event: Box::new(event.clone())
+            })
+        );
+        assert_eq!(session, before);
+    }
+
+    // A result arriving after its usage is refused too: the runner must record it first.
+    let mut session = at_budget_checkpoint();
+    assert!(matches!(
+        session.apply(&Event::PlanSubmitted { plan: plan(&["A"]) }),
+        Err(ApplyError::AtBudgetCheckpoint { .. })
+    ));
+}
+
+#[test]
+fn usage_of_another_call_still_in_flight_is_recorded_at_a_budget_checkpoint() {
+    let mut session = at_budget_checkpoint();
+    let effects = session.apply(&spent(Tier::Planner, 30)).unwrap();
+    assert_eq!(effects, [Effect::ShowBudgetCheckpoint]);
+    assert_eq!(session.usage().total().cost, Usd::from_nanos(130));
 }
 
 #[test]
@@ -114,10 +157,11 @@ fn raising_the_cap_resumes_the_paused_work() {
 
 #[test]
 fn removing_the_cap_resumes_the_paused_work() {
-    let mut session = at_budget_checkpoint();
+    let mut session = planning_with_cap();
     session
         .apply(&Event::PlanSubmitted { plan: plan(&["A"]) })
         .unwrap();
+    session.apply(&spent(Tier::Planner, 100)).unwrap();
     let effects = session.apply(&Event::BudgetCapSet { cap: None }).unwrap();
     assert_eq!(effects, [Effect::ShowPlanCheckpoint]);
     assert_eq!(session.budget_cap(), None);
@@ -168,18 +212,28 @@ fn stopping_is_refused_outside_a_budget_checkpoint() {
 }
 
 #[test]
-fn a_session_that_finishes_after_reaching_the_cap_still_ends() {
-    // The cap is reached by the last Writer call; its free checks and commit still complete.
+fn work_after_the_call_that_reached_the_cap_waits_for_the_checkpoint() {
+    // The last Writer call reaches the cap. Its outcome (spliced, checks passed) is recorded
+    // before its usage, but the free commit after it waits until the cap is raised.
     let mut events = full_session_events();
     events.insert(1, cap(100));
     let passed = events
         .iter()
         .rposition(|event| matches!(event, Event::WorkUnitPassed { .. }))
         .unwrap();
-    events.insert(passed, spent(Tier::Writer, 100));
+    events.insert(passed + 1, spent(Tier::Writer, 100));
+
+    let paused = Session::replay(&events[..=passed + 1]).unwrap();
+    assert!(paused.is_at_budget_checkpoint());
+    assert_eq!(paused.pending(), [Effect::ShowBudgetCheckpoint]);
+    assert!(matches!(
+        Session::replay(&events),
+        Err(ApplyError::AtBudgetCheckpoint { .. })
+    ));
+
+    events.insert(passed + 2, cap(200));
     let session = Session::replay(&events).unwrap();
     assert!(session.is_done());
-    assert!(!session.is_at_budget_checkpoint());
     assert_eq!(session.pending(), [Effect::EndSession]);
 }
 
