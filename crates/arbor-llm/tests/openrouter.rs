@@ -130,6 +130,7 @@ async fn every_request_option_is_sent_in_openrouter_format() {
         seed: Some(7),
         max_tokens: Some(4096),
         require_parameters: true,
+        cache_transcript: false,
     };
     let client = OpenRouterClient::with_base_url("sk-or-test", server.uri());
     client.chat(&request).await.unwrap();
@@ -153,7 +154,7 @@ async fn tool_calls_usage_and_cost_are_returned() {
                 "prompt_tokens": 5000,
                 "completion_tokens": 400,
                 "total_tokens": 5400,
-                "prompt_tokens_details": { "cached_tokens": 4000, "cache_write_tokens": 0 },
+                "prompt_tokens_details": { "cached_tokens": 4000, "cache_write_tokens": 600 },
                 "cost": 0.0123
             }
         })))
@@ -178,8 +179,143 @@ async fn tool_calls_usage_and_cost_are_returned() {
             input_tokens: 5000,
             output_tokens: 400,
             cache_read_tokens: 4000,
-            cache_write_tokens: 0,
+            cache_write_tokens: 600,
             cost_usd: 0.0123,
         }
+    );
+}
+
+fn transcript(model: &str) -> ChatRequest {
+    ChatRequest {
+        model: model.into(),
+        messages: vec![
+            Message::System {
+                content: vec![
+                    ContentPart::text("You are the Planner."),
+                    ContentPart::cached("Conventions..."),
+                ],
+            },
+            Message::User {
+                content: vec![ContentPart::text("Plan the Request")],
+            },
+            Message::Assistant {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "read_file".into(),
+                    arguments: "{}".into(),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "call_1".into(),
+                content: "fn main() {}".into(),
+            },
+        ],
+        cache_transcript: true,
+        ..ChatRequest::default()
+    }
+}
+
+async fn sent_body(request: &ChatRequest) -> serde_json::Value {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply(
+            json!({ "role": "assistant", "content": "ok" }),
+            "stop",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = OpenRouterClient::with_base_url("sk-or-test", server.uri());
+    client.chat(request).await.unwrap();
+    let received = server.received_requests().await.unwrap();
+    serde_json::from_slice(&received[0].body).unwrap()
+}
+
+fn breakpoints(body: &serde_json::Value) -> usize {
+    body.to_string().matches("cache_control").count()
+}
+
+#[tokio::test]
+async fn anthropic_models_get_a_breakpoint_after_the_conventions_and_on_the_newest_message() {
+    let body = sent_body(&transcript("anthropic/claude-opus-5.5")).await;
+
+    assert_eq!(
+        body["messages"],
+        json!([
+            { "role": "system", "content": [
+                { "type": "text", "text": "You are the Planner." },
+                { "type": "text", "text": "Conventions...", "cache_control": { "type": "ephemeral" } }
+            ] },
+            { "role": "user", "content": [{ "type": "text", "text": "Plan the Request" }] },
+            { "role": "assistant", "content": null, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            }] },
+            { "role": "tool", "tool_call_id": "call_1", "content": [
+                { "type": "text", "text": "fn main() {}", "cache_control": { "type": "ephemeral" } }
+            ] }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn the_transcript_breakpoint_goes_on_the_last_part_of_a_newest_user_message() {
+    let mut request = transcript("anthropic/claude-opus-5.5");
+    request.messages.push(Message::User {
+        content: vec![ContentPart::text("Answers:"), ContentPart::text("yes")],
+    });
+
+    let body = sent_body(&request).await;
+
+    assert_eq!(
+        body["messages"][4]["content"],
+        json!([
+            { "type": "text", "text": "Answers:" },
+            { "type": "text", "text": "yes", "cache_control": { "type": "ephemeral" } }
+        ])
+    );
+    assert_eq!(body["messages"][3]["content"], json!("fn main() {}"));
+    assert_eq!(breakpoints(&body), 2);
+}
+
+#[tokio::test]
+async fn models_that_cache_automatically_get_no_breakpoints() {
+    let body = sent_body(&transcript("openai/gpt-5.5")).await;
+
+    assert_eq!(breakpoints(&body), 0, "{body}");
+    assert_eq!(
+        body["messages"][0]["content"][1],
+        json!({ "type": "text", "text": "Conventions..." })
+    );
+    assert_eq!(body["messages"][3]["content"], json!("fn main() {}"));
+}
+
+#[tokio::test]
+async fn at_most_four_breakpoints_are_sent_keeping_the_newest() {
+    let mut request = transcript("anthropic/claude-opus-5.5");
+    request.messages[1] = Message::User {
+        content: (1..=4)
+            .map(|i| ContentPart::cached(format!("part {i}")))
+            .collect(),
+    };
+
+    let body = sent_body(&request).await;
+
+    assert_eq!(breakpoints(&body), 4, "{body}");
+    assert!(
+        body["messages"][0]["content"][1]
+            .get("cache_control")
+            .is_none()
+    );
+    assert!(
+        body["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_none()
+    );
+    assert!(
+        body["messages"][3]["content"][0]
+            .get("cache_control")
+            .is_some()
     );
 }

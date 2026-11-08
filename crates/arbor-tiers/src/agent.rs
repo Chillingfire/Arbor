@@ -235,6 +235,7 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             tools: self.definitions.clone(),
             tool_choice: Some(tool_choice),
             temperature: Some(self.settings.temperature),
+            cache_transcript: true,
             ..ChatRequest::default()
         }
     }
