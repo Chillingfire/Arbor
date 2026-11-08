@@ -11,6 +11,7 @@
 mod agent;
 pub mod markers;
 mod planner;
+pub mod reply;
 mod scaffold_check;
 mod scaffolder;
 
