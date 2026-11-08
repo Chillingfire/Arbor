@@ -59,6 +59,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbor-prompts"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "arbor-tools"
 version = "0.1.0"
 dependencies = [
