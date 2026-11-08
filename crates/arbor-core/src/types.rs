@@ -14,16 +14,39 @@ pub struct Request {
 /// The Planner's output for a Request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Plan {
+    /// What the Request should achieve, in a sentence or two.
     pub goal: String,
+    /// Limits every Task must respect. Assumptions made in Clarification Mode Assume are recorded
+    /// here, each starting with `Assumption:`.
     pub constraints: Vec<String>,
     /// In the order they will run.
     pub tasks: Vec<Task>,
 }
 
+pub const ASSUMPTION_PREFIX: &str = "Assumption:";
+
+impl Plan {
+    pub fn assumptions(&self) -> impl Iterator<Item = &str> {
+        self.constraints
+            .iter()
+            .map(String::as_str)
+            .filter(|constraint| is_assumption(constraint))
+    }
+}
+
+fn is_assumption(constraint: &str) -> bool {
+    constraint
+        .trim_start()
+        .get(..ASSUMPTION_PREFIX.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(ASSUMPTION_PREFIX))
+}
+
 /// One step of a Plan that leaves the build green and its tests passing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Task {
+    /// A short name for the Task.
     pub title: String,
+    /// What the Task changes and why, naming the files and modules it touches. Never code.
     pub description: String,
 }
 

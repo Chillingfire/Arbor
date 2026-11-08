@@ -14,6 +14,8 @@ arbor-config = { path = "crates/arbor-config", version = "0.1.0" }
 arbor-core = { path = "crates/arbor-core", version = "0.1.0" }
 arbor-git = { path = "crates/arbor-git", version = "0.1.0" }
 arbor-llm = { path = "crates/arbor-llm", version = "0.1.0" }
+arbor-prompts = { path = "crates/arbor-prompts", version = "0.1.0" }
+arbor-tiers = { path = "crates/arbor-tiers", version = "0.1.0" }
 arbor-tools = { path = "crates/arbor-tools", version = "0.1.0" }
 arbor-tui = { path = "crates/arbor-tui", version = "0.1.0" }
 schemars = "1"

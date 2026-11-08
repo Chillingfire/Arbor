@@ -74,6 +74,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbor-tiers"
+version = "0.1.0"
+dependencies = [
+ "arbor-config",
+ "arbor-core",
+ "arbor-llm",
+ "arbor-prompts",
+ "arbor-tools",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "arbor-tools"
 version = "0.1.0"
 dependencies = [
