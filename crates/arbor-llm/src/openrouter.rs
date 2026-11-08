@@ -132,10 +132,34 @@ struct WireErrorBody {
     error: WireError,
 }
 
+/// Anthropic allows at most this many `cache_control` breakpoints in one request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+/// Whether the model only caches at explicit `cache_control` breakpoints. Anthropic's models do;
+/// the other providers on OpenRouter cache automatically and don't get breakpoints.
+fn needs_cache_control(model: &str) -> bool {
+    model.starts_with("anthropic/")
+}
+
 fn request_body(request: &ChatRequest) -> Value {
+    let cache = needs_cache_control(&request.model);
+    let last = request.messages.len().saturating_sub(1);
+    let mut messages: Vec<Value> = request
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(i, message)| {
+            message_json(
+                message,
+                cache,
+                cache && request.cache_transcript && i == last,
+            )
+        })
+        .collect();
+    limit_breakpoints(&mut messages);
     let mut body = json!({
         "model": request.model,
-        "messages": request.messages.iter().map(message_json).collect::<Vec<_>>(),
+        "messages": messages,
         "usage": { "include": true },
     });
     if !request.tools.is_empty() {
@@ -176,14 +200,23 @@ fn request_body(request: &ChatRequest) -> Value {
     body
 }
 
-fn message_json(message: &Message) -> Value {
+/// `cache` keeps the parts' own breakpoints; `breakpoint` adds one at the end of the message.
+fn message_json(message: &Message, cache: bool, breakpoint: bool) -> Value {
     match message {
-        Message::System { content } => json!({ "role": "system", "content": parts_json(content) }),
-        Message::User { content } => json!({ "role": "user", "content": parts_json(content) }),
+        Message::System { content } => {
+            json!({ "role": "system", "content": parts_json(content, cache, breakpoint) })
+        }
+        Message::User { content } => {
+            json!({ "role": "user", "content": parts_json(content, cache, breakpoint) })
+        }
         Message::Assistant {
             content,
             tool_calls,
         } => {
+            let content = match content {
+                Some(text) if breakpoint => cached_text(text),
+                _ => json!(content),
+            };
             let mut message = json!({ "role": "assistant", "content": content });
             if !tool_calls.is_empty() {
                 message["tool_calls"] = tool_calls
@@ -202,21 +235,58 @@ fn message_json(message: &Message) -> Value {
         Message::Tool {
             tool_call_id,
             content,
-        } => json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content }),
+        } => {
+            let content = if breakpoint {
+                cached_text(content)
+            } else {
+                json!(content)
+            };
+            json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
+        }
     }
 }
 
-fn parts_json(parts: &[ContentPart]) -> Value {
+fn parts_json(parts: &[ContentPart], cache: bool, breakpoint: bool) -> Value {
+    let last = parts.len().saturating_sub(1);
     parts
         .iter()
-        .map(|part| {
+        .enumerate()
+        .map(|(i, part)| {
             let mut json = json!({ "type": "text", "text": part.text });
-            if part.cache {
+            if (cache && part.cache) || (breakpoint && i == last) {
                 json["cache_control"] = json!({ "type": "ephemeral" });
             }
             json
         })
         .collect()
+}
+
+/// Plain text as a single content part with a breakpoint after it.
+fn cached_text(text: &str) -> Value {
+    json!([{ "type": "text", "text": text, "cache_control": { "type": "ephemeral" } }])
+}
+
+/// Drops the earliest breakpoints beyond [`MAX_CACHE_BREAKPOINTS`], keeping the newest ones,
+/// which cover the longest prefixes.
+fn limit_breakpoints(messages: &mut [Value]) {
+    let mut kept = 0;
+    for message in messages.iter_mut().rev() {
+        let Some(parts) = message["content"].as_array_mut() else {
+            continue;
+        };
+        for part in parts.iter_mut().rev() {
+            let Some(part) = part.as_object_mut() else {
+                continue;
+            };
+            if part.contains_key("cache_control") {
+                if kept < MAX_CACHE_BREAKPOINTS {
+                    kept += 1;
+                } else {
+                    part.remove("cache_control");
+                }
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
