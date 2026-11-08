@@ -85,7 +85,10 @@ async fn propose(
 ) -> Result<ProposedChecks, ProposalError> {
     println!("{detection}");
     for failed_run in failed_runs {
-        println!("`{}` failed.", failed_run.command);
+        println!("`{}` failed:", failed_run.command);
+        for output_line in failed_run.output.lines() {
+            println!("    {output_line}");
+        }
     }
     let unavailable = |err: &dyn std::fmt::Display| ProposalError::Unavailable(err.to_string());
     let user_path = user_config_path(Platform::current(), |name| env::var(name).ok());

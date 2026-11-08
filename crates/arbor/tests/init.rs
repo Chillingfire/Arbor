@@ -56,6 +56,24 @@ fn without_detected_checks_or_an_api_key_init_fails_and_writes_nothing() {
 }
 
 #[test]
+fn init_shows_why_a_detected_command_failed() {
+    let dir = tempdir().unwrap();
+    let config_home = tempdir().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "this is not a manifest").unwrap();
+
+    let output = arbor_init(dir.path(), config_home.path());
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("`cargo check --all-targets` failed:\n    $ cargo check --all-targets"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("    exit code"), "{stdout}");
+    assert!(stdout.contains("Cargo.toml"), "{stdout}");
+}
+
+#[test]
 fn init_takes_no_arguments() {
     let output = Command::new(env!("CARGO_BIN_EXE_arbor"))
         .args(["init", "now"])

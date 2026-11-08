@@ -253,6 +253,45 @@ async fn the_scaffolder_proposes_checks_from_the_failed_detection() {
 }
 
 #[tokio::test]
+async fn the_scaffolder_may_re_propose_a_detected_command_the_project_failed() {
+    let dir = TempDir::new().unwrap();
+    write_crate(dir.path(), "this is not a manifest");
+    let detected = PROJECT_TYPES[0].checks();
+    let same_as_detected = ProposedChecks {
+        scaffold: detected.scaffold.clone(),
+        unit: detected.unit.clone(),
+        unit_filtered: detected.unit_filtered.clone(),
+        explanation: "Assumption: `cargo check --all-targets` is right; it failed because \
+                      Cargo.toml is broken."
+            .into(),
+    };
+    let client = QueueClient::new([calls(&[(
+        SUBMIT_CHECKS,
+        serde_json::to_value(&same_as_detected).unwrap(),
+    )])]);
+    let prompts = Prompts::builtin();
+    let conventions = Conventions::default();
+    let mut proposer = ScaffolderProposer {
+        client: &client,
+        prompts: &prompts,
+        conventions: &conventions,
+        model: model(200_000, true),
+        temperature: 0.3,
+        worktree: dir.path(),
+        usage: Default::default(),
+    };
+    let mut operator = Operator::new(Confirmation::Accept);
+
+    let outcome = init(dir.path(), &mut proposer, &mut operator)
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, InitOutcome::Accepted { .. }));
+    assert_eq!(operator.shown, [same_as_detected]);
+    assert_eq!(configured_checks(dir.path()), detected);
+}
+
+#[tokio::test]
 async fn a_scaffolder_that_never_submits_valid_checks_escalates() {
     let dir = TempDir::new().unwrap();
     let invalid = json!({ "explanation": "nothing found" });

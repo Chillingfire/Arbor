@@ -123,6 +123,8 @@ pub struct TriedCheck {
     /// `scaffold` or `unit`.
     pub check: String,
     pub command: String,
+    /// The trimmed failure output, so the Scaffolder can tell a wrong command from a failing
+    /// project.
     pub output: String,
 }
 

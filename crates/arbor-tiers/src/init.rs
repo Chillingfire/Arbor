@@ -22,6 +22,7 @@ pub struct CheckRun {
     pub check: CheckName,
     pub command: String,
     pub passed: bool,
+    /// Already trimmed by `run_check` to its first and last 100 lines, like the Writer's.
     pub output: String,
 }
 

@@ -353,6 +353,11 @@ fn the_check_proposal_sees_the_conventions_and_each_failed_command_with_its_outp
             .contains("## scaffold: `cargo check --all-targets`")
     );
     assert!(prompt.inputs.contains("could not find `Cargo.toml`"));
+    assert!(
+        prompt
+            .instructions
+            .contains("propose it unchanged and say so in `explanation`")
+    );
 }
 
 #[test]

@@ -26,7 +26,7 @@ Leave out any command you can't find good evidence for. The Human Operator revie
 - Arbor runs each command directly, never through a shell. A command is a program and its arguments: no pipes, `&&`, `;`, redirection, environment variable assignments, `cd`, or glob patterns. When the project runs several steps, choose the single command that best covers them, or a script the project already has.
 - The program must be one installed on the Human Operator's machine and found on `PATH`, so prefer the project's usual tools over ones it doesn't mention.
 - Never propose a command that installs dependencies, changes files, needs credentials, deploys, or publishes anything.
-- Don't propose a detected command that failed again unchanged; read its output to see why it failed.
+- Read each failed detected command's output to see why it failed. If the command itself is wrong for the project (e.g. the program is missing, or the project builds or tests another way), propose a better one. If the command is right but the project or its environment failed it (e.g. failing or flaky tests, a missing toolchain component, or a run that timed out), propose it unchanged and say so in `explanation`, e.g. "Assumption: `cargo test` is right; it failed because two tests fail."
 - Leave out `unit_filtered` when the test runner can't select tests by name.
 - Don't ask questions. Record any assumption in `explanation`, starting with "Assumption:".
 {% endblock %}
