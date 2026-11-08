@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::cost::UsageTotals;
 use crate::event::Event;
 use crate::types::{Plan, Request, WorkUnit, WorkUnitId};
 
@@ -117,6 +118,7 @@ pub struct Session {
     /// The current Task's Work Units.
     work_units: Vec<WorkUnit>,
     commits: Vec<(WorkUnitId, String)>,
+    usage: UsageTotals,
 }
 
 impl Session {
@@ -151,6 +153,11 @@ impl Session {
 
     pub fn commits(&self) -> &[(WorkUnitId, String)] {
         &self.commits
+    }
+
+    /// Tokens and cost per Tier, from every recorded LLM call.
+    pub fn usage(&self) -> &UsageTotals {
+        &self.usage
     }
 
     pub fn is_done(&self) -> bool {
@@ -226,6 +233,10 @@ impl Session {
                     Phase::Done
                 }
             }
+            (phase, Event::UsageRecorded { tier, usage }) if is_live(phase) => {
+                self.usage.record(*tier, *usage);
+                phase.clone()
+            }
             _ => return Err(unexpected()),
         };
         self.phase = next;
@@ -279,6 +290,11 @@ impl Session {
             Err(ApplyError::WrongWorkUnit { expected, got })
         }
     }
+}
+
+/// Started and not yet finished, so LLM calls can happen.
+fn is_live(phase: &Phase) -> bool {
+    !matches!(phase, Phase::NotStarted | Phase::Done)
 }
 
 fn first_duplicate(work_units: &[WorkUnit]) -> Option<WorkUnitId> {

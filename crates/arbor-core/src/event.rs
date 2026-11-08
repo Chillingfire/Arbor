@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Plan, Request, WorkUnit, WorkUnitId};
+use crate::cost::Usage;
+use crate::types::{Plan, Request, Tier, WorkUnit, WorkUnitId};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,4 +36,10 @@ pub enum Event {
         commit: String,
     },
     TaskChecksPassed,
+    /// One LLM call finished and its provider reported this usage. Recorded for every call,
+    /// including calls redone after a resume, since each one was paid for.
+    UsageRecorded {
+        tier: Tier,
+        usage: Usage,
+    },
 }

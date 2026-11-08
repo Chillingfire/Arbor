@@ -1,11 +1,13 @@
 //! Domain types and the pure Session state machine. No I/O: events in, effects out (ADR-0005).
 
+mod cost;
 mod event;
 mod log;
 mod session;
 mod types;
 
+pub use cost::{Usage, UsageTotals, Usd};
 pub use event::Event;
 pub use log::{EventLog, ReadError, read_events};
 pub use session::{ApplyError, Effect, Phase, Session};
-pub use types::{Plan, Priority, Request, Snippet, Task, WorkUnit, WorkUnitId};
+pub use types::{Plan, Priority, Request, Snippet, Task, Tier, WorkUnit, WorkUnitId};
