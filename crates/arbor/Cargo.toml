@@ -4,14 +4,15 @@ description = "A TUI harness that splits programming work across Planner, Scaffo
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+readme = "../../README.md"
 
 [lints]
 workspace = true
 
 [dependencies]
-arbor-config = { path = "../arbor-config" }
-arbor-core = { path = "../arbor-core" }
-arbor-git = { path = "../arbor-git" }
-arbor-llm = { path = "../arbor-llm" }
-arbor-tools = { path = "../arbor-tools" }
-arbor-tui = { path = "../arbor-tui" }
+arbor-config.workspace = true
+arbor-core.workspace = true
+arbor-git.workspace = true
+arbor-llm.workspace = true
+arbor-tools.workspace = true
+arbor-tui.workspace = true
