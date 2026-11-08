@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::branch::SessionBranch;
 use crate::command::{GitError, git, git_succeeds};
+use crate::dirty::{DirtyTreeAction, DirtyTreeOutcome};
 use crate::mainline::Mainline;
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, commit_all};
 
 /// The local mainline names tried, in order, when there is no remote and none was chosen.
 const LOCAL_MAINLINE_GUESSES: &[&str] = &["main", "master"];
@@ -119,6 +120,56 @@ impl Repo {
             ],
         )?;
         Worktree::open(path)
+    }
+
+    /// The paths with uncommitted changes in the operator's checkout, including untracked
+    /// files. Empty when the tree is clean.
+    pub fn uncommitted_changes(&self) -> Result<Vec<String>, GitError> {
+        let status = git(
+            &self.root,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )?;
+        let mut paths = Vec::new();
+        let mut entries = status.split('\0').filter(|entry| !entry.is_empty());
+        while let Some(entry) = entries.next() {
+            let (code, path) = entry.split_at(entry.len().min(3));
+            if code.contains(['R', 'C']) {
+                // A rename or copy is followed by the path it came from.
+                entries.next();
+            }
+            paths.push(path.to_owned());
+        }
+        Ok(paths)
+    }
+
+    /// Carries out the operator's choice for a dirty tree (see [`Self::uncommitted_changes`]).
+    pub fn resolve_dirty_tree(
+        &self,
+        action: DirtyTreeAction,
+        mainline: &Mainline,
+    ) -> Result<DirtyTreeOutcome, GitError> {
+        match action {
+            DirtyTreeAction::Stash => {
+                git(
+                    &self.root,
+                    &["stash", "push", "--quiet", "--include-untracked"],
+                )?;
+            }
+            DirtyTreeAction::Commit(message) => {
+                let current = git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]);
+                if current.is_ok_and(|branch| branch == mainline.name()) {
+                    return Err(GitError::Refused(format!(
+                        "won't commit on the mainline {}; switch to another branch or choose \
+                         another option",
+                        mainline.name()
+                    )));
+                }
+                commit_all(&self.root, &message)?;
+            }
+            DirtyTreeAction::ProceedWithout => {}
+            DirtyTreeAction::Abort => return Ok(DirtyTreeOutcome::Abort),
+        }
+        Ok(DirtyTreeOutcome::Proceed)
     }
 
     /// Refuses anything that isn't a plain branch name, such as `main~1` or `-x`.
