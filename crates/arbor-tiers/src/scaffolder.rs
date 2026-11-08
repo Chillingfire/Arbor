@@ -12,41 +12,31 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
 use crate::scaffold_check::ScaffoldCheck;
 
-/// The tool the Scaffolder ends its run with.
 pub const SUBMIT_WORK_UNITS: &str = "submit_work_units";
 
-/// What the Scaffolder submits for one Task. A tool's parameters must be an object, so the list
-/// is wrapped.
+/// A tool's parameters must be an object, so the list is wrapped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkUnits {
     /// One per Region, in the order the Writers should fill them.
     pub work_units: Vec<WorkUnit>,
 }
 
-/// Everything a Scaffolder run for one Task starts from.
 pub struct ScaffolderRun<'a> {
-    /// The Scaffolder's prompt, rendered with the same `clarification_mode` and `cap_tokens`.
+    /// Rendered with the same `clarification_mode` and `cap_tokens`.
     pub prompt: &'a Prompt,
-    /// The Scaffolder model's OpenRouter metadata.
     pub model: ModelInfo,
     pub temperature: f64,
     pub clarification_mode: ClarificationMode,
-    /// The Session worktree, which the Scaffolder reads, writes and checks.
     pub worktree: &'a Path,
-    /// The Checks loaded at Session start.
     pub checks: Checks,
-    /// The Writer Cap in tokens.
     pub cap_tokens: u32,
-    /// The lowest Work Unit ID this Task may use, so IDs stay unique across the Session.
+    /// Lower IDs belong to earlier Tasks in the Session.
     pub first_id: WorkUnitId,
-    /// Set when the Human Operator rejected the previous Skeleton and Work Units at the scaffold
-    /// Checkpoint: their feedback.
+    /// The Human Operator's feedback on a rejected Skeleton and Work Units.
     pub feedback: Option<&'a str>,
 }
 
 impl ScaffolderRun<'_> {
-    /// [`crate::NO_SCAFFOLD_CHECK`] when `checks.scaffold` isn't configured. The Session shows it
-    /// once; each submission then skips the Scaffold Check but still checks the Markers.
     pub fn warning(&self) -> Option<&'static str> {
         self.checks
             .scaffold
@@ -54,14 +44,6 @@ impl ScaffolderRun<'_> {
             .then_some(crate::NO_SCAFFOLD_CHECK)
     }
 
-    /// Starts the run. Its [`Agent::turn`]s end with the submitted [`WorkUnits`], the model's
-    /// questions, or an Escalation once [`crate::MAX_SUBMIT_FAILURES`] submissions have failed,
-    /// which goes to the scaffold Checkpoint.
-    ///
-    /// A submission is accepted only when [`ScaffoldCheck::run`] passes: every Work Unit fits the
-    /// Writer Cap, its file holds exactly one Marker pair for it, and the Scaffold Check passes.
-    /// Otherwise the problems go back to the model as the tool result.
-    ///
     /// # Panics
     ///
     /// If the prompt isn't the Scaffolder's.

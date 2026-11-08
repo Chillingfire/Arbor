@@ -1,25 +1,14 @@
 //! Markers: the comments that bound each Region (ADR-0002).
 //!
-//! A Marker is a line holding `ARBOR:BEGIN WU-<n>` or `ARBOR:END WU-<n>`. Only that text is
-//! matched, so the comment syntax around it doesn't matter: `// ARBOR:BEGIN WU-7`,
-//! `# ARBOR:END WU-7` and `<!-- ARBOR:BEGIN WU-7 -->` are all Markers.
-//!
-//! This lives in `arbor-tiers` because the Tiers are its only users: the Scaffolder checks the
-//! Markers it wrote, and the Writer locates a Region by its Work Unit's ID to splice code into it.
-//! It does no I/O, so it can move to `arbor-core` if anything outside the Tiers needs it.
-//!
-//! Line numbers are 0-based indices into [`str::lines`], which match the indices of
-//! `split_inclusive('\n')` when a caller needs to keep line endings. [`MarkerError`]'s messages
-//! show them 1-based, as editors do.
+//! Only the `ARBOR:BEGIN WU-<n>` / `ARBOR:END WU-<n>` text is matched, so any comment syntax works.
+//! Line numbers are 0-based indices into [`str::lines`]; error messages show them 1-based.
 
 use std::fmt;
 use std::ops::Range;
 
 use arbor_core::WorkUnitId;
 
-/// Starts a Region.
 pub const BEGIN: &str = "ARBOR:BEGIN";
-/// Ends a Region.
 pub const END: &str = "ARBOR:END";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +17,6 @@ pub enum MarkerKind {
     End,
 }
 
-/// One Marker line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marker {
     pub kind: MarkerKind,
@@ -36,50 +24,51 @@ pub struct Marker {
     pub line: usize,
 }
 
-/// A Region: a BEGIN and END Marker pair for one Work Unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
     pub id: WorkUnitId,
-    /// The BEGIN Marker's line.
     pub begin: usize,
-    /// The END Marker's line.
     pub end: usize,
 }
 
 impl Region {
-    /// The lines between the Markers: the Placeholder, and later the Writer's code.
     pub fn body(&self) -> Range<usize> {
         self.begin + 1..self.end
     }
 }
 
-/// A problem with a file's Markers. Any of them fails the Scaffold Check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkerError {
-    /// A line holds `ARBOR:BEGIN` or `ARBOR:END` without a readable `WU-<n>` after it.
-    Malformed { line: usize },
-    /// A BEGIN Marker with no END after it.
-    Unclosed { id: WorkUnitId, line: usize },
-    /// An END Marker with no BEGIN before it.
-    Unopened { id: WorkUnitId, line: usize },
-    /// A Region opened for one Work Unit and closed for another.
+    Malformed {
+        line: usize,
+    },
+    Unclosed {
+        id: WorkUnitId,
+        line: usize,
+    },
+    Unopened {
+        id: WorkUnitId,
+        line: usize,
+    },
     Mismatched {
         begin: WorkUnitId,
         begin_line: usize,
         end: WorkUnitId,
         end_line: usize,
     },
-    /// A BEGIN Marker inside another Region. Regions can't nest.
     Nested {
         outer: WorkUnitId,
         outer_line: usize,
         inner: WorkUnitId,
         line: usize,
     },
-    /// More than one Region for the same Work Unit, starting on these lines.
-    Duplicated { id: WorkUnitId, lines: Vec<usize> },
-    /// No Region for a Work Unit that should have one.
-    Missing { id: WorkUnitId },
+    Duplicated {
+        id: WorkUnitId,
+        lines: Vec<usize>,
+    },
+    Missing {
+        id: WorkUnitId,
+    },
 }
 
 impl fmt::Display for MarkerError {
@@ -132,7 +121,6 @@ impl fmt::Display for MarkerError {
     }
 }
 
-/// Every Marker in one file, paired into Regions.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Markers {
     regions: Vec<Region>,
@@ -140,7 +128,6 @@ pub struct Markers {
 }
 
 impl Markers {
-    /// Finds and pairs the Markers in a file's text.
     pub fn parse(text: &str) -> Self {
         let mut markers = Self::default();
         let mut open: Option<Marker> = None;
@@ -198,17 +185,15 @@ impl Markers {
         markers
     }
 
-    /// Every Region whose Markers pair up, in file order, duplicates included.
     pub fn regions(&self) -> &[Region] {
         &self.regions
     }
 
-    /// The problems found while pairing, in file order except that duplicates come last.
     pub fn errors(&self) -> &[MarkerError] {
         &self.errors
     }
 
-    /// The Work Unit's Region, if it has exactly one.
+    /// `None` unless the Work Unit has exactly one Region.
     pub fn region(&self, id: WorkUnitId) -> Option<&Region> {
         let mut found = self.regions.iter().filter(|region| region.id == id);
         match (found.next(), found.next()) {
@@ -217,8 +202,7 @@ impl Markers {
         }
     }
 
-    /// Every problem with the file's Markers, given the Work Units it should hold a Region for.
-    /// Regions for other Work Units are not an error here.
+    /// Regions for Work Units not in `expected` are not an error here.
     pub fn check(&self, expected: &[WorkUnitId]) -> Vec<MarkerError> {
         let mut errors = self.errors.clone();
         for &id in expected {
@@ -250,7 +234,6 @@ impl Markers {
 }
 
 impl MarkerError {
-    /// Whether the error is about this Work Unit's Markers.
     fn concerns(&self, id: WorkUnitId) -> bool {
         match self {
             Self::Malformed { .. } => false,
@@ -264,7 +247,6 @@ impl MarkerError {
     }
 }
 
-/// Reads a Marker from one line. `None` if the line holds no Marker.
 fn parse_line(content: &str, line: usize) -> Option<Result<Marker, MarkerError>> {
     let (kind, rest) = [(MarkerKind::Begin, BEGIN), (MarkerKind::End, END)]
         .into_iter()
@@ -282,8 +264,6 @@ fn parse_line(content: &str, line: usize) -> Option<Result<Marker, MarkerError>>
     )
 }
 
-/// Reads `WU-<n>` at the start of `text`, followed by the end of the line or a character that
-/// can't be part of the ID, such as the space before `-->`.
 fn parse_id(text: &str) -> Option<WorkUnitId> {
     let digits = text.strip_prefix("WU-")?;
     let end = digits
