@@ -72,6 +72,7 @@ impl GhRunner for GhCli {
 pub enum IssueError {
     GhNotInstalled,
     Spawn(io::Error),
+    NoGitHubRemote { stderr: String },
     NotAuthenticated { stderr: String },
     NotFound { number: u64, stderr: String },
     Failed { number: u64, stderr: String },
@@ -86,6 +87,11 @@ impl fmt::Display for IssueError {
                  install it from https://cli.github.com and run `gh auth login`",
             ),
             Self::Spawn(err) => write!(f, "could not run the GitHub CLI `gh`: {err}"),
+            Self::NoGitHubRemote { stderr } => write!(
+                f,
+                "this repository has no GitHub remote, so its issues can't be read{}",
+                detail(stderr)
+            ),
             Self::NotAuthenticated { stderr } => write!(
                 f,
                 "the GitHub CLI `gh` is not logged in; run `gh auth login` and try again{}",
@@ -189,6 +195,12 @@ fn spawn_error(err: io::Error) -> IssueError {
 
 const GH_AUTH_EXIT_CODE: i32 = 4;
 
+const NO_REMOTE_MESSAGES: &[&str] = &[
+    "no git remotes found",
+    "none of the git remotes configured for this repository point to a known GitHub host",
+    "not a git repository",
+];
+
 fn classify_failure(
     runner: &impl GhRunner,
     dir: &Path,
@@ -196,6 +208,13 @@ fn classify_failure(
     output: GhOutput,
 ) -> IssueError {
     let stderr = output.stderr;
+    // Checked first: gh's no-remote message also suggests `gh auth login`.
+    if NO_REMOTE_MESSAGES
+        .iter()
+        .any(|message| stderr.contains(message))
+    {
+        return IssueError::NoGitHubRemote { stderr };
+    }
     if output.code == Some(GH_AUTH_EXIT_CODE) || stderr.contains("gh auth login") {
         return IssueError::NotAuthenticated { stderr };
     }
@@ -406,13 +425,33 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_without_a_github_remote_says_so() {
+        for stderr in [
+            "no git remotes found",
+            "none of the git remotes configured for this repository point to a known GitHub \
+             host. To tell gh about a new GitHub host, please use `gh auth login`",
+            "failed to run git: fatal: not a git repository (or any of the parent directories)",
+        ] {
+            let gh = FakeGh::new(vec![fail(1, stderr)]);
+
+            let err = fetch(&gh).unwrap_err();
+
+            assert!(
+                matches!(err, IssueError::NoGitHubRemote { .. }),
+                "{stderr}: {err:?}"
+            );
+            assert!(err.to_string().contains("no GitHub remote"));
+        }
+    }
+
+    #[test]
     fn other_failures_keep_what_gh_said() {
-        let gh = FakeGh::new(vec![fail(1, "no git remotes found"), ok("")]);
+        let gh = FakeGh::new(vec![fail(1, "HTTP 502: Bad Gateway"), ok("")]);
 
         let err = fetch(&gh).unwrap_err();
 
         assert!(matches!(err, IssueError::Failed { number: 21, .. }));
-        assert!(err.to_string().contains("gh said: no git remotes found"));
+        assert!(err.to_string().contains("gh said: HTTP 502: Bad Gateway"));
     }
 
     #[test]

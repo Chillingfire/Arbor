@@ -1,8 +1,10 @@
 mod cli;
+mod handover;
 
 use std::process::ExitCode;
 
-use arbor_git::{GhCli, issue_request};
+use arbor_core::Request;
+use arbor_git::{GhCli, IssueError, issue_request};
 use cli::Command;
 
 fn main() -> ExitCode {
@@ -19,7 +21,20 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Issue(number) => start_from_issue(number),
+        Command::HandoverFile(path) => match handover::read(&path) {
+            Ok(request) => start(request),
+            Err(err) => {
+                eprintln!("arbor: {err}");
+                ExitCode::FAILURE
+            }
+        },
     }
+}
+
+fn start(request: Request) -> ExitCode {
+    // TODO: start a Session with this Request once Sessions are wired up.
+    print!("{}", request.text);
+    ExitCode::SUCCESS
 }
 
 fn start_from_issue(number: u64) -> ExitCode {
@@ -31,13 +46,19 @@ fn start_from_issue(number: u64) -> ExitCode {
         }
     };
     match issue_request(&GhCli::default(), &dir, number) {
-        Ok(request) => {
-            // TODO: start a Session with this Request once Sessions are wired up.
-            print!("{}", request.text);
-            ExitCode::SUCCESS
-        }
+        Ok(request) => start(request),
         Err(err) => {
             eprintln!("arbor: {err}");
+            if matches!(
+                err,
+                IssueError::NoGitHubRemote { .. }
+                    | IssueError::GhNotInstalled
+                    | IssueError::NotAuthenticated { .. }
+            ) {
+                eprintln!(
+                    "arbor: to start without GitHub, write the Request to a file and use --handover-file <path>"
+                );
+            }
             ExitCode::FAILURE
         }
     }

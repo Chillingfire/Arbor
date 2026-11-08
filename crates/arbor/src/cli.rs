@@ -1,4 +1,4 @@
-//! Hand-rolled because Arbor takes a single option; switch to `clap` once it has subcommands.
+//! Hand-rolled because Arbor takes two options; switch to `clap` once it has subcommands.
 
 use std::fmt;
 
@@ -6,6 +6,8 @@ use std::fmt;
 pub enum Command {
     Version,
     Issue(u64),
+    /// `-` reads the handover from stdin.
+    HandoverFile(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +15,11 @@ pub struct UsageError(String);
 
 impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\nusage: arbor [--issue <number>]", self.0)
+        write!(
+            f,
+            "{}\nusage: arbor [--issue <number> | --handover-file <path>]",
+            self.0
+        )
     }
 }
 
@@ -27,15 +33,27 @@ where
     let Some(first) = args.next() else {
         return Ok(Command::Version);
     };
-    let value = match first.strip_prefix("--issue") {
-        Some("") => args
+    let (option, inline_value) = match first.split_once('=') {
+        Some((option, value)) => (option.to_owned(), Some(value.to_owned())),
+        None => (first.clone(), None),
+    };
+    if option != "--issue" && option != "--handover-file" {
+        return Err(UsageError(format!("unknown argument `{first}`")));
+    }
+    let value = match inline_value {
+        Some(value) => value,
+        None => args
             .next()
-            .ok_or_else(|| UsageError("--issue needs an issue number".to_owned()))?,
-        Some(rest) if rest.starts_with('=') => rest[1..].to_owned(),
-        _ => return Err(UsageError(format!("unknown argument `{first}`"))),
+            .ok_or_else(|| UsageError(format!("{option} needs a value")))?,
     };
     if let Some(extra) = args.next() {
         return Err(UsageError(format!("unexpected argument `{extra}`")));
+    }
+    if option == "--handover-file" {
+        return match value.is_empty() {
+            true => Err(UsageError("--handover-file needs a path".to_owned())),
+            false => Ok(Command::HandoverFile(value)),
+        };
     }
     match value.parse::<u64>() {
         Ok(number) if number > 0 => Ok(Command::Issue(number)),
@@ -61,6 +79,17 @@ mod tests {
     }
 
     #[test]
+    fn a_handover_file_is_accepted_in_either_form() {
+        let path = || Ok(Command::HandoverFile("notes/next.md".into()));
+        assert_eq!(parse(["--handover-file", "notes/next.md"]), path());
+        assert_eq!(parse(["--handover-file=notes/next.md"]), path());
+        assert_eq!(
+            parse(["--handover-file", "-"]),
+            Ok(Command::HandoverFile("-".into()))
+        );
+    }
+
+    #[test]
     fn bad_arguments_are_usage_errors() {
         for args in [
             vec!["--issue"],
@@ -71,6 +100,10 @@ mod tests {
             vec!["--issues", "21"],
             vec!["--issue", "21", "extra"],
             vec!["21"],
+            vec!["--handover-file"],
+            vec!["--handover-file="],
+            vec!["--handover-file", "a.md", "b.md"],
+            vec!["--handover", "a.md"],
         ] {
             let err = parse(args.clone()).unwrap_err();
             assert!(err.to_string().contains("usage: arbor"), "{args:?}");
