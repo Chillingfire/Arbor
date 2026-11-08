@@ -17,3 +17,6 @@ arbor-git.workspace = true
 arbor-llm.workspace = true
 arbor-tools.workspace = true
 arbor-tui.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

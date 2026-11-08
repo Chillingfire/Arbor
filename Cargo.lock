@@ -21,6 +21,7 @@ dependencies = [
  "arbor-llm",
  "arbor-tools",
  "arbor-tui",
+ "tempfile",
 ]
 
 [[package]]
@@ -46,6 +47,9 @@ dependencies = [
 name = "arbor-git"
 version = "0.1.0"
 dependencies = [
+ "arbor-core",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
