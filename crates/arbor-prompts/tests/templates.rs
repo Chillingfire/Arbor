@@ -8,8 +8,8 @@ use arbor_core::{
 };
 use arbor_llm::{ContentPart, Message};
 use arbor_prompts::{
-    Conventions, PlannerInputs, Prompt, PromptError, Prompts, RevisionInputs, ScaffolderInputs,
-    Tier, WriterInputs,
+    CheckProposalInputs, Conventions, PlannerInputs, Prompt, PromptError, Prompts, RevisionInputs,
+    ScaffolderInputs, Template, TriedCheck, WriterInputs,
 };
 use tempfile::tempdir;
 
@@ -91,10 +91,22 @@ fn writer(prompts: &Prompts) -> Prompt {
         .unwrap()
 }
 
-fn override_template(root: &Path, tier: &str, text: &str) {
+fn check_proposal(prompts: &Prompts, conventions: &Conventions, tried: &[TriedCheck]) -> Prompt {
+    prompts
+        .check_proposal(
+            conventions,
+            &CheckProposalInputs {
+                detection: "Detected a Rust project from Cargo.toml.",
+                tried_checks: tried,
+            },
+        )
+        .unwrap()
+}
+
+fn override_template(root: &Path, template: &str, text: &str) {
     let dir = root.join(".arbor").join("prompts");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(format!("{tier}.md")), text).unwrap();
+    fs::write(dir.join(format!("{template}.md")), text).unwrap();
 }
 
 #[test]
@@ -106,6 +118,7 @@ fn every_builtin_template_has_the_four_sections() {
         planner(&prompts, &conventions, "Greet people"),
         scaffolder(&prompts, &conventions, ClarificationMode::Ask),
         writer(&prompts),
+        check_proposal(&prompts, &conventions, &[]),
     ] {
         let sections: Vec<&str> = prompt
             .instructions
@@ -116,7 +129,7 @@ fn every_builtin_template_has_the_four_sections() {
             sections,
             ["# Role", "# Inputs", "# Output contract", "# Rules"],
             "{:?}",
-            prompt.tier
+            prompt.template
         );
     }
 }
@@ -165,7 +178,7 @@ fn without_conventions_the_breakpoint_goes_after_the_instructions() {
 #[test]
 fn the_writer_gets_no_conventions_and_sees_its_work_unit() {
     let prompt = writer(&Prompts::builtin());
-    assert_eq!(prompt.tier, Tier::Writer);
+    assert_eq!(prompt.template, Template::Writer);
     assert_eq!(prompt.conventions, None);
     assert!(prompt.inputs.contains("WU-7"));
     assert!(prompt.inputs.contains("src/greet.rs"));
@@ -298,7 +311,7 @@ fn a_project_override_replaces_the_builtin_template() {
     let prompt = planner(&prompts, &empty, "Greet people");
     assert_eq!(prompt.instructions, "Plan carefully (ask).\n");
     assert_eq!(prompt.inputs, "Asked: Greet people\n");
-    // Tiers without an override keep the built-in template.
+    // Templates without an override keep the built-in one.
     assert!(writer(&prompts).instructions.starts_with("# Role"));
 }
 
@@ -314,11 +327,11 @@ fn an_unknown_variable_fails_at_load_even_in_an_untaken_branch() {
     let err = Prompts::load(dir.path()).unwrap_err();
     match &err {
         PromptError::UnknownVariables {
-            tier,
+            template,
             path,
             variables,
         } => {
-            assert_eq!(*tier, Tier::Writer);
+            assert_eq!(*template, Template::Writer);
             assert!(path.ends_with("writer.md"), "{path:?}");
             assert_eq!(variables, &["cap_tokens"]);
         }
@@ -345,7 +358,7 @@ fn session_inputs_in_the_instructions_fail_at_load() {
         matches!(
             err,
             PromptError::NotStatic {
-                tier: Tier::Planner,
+                template: Template::Planner,
                 ..
             }
         ),
@@ -367,8 +380,8 @@ fn broken_templates_fail_at_load() {
         assert!(
             matches!(
                 err,
-                PromptError::Template {
-                    tier: Tier::Planner,
+                PromptError::Invalid {
+                    template: Template::Planner,
                     ..
                 }
             ),
@@ -376,4 +389,47 @@ fn broken_templates_fail_at_load() {
         );
         assert!(err.to_string().contains("planner.md"), "{err}");
     }
+}
+
+#[test]
+fn the_check_proposal_sees_the_conventions_and_each_failed_command_with_its_output() {
+    let dir = tempdir().unwrap();
+    let tried = [TriedCheck {
+        check: "scaffold".to_owned(),
+        command: "cargo check --all-targets".to_owned(),
+        output: "error: could not find `Cargo.toml`".to_owned(),
+    }];
+    let prompt = check_proposal(&Prompts::builtin(), &conventions(dir.path()), &tried);
+
+    assert_eq!(prompt.template, Template::CheckProposal);
+    assert!(prompt.conventions.unwrap().contains("British spelling"));
+    assert!(prompt.instructions.contains("submit_checks"));
+    assert!(
+        prompt
+            .inputs
+            .contains("Detected a Rust project from Cargo.toml.")
+    );
+    assert!(
+        prompt
+            .inputs
+            .contains("## scaffold: `cargo check --all-targets`")
+    );
+    assert!(prompt.inputs.contains("could not find `Cargo.toml`"));
+    assert!(
+        prompt
+            .instructions
+            .contains("propose it unchanged and say so in `explanation`")
+    );
+}
+
+#[test]
+fn without_failed_commands_the_check_proposal_shows_only_the_detection() {
+    let prompt = check_proposal(&Prompts::builtin(), &Conventions::default(), &[]);
+    assert_eq!(
+        prompt.inputs,
+        "# Detection
+
+Detected a Rust project from Cargo.toml.
+"
+    );
 }

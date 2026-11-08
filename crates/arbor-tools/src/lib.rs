@@ -41,6 +41,12 @@ pub async fn run_check(
     checks::run_check(&worktree, checks, check, filter).await
 }
 
+/// Checks that a Check command parses into a program and arguments without a shell, and that the
+/// program is found, without running it.
+pub fn validate_check_command(worktree: &Path, command: &str) -> Result<(), String> {
+    checks::validate_command(&Worktree::new(worktree.to_owned()), command)
+}
+
 /// A tool's result, sent back to the model as text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutput {

@@ -44,7 +44,7 @@ impl WriterRun<'_> {
     ///
     /// If the prompt isn't the Writer's.
     pub fn start(self) -> Writer {
-        assert_eq!(self.prompt.tier, arbor_prompts::Tier::Writer);
+        assert_eq!(self.prompt.template, arbor_prompts::Template::Writer);
         Writer {
             work_unit: self.work_unit.clone(),
             model: self.model,

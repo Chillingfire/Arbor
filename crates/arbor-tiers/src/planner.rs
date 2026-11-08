@@ -29,7 +29,7 @@ impl PlannerRun<'_> {
     ///
     /// If the prompt isn't the Planner's or the tools aren't read-only.
     pub fn start(self) -> Result<Agent<Plan>, UnsupportedModel> {
-        assert_eq!(self.prompt.tier, arbor_prompts::Tier::Planner);
+        assert_eq!(self.prompt.template, arbor_prompts::Template::Planner);
         assert_eq!(self.tools.toolset(), Toolset::Planner);
         let mut messages = self.prompt.messages();
         if let Some(rejection) = self.rejected {

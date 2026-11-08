@@ -1,6 +1,8 @@
 //! The three Tiers: the agentic Planner and Scaffolder, and the non-agentic Writer.
 
 mod agent;
+mod check_proposal;
+mod init;
 pub mod markers;
 mod planner;
 pub mod reply;
@@ -13,6 +15,13 @@ mod writer;
 pub use agent::{
     Agent, AgentSettings, MAX_SUBMIT_FAILURES, Outcome, SUBMIT_NOW_PERCENT, Submission, Turn,
     TurnError, UnsupportedModel, Validate, core_usage, require_tool_calling,
+};
+pub use check_proposal::{
+    CheckProposalRun, ProposedChecks, SUBMIT_CHECKS, validate_proposed_checks,
+};
+pub use init::{
+    AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
+    ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,
 };
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
 pub use revision::{RevisionRun, SUBMIT_REVISION};

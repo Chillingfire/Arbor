@@ -17,8 +17,8 @@ use serde::Serialize;
 use crate::Conventions;
 use crate::prompt::Prompt;
 
-/// Where a project overrides the built-in templates, relative to the repository root. Each Tier
-/// reads `<tier>.md` from here if it exists.
+/// Where a project overrides the built-in templates, relative to the repository root. Each
+/// template is read from `<name>.md` here if it exists.
 pub const PROMPTS_DIR: &str = ".arbor/prompts";
 
 /// The static part of the prompt: Role, Inputs, Output contract and Rules.
@@ -26,16 +26,23 @@ const INSTRUCTIONS_BLOCK: &str = "instructions";
 /// The Session inputs, rendered after the Conventions.
 const INPUTS_BLOCK: &str = "inputs";
 
-/// One of the three roles a model can fill.
+/// A prompt template. The Planner, Scaffolder and Writer each have one, and the Scaffolder has a
+/// second for proposing Checks when automatic init can't find working ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Tier {
+pub enum Template {
     Planner,
     Scaffolder,
     Writer,
+    CheckProposal,
 }
 
-impl Tier {
-    pub const ALL: [Tier; 3] = [Tier::Planner, Tier::Scaffolder, Tier::Writer];
+impl Template {
+    pub const ALL: [Template; 4] = [
+        Template::Planner,
+        Template::Scaffolder,
+        Template::Writer,
+        Template::CheckProposal,
+    ];
 
     /// The lowercase name used for template and prompt files, e.g. `planner`.
     pub fn name(self) -> &'static str {
@@ -43,6 +50,7 @@ impl Tier {
             Self::Planner => "planner",
             Self::Scaffolder => "scaffolder",
             Self::Writer => "writer",
+            Self::CheckProposal => "check_proposal",
         }
     }
 
@@ -51,6 +59,7 @@ impl Tier {
             Self::Planner => include_str!("../templates/planner.md"),
             Self::Scaffolder => include_str!("../templates/scaffolder.md"),
             Self::Writer => include_str!("../templates/writer.md"),
+            Self::CheckProposal => include_str!("../templates/check_proposal.md"),
         }
     }
 
@@ -59,7 +68,7 @@ impl Tier {
         match self {
             Self::Planner => &["clarification_mode"],
             Self::Scaffolder => &["clarification_mode", "cap_tokens"],
-            Self::Writer => &[],
+            Self::Writer | Self::CheckProposal => &[],
         }
     }
 
@@ -69,11 +78,12 @@ impl Tier {
             Self::Planner => &["request"],
             Self::Scaffolder => &["request", "plan", "task", "revision"],
             Self::Writer => &["work_unit"],
+            Self::CheckProposal => &["detection", "tried_checks"],
         }
     }
 }
 
-impl fmt::Display for Tier {
+impl fmt::Display for Template {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
@@ -115,6 +125,26 @@ pub struct WriterInputs<'a> {
     pub work_unit: &'a WorkUnit,
 }
 
+/// What the Scaffolder proposes Checks from when automatic init found none that work.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckProposalInputs<'a> {
+    /// What manifest detection found, as a sentence.
+    pub detection: &'a str,
+    /// The detected commands that were run and failed, if any.
+    pub tried_checks: &'a [TriedCheck],
+}
+
+/// A detected Check command that automatic init ran, and its output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriedCheck {
+    /// `scaffold` or `unit`.
+    pub check: String,
+    pub command: String,
+    /// The trimmed failure output, so the Scaffolder can tell a wrong command from a failing
+    /// project.
+    pub output: String,
+}
+
 #[derive(Debug)]
 pub enum PromptError {
     Io {
@@ -122,20 +152,20 @@ pub enum PromptError {
         source: io::Error,
     },
     /// The template doesn't parse, lacks a block, or fails to render.
-    Template {
-        tier: Tier,
+    Invalid {
+        template: Template,
         path: PathBuf,
         message: String,
     },
-    /// The template uses variables its Tier doesn't have.
+    /// The template uses variables it isn't rendered with.
     UnknownVariables {
-        tier: Tier,
+        template: Template,
         path: PathBuf,
         variables: Vec<String>,
     },
     /// The instructions block uses a Session input, which would defeat prompt caching.
     NotStatic {
-        tier: Tier,
+        template: Template,
         path: PathBuf,
     },
 }
@@ -144,30 +174,30 @@ impl fmt::Display for PromptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { path, source } => write!(f, "could not read {}: {source}", path.display()),
-            Self::Template {
-                tier,
+            Self::Invalid {
+                template,
                 path,
                 message,
-            } => write!(f, "{tier} template {}: {message}", path.display()),
+            } => write!(f, "{template} template {}: {message}", path.display()),
             Self::UnknownVariables {
-                tier,
+                template,
                 path,
                 variables,
             } => write!(
                 f,
-                "{tier} template {} uses unknown variables: {}. It may use: {}",
+                "{template} template {} uses unknown variables: {}. It may use: {}",
                 path.display(),
                 variables.join(", "),
-                [tier.static_variables(), tier.input_variables()]
+                [template.static_variables(), template.input_variables()]
                     .concat()
                     .join(", ")
             ),
-            Self::NotStatic { tier, path } => write!(
+            Self::NotStatic { template, path } => write!(
                 f,
-                "{tier} template {}: the {INSTRUCTIONS_BLOCK} block must not use {}; put Session \
+                "{template} template {}: the {INSTRUCTIONS_BLOCK} block must not use {}; put Session \
                  inputs in the {INPUTS_BLOCK} block",
                 path.display(),
-                tier.input_variables().join(", ")
+                template.input_variables().join(", ")
             ),
         }
     }
@@ -182,17 +212,17 @@ impl std::error::Error for PromptError {
     }
 }
 
-/// The validated prompt templates for every Tier.
+/// The validated prompt templates.
 ///
 /// A template is Markdown with two `minijinja` blocks: `instructions` (Role, Inputs, Output
-/// contract, Rules), which may use only the Tier's static variables, and `inputs`, which renders
-/// the Session inputs. Undefined variables are errors, and every template is checked when it is
+/// contract, Rules), which may use only the template's static variables, and `inputs`, which
+/// renders the Session inputs. Undefined variables are errors, and every template is checked when it is
 /// loaded, so a bad override fails at startup rather than mid-Session.
 #[derive(Debug)]
 pub struct Prompts {
     env: Environment<'static>,
-    /// Where each Tier's template came from, for error messages.
-    paths: HashMap<Tier, PathBuf>,
+    /// Where each template came from, for error messages.
+    paths: HashMap<Template, PathBuf>,
 }
 
 impl Prompts {
@@ -200,37 +230,37 @@ impl Prompts {
     pub fn builtin() -> Self {
         let mut env = environment();
         let mut paths = HashMap::new();
-        for tier in Tier::ALL {
-            let path = builtin_path(tier);
-            add(&mut env, tier, tier.builtin_template(), &path)
+        for template in Template::ALL {
+            let path = builtin_path(template);
+            add(&mut env, template, template.builtin_template(), &path)
                 .expect("built-in templates are valid");
-            paths.insert(tier, path);
+            paths.insert(template, path);
         }
         Self { env, paths }
     }
 
-    /// The built-in templates, each replaced by `.arbor/prompts/<tier>.md` under `project_root`
+    /// The built-in templates, each replaced by `.arbor/prompts/<name>.md` under `project_root`
     /// where that file exists.
     pub fn load(project_root: &Path) -> Result<Self, PromptError> {
         let mut env = environment();
         let mut paths = HashMap::new();
-        for tier in Tier::ALL {
+        for template in Template::ALL {
             let path = project_root
                 .join(PROMPTS_DIR)
-                .join(format!("{}.md", tier.name()));
+                .join(format!("{}.md", template.name()));
             let path = match fs::read_to_string(&path) {
                 Ok(source) => {
-                    add(&mut env, tier, &source, &path)?;
+                    add(&mut env, template, &source, &path)?;
                     path
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    let path = builtin_path(tier);
-                    add(&mut env, tier, tier.builtin_template(), &path)?;
+                    let path = builtin_path(template);
+                    add(&mut env, template, template.builtin_template(), &path)?;
                     path
                 }
                 Err(source) => return Err(PromptError::Io { path, source }),
             };
-            paths.insert(tier, path);
+            paths.insert(template, path);
         }
         Ok(Self { env, paths })
     }
@@ -244,7 +274,7 @@ impl Prompts {
             ("clarification_mode", mode(inputs.clarification_mode)),
             ("request", Value::from(Serde(inputs.request))),
         ]);
-        self.render(Tier::Planner, Some(conventions), context)
+        self.render(Template::Planner, Some(conventions), context)
     }
 
     pub fn scaffolder(
@@ -260,28 +290,40 @@ impl Prompts {
             ("task", Value::from(Serde(inputs.task))),
             ("revision", Value::from(Serde(inputs.revision))),
         ]);
-        self.render(Tier::Scaffolder, Some(conventions), context)
+        self.render(Template::Scaffolder, Some(conventions), context)
     }
 
     pub fn writer(&self, inputs: &WriterInputs) -> Result<Prompt, PromptError> {
         let context = BTreeMap::from([("work_unit", Value::from(Serde(inputs.work_unit)))]);
-        self.render(Tier::Writer, None, context)
+        self.render(Template::Writer, None, context)
+    }
+
+    pub fn check_proposal(
+        &self,
+        conventions: &Conventions,
+        inputs: &CheckProposalInputs,
+    ) -> Result<Prompt, PromptError> {
+        let context = BTreeMap::from([
+            ("detection", Value::from(inputs.detection)),
+            ("tried_checks", tried_checks(inputs.tried_checks)),
+        ]);
+        self.render(Template::CheckProposal, Some(conventions), context)
     }
 
     fn render(
         &self,
-        tier: Tier,
+        template: Template,
         conventions: Option<&Conventions>,
         context: BTreeMap<&str, Value>,
     ) -> Result<Prompt, PromptError> {
         let (instructions, inputs) =
-            render_blocks(&self.env, tier, context).map_err(|err| PromptError::Template {
-                tier,
-                path: self.paths[&tier].clone(),
+            render_blocks(&self.env, template, context).map_err(|err| PromptError::Invalid {
+                template,
+                path: self.paths[&template].clone(),
                 message: describe(&err),
             })?;
         Ok(Prompt {
-            tier,
+            template,
             instructions,
             conventions: conventions
                 .filter(|conventions| !conventions.is_empty())
@@ -304,31 +346,31 @@ fn environment() -> Environment<'static> {
     env
 }
 
-fn builtin_path(tier: Tier) -> PathBuf {
-    PathBuf::from(format!("(built-in) {}.md", tier.name()))
+fn builtin_path(template: Template) -> PathBuf {
+    PathBuf::from(format!("(built-in) {}.md", template.name()))
 }
 
-/// Adds the Tier's template and checks it: it parses, uses only its Tier's variables, renders
+/// Adds the template and checks it: it parses, uses only its own variables, renders
 /// both blocks, and its instructions don't change with the Session inputs.
 fn add(
     env: &mut Environment<'static>,
-    tier: Tier,
+    template: Template,
     source: &str,
     path: &Path,
 ) -> Result<(), PromptError> {
-    let template_error = |err: minijinja::Error| PromptError::Template {
-        tier,
+    let template_error = |err: minijinja::Error| PromptError::Invalid {
+        template,
         path: path.to_owned(),
         message: describe(&err),
     };
     let source = source.replace("\r\n", "\n");
-    env.add_template_owned(tier.name(), source)
+    env.add_template_owned(template.name(), source)
         .map_err(template_error)?;
 
-    let template = env.get_template(tier.name()).map_err(template_error)?;
+    let compiled = env.get_template(template.name()).map_err(template_error)?;
     let globals: Vec<&str> = env.globals().map(|(name, _)| name).collect();
-    let known = [tier.static_variables(), tier.input_variables()].concat();
-    let mut unknown: Vec<String> = template
+    let known = [template.static_variables(), template.input_variables()].concat();
+    let mut unknown: Vec<String> = compiled
         .undeclared_variables(false)
         .into_iter()
         .filter(|name| !known.contains(&name.as_str()) && !globals.contains(&name.as_str()))
@@ -336,17 +378,17 @@ fn add(
     if !unknown.is_empty() {
         unknown.sort();
         return Err(PromptError::UnknownVariables {
-            tier,
+            template,
             path: path.to_owned(),
             variables: unknown,
         });
     }
 
-    let (first, _) = render_blocks(env, tier, sample(tier, 1)).map_err(template_error)?;
-    let (second, _) = render_blocks(env, tier, sample(tier, 2)).map_err(template_error)?;
+    let (first, _) = render_blocks(env, template, sample(template, 1)).map_err(template_error)?;
+    let (second, _) = render_blocks(env, template, sample(template, 2)).map_err(template_error)?;
     if first != second {
         return Err(PromptError::NotStatic {
-            tier,
+            template,
             path: path.to_owned(),
         });
     }
@@ -356,11 +398,11 @@ fn add(
 /// Renders the instructions and inputs blocks, each trimmed and ending in one newline.
 fn render_blocks(
     env: &Environment<'static>,
-    tier: Tier,
+    template: Template,
     context: BTreeMap<&str, Value>,
 ) -> Result<(String, String), minijinja::Error> {
-    let template = env.get_template(tier.name())?;
-    let mut captured = template.render_captured(Value::from(context))?;
+    let compiled = env.get_template(template.name())?;
+    let mut captured = compiled.render_captured(Value::from(context))?;
     captured.with_state_mut(|state| {
         let instructions = state.render_block(INSTRUCTIONS_BLOCK)?;
         let inputs = state.render_block(INPUTS_BLOCK)?;
@@ -384,9 +426,22 @@ fn mode(mode: ClarificationMode) -> Value {
     })
 }
 
+fn tried_checks(tried: &[TriedCheck]) -> Value {
+    tried
+        .iter()
+        .map(|tried| {
+            Value::from(BTreeMap::from([
+                ("check", Value::from(tried.check.as_str())),
+                ("command", Value::from(tried.command.as_str())),
+                ("output", Value::from(tried.output.as_str())),
+            ]))
+        })
+        .collect()
+}
+
 /// Example Session inputs for checking a template. Samples with different `seed`s differ in every
 /// input, so instructions that render the same for both don't depend on the inputs.
-fn sample(tier: Tier, seed: u32) -> BTreeMap<&'static str, Value> {
+fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
     let text = |what: &str| format!("sample {what} {seed}");
     let request = Request {
         text: text("request"),
@@ -413,6 +468,11 @@ fn sample(tier: Tier, seed: u32) -> BTreeMap<&'static str, Value> {
         acceptance_criteria: vec![text("criterion")],
         test_filter: text("filter"),
     };
+    let tried = [TriedCheck {
+        check: text("check"),
+        command: text("command"),
+        output: text("output"),
+    }];
     let cause = RevisionCause::TaskChecksFailed {
         output: text("check output"),
     };
@@ -436,9 +496,11 @@ fn sample(tier: Tier, seed: u32) -> BTreeMap<&'static str, Value> {
         ("plan", Value::from(Serde(&plan))),
         ("task", Value::from(Serde(&task))),
         ("work_unit", Value::from(Serde(&work_unit))),
+        ("detection", Value::from(text("detection"))),
+        ("tried_checks", tried_checks(&tried)),
         ("revision", Value::from(Serde(revision))),
     ];
-    let known = [tier.static_variables(), tier.input_variables()].concat();
+    let known = [template.static_variables(), template.input_variables()].concat();
     all.into_iter()
         .filter(|(name, _)| known.contains(name))
         .collect()

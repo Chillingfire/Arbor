@@ -48,7 +48,7 @@ impl ScaffolderRun<'_> {
     ///
     /// If the prompt isn't the Scaffolder's.
     pub fn start(self) -> Result<Agent<WorkUnits>, UnsupportedModel> {
-        assert_eq!(self.prompt.tier, arbor_prompts::Tier::Scaffolder);
+        assert_eq!(self.prompt.template, arbor_prompts::Template::Scaffolder);
         let mut messages = self.prompt.messages();
         let Some(Message::User { content }) = messages.last_mut() else {
             unreachable!("a prompt ends with its inputs");

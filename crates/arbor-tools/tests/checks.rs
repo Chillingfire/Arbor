@@ -3,7 +3,7 @@ mod common;
 use std::path::Path;
 
 use arbor_config::Checks;
-use arbor_tools::{Tools, Toolset};
+use arbor_tools::{Tools, Toolset, validate_check_command};
 use common::{call, err, ok, write};
 use serde_json::json;
 use tempfile::tempdir;
@@ -161,4 +161,21 @@ async fn the_planner_cannot_run_checks() {
     let output = call(&tools, "run_checks", json!({"check": "unit"})).await;
     assert!(output.is_error);
     assert!(output.text.contains("Planner"), "{}", output.text);
+}
+
+#[test]
+fn a_check_command_is_validated_without_running_it() {
+    let dir = tempdir().unwrap();
+    assert_eq!(
+        validate_check_command(dir.path(), "cargo test {filter}"),
+        Ok(())
+    );
+    for (command, problem) in [
+        ("", "empty"),
+        ("cargo test 'unclosed", "can't be parsed"),
+        ("no-such-program-for-arbor test", "not found"),
+    ] {
+        let message = validate_check_command(dir.path(), command).unwrap_err();
+        assert!(message.contains(problem), "{command}: {message}");
+    }
 }
