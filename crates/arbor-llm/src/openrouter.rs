@@ -1,14 +1,16 @@
 //! The OpenRouter client (ADR-0007) and its wire format.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::OnceCell;
 
 use crate::client::{BoxFuture, LlmClient};
 use crate::types::{
-    ChatRequest, ChatResponse, ContentPart, FinishReason, LlmError, Message, ModelInfo, ToolCall,
-    ToolChoice, Usage,
+    ChatRequest, ChatResponse, ContentPart, FinishReason, LlmError, Message, ModelInfo, Pricing,
+    ToolCall, ToolChoice, Usage,
 };
 
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -17,6 +19,8 @@ pub struct OpenRouterClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// Fetched on first use and kept for the rest of the run. A failed fetch isn't kept.
+    models: OnceCell<HashMap<String, ModelInfo>>,
 }
 
 impl OpenRouterClient {
@@ -33,6 +37,7 @@ impl OpenRouterClient {
             http,
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             api_key: api_key.into(),
+            models: OnceCell::new(),
         }
     }
 
@@ -47,6 +52,25 @@ impl OpenRouterClient {
             .map_err(network)?;
         parse_chat(&checked_body(response).await?)
     }
+
+    async fn fetch_models(&self) -> Result<HashMap<String, ModelInfo>, LlmError> {
+        let response = self
+            .http
+            .get(format!("{}/models", self.base_url))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .map_err(network)?;
+        parse_models(&checked_body(response).await?)
+    }
+
+    async fn lookup_model(&self, id: &str) -> Result<ModelInfo, LlmError> {
+        let models = self.models.get_or_try_init(|| self.fetch_models()).await?;
+        models
+            .get(id)
+            .cloned()
+            .ok_or_else(|| LlmError::UnknownModel { id: id.to_owned() })
+    }
 }
 
 impl LlmClient for OpenRouterClient {
@@ -58,7 +82,7 @@ impl LlmClient for OpenRouterClient {
     }
 
     fn model<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<ModelInfo, LlmError>> {
-        Box::pin(async move { Err(LlmError::UnknownModel { id: id.to_owned() }) })
+        Box::pin(self.lookup_model(id))
     }
 }
 
@@ -74,10 +98,38 @@ fn decode(message: impl Into<String>) -> LlmError {
     }
 }
 
-/// Returns the body of a successful response.
+/// Returns the body of a successful response, or the error an unsuccessful one describes.
 async fn checked_body(response: reqwest::Response) -> Result<String, LlmError> {
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+        .map(Duration::from_secs);
     let body = response.text().await.map_err(network)?;
-    Ok(body)
+    if (200..300).contains(&status) {
+        return Ok(body);
+    }
+    let message = serde_json::from_str::<WireErrorBody>(&body)
+        .map(|wire| wire.error.message)
+        .unwrap_or_else(|_| body.trim().to_owned());
+    Err(match status {
+        401 => LlmError::Auth { message },
+        402 => LlmError::InsufficientCredits { message },
+        429 => LlmError::RateLimited {
+            retry_after,
+            message,
+        },
+        400..=499 => LlmError::BadRequest { status, message },
+        _ => LlmError::Server { status, message },
+    })
+}
+
+/// The body OpenRouter sends with a non-2xx status.
+#[derive(Deserialize)]
+struct WireErrorBody {
+    error: WireError,
 }
 
 fn request_body(request: &ChatRequest) -> Value {
@@ -276,4 +328,57 @@ fn parse_chat(body: &str) -> Result<ChatResponse, LlmError> {
         },
         usage,
     })
+}
+
+#[derive(Deserialize)]
+struct WireModels {
+    data: Vec<WireModel>,
+}
+
+#[derive(Deserialize)]
+struct WireModel {
+    id: String,
+    context_length: Option<u64>,
+    pricing: WirePricing,
+    #[serde(default)]
+    supported_parameters: Vec<String>,
+}
+
+/// Prices arrive as decimal strings in USD per token.
+#[derive(Deserialize)]
+struct WirePricing {
+    prompt: String,
+    completion: String,
+    input_cache_read: Option<String>,
+}
+
+fn parse_models(body: &str) -> Result<HashMap<String, ModelInfo>, LlmError> {
+    let wire: WireModels = serde_json::from_str(body).map_err(|err| decode(err.to_string()))?;
+    let price = |id: &str, value: &str| {
+        value
+            .parse::<f64>()
+            .map_err(|_| decode(format!("model {id} has an invalid price {value:?}")))
+    };
+    wire.data
+        .into_iter()
+        .map(|model| {
+            let pricing = Pricing {
+                prompt: price(&model.id, &model.pricing.prompt)?,
+                completion: price(&model.id, &model.pricing.completion)?,
+                cache_read: model
+                    .pricing
+                    .input_cache_read
+                    .as_deref()
+                    .map(|value| price(&model.id, value))
+                    .transpose()?,
+            };
+            let info = ModelInfo {
+                id: model.id.clone(),
+                context_length: model.context_length.unwrap_or(0),
+                supported_parameters: model.supported_parameters,
+                pricing,
+            };
+            Ok((model.id, info))
+        })
+        .collect()
 }
