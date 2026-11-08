@@ -262,3 +262,27 @@ fn marker_lines_are_recognised() {
     assert!(!is_marker_line("let sum = a + b;"));
     assert!(!is_marker_line("ARBOR:BEGINNING"));
 }
+
+#[test]
+fn regions_need_two_lines_between_them() {
+    let one_apart = "a\nb\n// ARBOR:BEGIN WU-1\nx\n// ARBOR:END WU-1\n}\n\
+                     // ARBOR:BEGIN WU-2\ny\n// ARBOR:END WU-2\n}\nz\n";
+    let error = MarkerError::TooClose {
+        first: wu(1),
+        end_line: 4,
+        second: wu(2),
+        begin_line: 6,
+    };
+    assert_eq!(
+        Markers::parse(one_apart).errors(),
+        std::slice::from_ref(&error)
+    );
+    assert_eq!(
+        error.to_string(),
+        "ARBOR:BEGIN WU-2 on line 7 is too close to ARBOR:END WU-1 on line 5; leave at least 2 \
+         lines between Regions so neither one's context lines hold a Marker"
+    );
+
+    let two_apart = one_apart.replace("}\n// ARBOR:BEGIN WU-2", "}\n\n// ARBOR:BEGIN WU-2");
+    assert_eq!(Markers::parse(&two_apart).errors(), []);
+}

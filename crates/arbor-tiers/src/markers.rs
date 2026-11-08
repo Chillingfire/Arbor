@@ -117,6 +117,14 @@ pub enum MarkerError {
         id: WorkUnitId,
         lines: Vec<usize>,
     },
+    /// The second Region's context lines hold the first one's END Marker, which the first Writer
+    /// strips, so the second Writer's Context Pack no longer matches the file.
+    TooClose {
+        first: WorkUnitId,
+        end_line: usize,
+        second: WorkUnitId,
+        begin_line: usize,
+    },
     Missing {
         id: WorkUnitId,
     },
@@ -167,6 +175,19 @@ impl fmt::Display for MarkerError {
                     lines.join(", ")
                 )
             }
+            Self::TooClose {
+                first,
+                end_line,
+                second,
+                begin_line,
+            } => write!(
+                f,
+                "{BEGIN} {second} on line {} is too close to {END} {first} on line {}; leave at \
+                 least {CONTEXT_LINES} lines between Regions so neither one's context lines hold \
+                 a Marker",
+                begin_line + 1,
+                end_line + 1
+            ),
             Self::Missing { id } => write!(f, "{id} has no {BEGIN}/{END} Marker pair"),
         }
     }
@@ -233,6 +254,7 @@ impl Markers {
             });
         }
         markers.find_duplicates();
+        markers.find_close_regions();
         markers
     }
 
@@ -266,6 +288,20 @@ impl Markers {
         errors
     }
 
+    fn find_close_regions(&mut self) {
+        for pair in self.regions.windows(2) {
+            let [first, second] = pair else { continue };
+            if first.id != second.id && second.begin - first.end - 1 < CONTEXT_LINES {
+                self.errors.push(MarkerError::TooClose {
+                    first: first.id,
+                    end_line: first.end,
+                    second: second.id,
+                    begin_line: second.begin,
+                });
+            }
+        }
+    }
+
     fn find_duplicates(&mut self) {
         let mut ids: Vec<WorkUnitId> = self.regions.iter().map(|region| region.id).collect();
         ids.sort_unstable();
@@ -294,6 +330,7 @@ impl MarkerError {
             | Self::Missing { id: other } => *other == id,
             Self::Mismatched { begin, end, .. } => *begin == id || *end == id,
             Self::Nested { outer, inner, .. } => *outer == id || *inner == id,
+            Self::TooClose { first, second, .. } => *first == id || *second == id,
         }
     }
 }
