@@ -1,20 +1,13 @@
-//! Command-line arguments.
-//!
-//! Hand-rolled because Arbor takes a single option so far. Switch to `clap` once there are
-//! subcommands such as `arbor init`.
+//! Hand-rolled because Arbor takes a single option; switch to `clap` once it has subcommands.
 
 use std::fmt;
 
-/// What the Human Operator asked Arbor to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// No arguments: print the version.
     Version,
-    /// `--issue <n>`: start from GitHub issue `n`.
     Issue(u64),
 }
 
-/// Arguments Arbor doesn't understand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageError(String);
 

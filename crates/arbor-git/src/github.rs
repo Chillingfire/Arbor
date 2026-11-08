@@ -1,7 +1,4 @@
 //! Reading a GitHub issue as a Request through the `gh` CLI.
-//!
-//! Reading an issue is a read-only remote call, so it needs no approval (ADR-0006). `gh` runs
-//! with an argv, never through a shell, and uses the Human Operator's own login.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -12,10 +9,9 @@ use std::process::{Command, Stdio};
 use arbor_core::Request;
 use serde::Deserialize;
 
-/// What a `gh` invocation printed and how it exited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhOutput {
-    /// The exit code, or `None` if `gh` was killed by a signal.
+    /// `None` if `gh` was killed by a signal.
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -27,20 +23,18 @@ impl GhOutput {
     }
 }
 
-/// Runs `gh` with an argv in a directory. Tests swap in a fake so they need no `gh` or network.
+/// A seam so tests can fake `gh` without a network.
 pub trait GhRunner {
-    /// Runs `gh` in `dir`. An [`io::ErrorKind::NotFound`] error means `gh` isn't installed.
+    /// An [`io::ErrorKind::NotFound`] error means `gh` isn't installed.
     fn run(&self, dir: &Path, args: &[&str]) -> io::Result<GhOutput>;
 }
 
-/// The real `gh` executable, found on `PATH` unless another program is given.
 #[derive(Debug, Clone)]
 pub struct GhCli {
     program: OsString,
 }
 
 impl GhCli {
-    /// Runs `program` in place of `gh`.
     pub fn with_program(program: impl Into<OsString>) -> Self {
         Self {
             program: program.into(),
@@ -74,20 +68,13 @@ impl GhRunner for GhCli {
     }
 }
 
-/// Why an issue couldn't be read. Each message says what the Human Operator can do about it.
 #[derive(Debug)]
 pub enum IssueError {
-    /// `gh` isn't on `PATH`.
     GhNotInstalled,
-    /// `gh` couldn't be started for another reason.
     Spawn(io::Error),
-    /// `gh` has no GitHub login.
     NotAuthenticated { stderr: String },
-    /// The repository has no issue with this number.
     NotFound { number: u64, stderr: String },
-    /// `gh` failed for some other reason, e.g. the directory has no GitHub remote.
     Failed { number: u64, stderr: String },
-    /// `gh` succeeded but printed something that isn't the expected JSON.
     Malformed { number: u64, reason: String },
 }
 
@@ -163,8 +150,7 @@ struct AuthorJson {
     login: String,
 }
 
-/// Reads issue `number` of the GitHub repository checked out at `dir` and turns its title,
-/// body, and comments into a Request. Read-only, so it needs no approval (ADR-0006).
+/// Read-only, so it needs no approval (ADR-0006).
 pub fn issue_request(
     runner: &impl GhRunner,
     dir: &Path,
@@ -188,7 +174,7 @@ pub fn issue_request(
             reason: err.to_string(),
         })?;
     Ok(Request {
-        text: render(number, &issue),
+        text: render_markdown(number, &issue),
         issue: Some(number),
     })
 }
@@ -201,7 +187,6 @@ fn spawn_error(err: io::Error) -> IssueError {
     }
 }
 
-/// gh's exit code when a command needs a login it doesn't have.
 const GH_AUTH_EXIT_CODE: i32 = 4;
 
 fn classify_failure(
@@ -226,9 +211,7 @@ fn classify_failure(
     }
 }
 
-/// Lays the issue out as Markdown: the title as a heading, the body, then each comment under
-/// its author's login.
-fn render(number: u64, issue: &IssueJson) -> String {
+fn render_markdown(number: u64, issue: &IssueJson) -> String {
     let mut text = format!("# Issue #{number}: {}\n\n", issue.title.trim());
     text.push_str(non_empty(issue.body.as_deref()).unwrap_or("_No description provided._"));
     text.push('\n');
@@ -258,7 +241,6 @@ mod tests {
 
     use super::*;
 
-    /// Replays scripted results and records each argv it was asked to run.
     struct FakeGh {
         replies: RefCell<VecDeque<io::Result<GhOutput>>>,
         calls: RefCell<Vec<(PathBuf, Vec<String>)>>,

@@ -1,5 +1,3 @@
-//! The real `gh` runner, driven against programs that stand in for `gh`.
-
 use arbor_git::{GhCli, IssueError, issue_request};
 use tempfile::tempdir;
 
@@ -21,7 +19,6 @@ mod fake_gh {
 
     use super::*;
 
-    /// Writes an executable shell script that stands in for `gh`.
     fn script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("gh");
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();

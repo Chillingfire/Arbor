@@ -22,8 +22,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Pulls issue `number` as the Request. Reading an issue is read-only, so it needs no
-/// approval (ADR-0006).
 fn start_from_issue(number: u64) -> ExitCode {
     let dir = match std::env::current_dir() {
         Ok(dir) => dir,
@@ -34,8 +32,7 @@ fn start_from_issue(number: u64) -> ExitCode {
     };
     match issue_request(&GhCli::default(), &dir, number) {
         Ok(request) => {
-            // TODO: starting a Session with this Request isn't wired up yet, so for now Arbor
-            // only shows the Request it would plan from.
+            // TODO: start a Session with this Request once Sessions are wired up.
             print!("{}", request.text);
             ExitCode::SUCCESS
         }

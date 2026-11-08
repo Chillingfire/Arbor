@@ -3,8 +3,8 @@
 //! Every operation runs the `git` (or `gh`) executable directly with an argv, never through a
 //! shell, so the Human Operator's own identity and configuration apply.
 //!
-//! Fetching and reading a GitHub issue are the only remote access that needs no approval. Anything that writes to a remote
-//! takes a [`RemoteApproval`] (ADR-0006).
+//! Fetching and reading a GitHub issue are the only remote access that needs no approval.
+//! Anything that writes to a remote takes a [`RemoteApproval`] (ADR-0006).
 
 mod approval;
 mod branch;

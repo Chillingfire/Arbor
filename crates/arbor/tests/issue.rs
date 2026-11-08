@@ -1,5 +1,3 @@
-//! `arbor --issue <n>`, run as the real binary.
-
 use std::process::Command;
 
 fn arbor() -> Command {
@@ -34,7 +32,6 @@ mod with_a_fake_path {
 
     use super::*;
 
-    /// A directory to use as the whole `PATH`, optionally holding a fake `gh` script.
     fn path_with_gh(script: Option<&str>) -> TempDir {
         let dir = tempdir().unwrap();
         if let Some(body) = script {
