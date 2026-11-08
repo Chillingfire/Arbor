@@ -4,6 +4,7 @@ use crate::approval::RemoteApproval;
 use crate::branch::PREFIX;
 use crate::command::{Git, GitError, git, git_succeeds};
 use crate::commit::{CommitId, CommitMessage};
+use crate::mainline::Mainline;
 
 /// A Session's dedicated git worktree, checked out on its Session branch.
 #[derive(Debug, Clone)]
@@ -62,6 +63,52 @@ impl Worktree {
     /// back to it and uncommitted changes and untracked files are discarded. Ignored files,
     /// such as build output, are kept.
     pub fn reset_to(&self, commit: &CommitId) -> Result<(), GitError> {
+        let hash = self.verified(commit)?;
+        git(&self.path, &["reset", "--hard", "--quiet", hash])?;
+        git(&self.path, &["clean", "-d", "--force", "--quiet"])?;
+        Ok(())
+    }
+
+    /// The commit `commit` was made on top of, e.g. where a Task started given its first commit.
+    pub fn parent_of(&self, commit: &CommitId) -> Result<CommitId, GitError> {
+        let parent = format!("{}^", self.verified(commit)?);
+        git(&self.path, &["rev-parse", "--verify", "--quiet", &parent]).map(CommitId::from)
+    }
+
+    /// Where the Session branch left the mainline: the merge base of `HEAD` and its start point.
+    pub fn fork_point(&self, mainline: &Mainline) -> Result<CommitId, GitError> {
+        git(&self.path, &["merge-base", "HEAD", &mainline.start_ref()]).map(CommitId::from)
+    }
+
+    /// A unified diff from `base` to the files in the worktree, committed or not. Untracked files
+    /// are left out.
+    pub fn diff_from(&self, base: &CommitId) -> Result<String, GitError> {
+        let hash = self.verified(base)?;
+        // Every option the operator's diff config could change is pinned, so the text is the
+        // same on every machine.
+        let diff = Git::new(
+            &self.path,
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-relative",
+                "--no-renames",
+                "--unified=3",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                hash,
+                "--",
+            ],
+        )
+        .bytes()?;
+        Ok(String::from_utf8_lossy(&diff).into_owned())
+    }
+
+    /// The commit's hash, once it is known to name a commit here. The hash may come from the
+    /// event log, so it is never passed to git as an option or a range.
+    fn verified<'a>(&self, commit: &'a CommitId) -> Result<&'a str, GitError> {
         let hash = commit.as_str();
         let is_hash = (7..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit());
         let target = format!("{hash}^{{commit}}");
@@ -70,9 +117,7 @@ impl Worktree {
                 "{hash} is not a commit in this repository"
             )));
         }
-        git(&self.path, &["reset", "--hard", "--quiet", hash])?;
-        git(&self.path, &["clean", "-d", "--force", "--quiet"])?;
-        Ok(())
+        Ok(hash)
     }
 
     /// Pushes the Session branch, and nothing else, to a branch of the same name on `origin`.
