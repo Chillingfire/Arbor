@@ -1,6 +1,3 @@
-//! What `submit_work_units` checks before it accepts the Scaffolder's Work Units: their fields,
-//! their size against the Writer Cap, their Markers, and finally the Scaffold Check.
-
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -12,15 +9,12 @@ use arbor_tools::{Tools, Toolset};
 
 use crate::markers::{MarkerError, Markers};
 
-/// Added to the estimated size of a Writer's input, in percent, since the estimate is rough.
+/// Added to the estimated Writer input because the token estimate is rough.
 pub const WRITER_CAP_MARGIN_PERCENT: u64 = 10;
 
-/// Shown once per Session when `checks.scaffold` isn't configured.
 pub const NO_SCAFFOLD_CHECK: &str = "No scaffold check is configured in arbor.toml, so Arbor \
                                      can't verify that the Skeleton builds. Skipping it.";
 
-/// The estimated size of the Writer's input for a Work Unit in tokens: its spec, acceptance
-/// criteria and Context Pack, plus [`WRITER_CAP_MARGIN_PERCENT`].
 pub fn writer_input_tokens(unit: &WorkUnit) -> u32 {
     let criteria = unit
         .acceptance_criteria
@@ -39,8 +33,7 @@ pub fn writer_input_tokens(unit: &WorkUnit) -> u32 {
     u32::try_from(with_margin).unwrap_or(u32::MAX)
 }
 
-/// Every Work Unit's estimated size against the Writer Cap, one per line, e.g.
-/// `WU-7: 9,340 / 8,000 — over, trim or split`. `None` if all fit.
+/// `None` if every Work Unit fits the Writer Cap.
 pub fn writer_cap_report(units: &[WorkUnit], cap_tokens: u32) -> Option<String> {
     let sizes: Vec<(WorkUnitId, u32)> = units
         .iter()
@@ -68,8 +61,6 @@ pub fn writer_cap_report(units: &[WorkUnit], cap_tokens: u32) -> Option<String> 
     ))
 }
 
-/// What the schema can't express: unique IDs from `first_id` up, and the fields a Writer and the
-/// Unit Check need.
 pub fn field_problems(units: &[WorkUnit], first_id: WorkUnitId) -> Vec<String> {
     let mut problems = Vec::new();
     if units.is_empty() {
@@ -106,8 +97,7 @@ pub fn field_problems(units: &[WorkUnit], first_id: WorkUnitId) -> Vec<String> {
     problems
 }
 
-/// The Marker problems in one file, given the Work Units whose Regions it should hold. A Region
-/// for any other Work Unit is a problem too.
+/// A Region for a Work Unit not in `ids` is a problem too.
 pub fn marker_problems(file: &str, text: &str, ids: &[WorkUnitId]) -> Vec<String> {
     let markers = Markers::parse(text);
     let mut problems: Vec<String> = markers
@@ -129,7 +119,6 @@ pub fn marker_problems(file: &str, text: &str, ids: &[WorkUnitId]) -> Vec<String
     problems
 }
 
-/// Validates the Scaffolder's Work Units in one Session worktree.
 pub struct ScaffoldCheck {
     worktree: PathBuf,
     checks: Checks,
@@ -139,8 +128,6 @@ pub struct ScaffoldCheck {
 }
 
 impl ScaffoldCheck {
-    /// `cap_tokens` is the Writer Cap. Work Unit IDs must start at `first_id`, so they stay
-    /// unique across the Session's Tasks.
     pub fn new(
         worktree: impl Into<PathBuf>,
         checks: Checks,
@@ -158,12 +145,10 @@ impl ScaffoldCheck {
         }
     }
 
-    /// [`NO_SCAFFOLD_CHECK`] when `checks.scaffold` isn't configured, for the caller to show once.
     pub fn warning(&self) -> Option<&'static str> {
         self.checks.scaffold.is_none().then_some(NO_SCAFFOLD_CHECK)
     }
 
-    /// Checks the Work Units' fields, sizes and Markers, reading only their files.
     pub fn review(&self, units: &[WorkUnit]) -> Result<(), String> {
         let mut problems = field_problems(units, self.first_id);
         for (file, ids) in by_file(units) {
@@ -194,7 +179,6 @@ impl ScaffoldCheck {
         Err(message)
     }
 
-    /// [`Self::review`], then the Scaffold Check when one is configured.
     pub async fn run(&self, units: &[WorkUnit]) -> Result<(), String> {
         self.review(units)?;
         if self.checks.scaffold.is_none() {
@@ -216,7 +200,6 @@ impl ScaffoldCheck {
     }
 }
 
-/// Each file named by a Work Unit, with the IDs of the Work Units in it.
 fn by_file(units: &[WorkUnit]) -> BTreeMap<&str, Vec<WorkUnitId>> {
     let mut files: BTreeMap<&str, Vec<WorkUnitId>> = BTreeMap::new();
     for unit in units {
@@ -225,7 +208,6 @@ fn by_file(units: &[WorkUnit]) -> BTreeMap<&str, Vec<WorkUnitId>> {
     files
 }
 
-/// The path if it stays inside the worktree: relative, with no `..`.
 fn relative_path(file: &str) -> Option<&Path> {
     let path = Path::new(file);
     let inside = !file.trim().is_empty()
@@ -243,7 +225,6 @@ fn bullets(lines: &[String]) -> String {
         .join("\n")
 }
 
-/// `9340` as `9,340`.
 fn thousands(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();

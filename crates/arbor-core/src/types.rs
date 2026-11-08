@@ -23,11 +23,9 @@ pub struct Plan {
     pub tasks: Vec<Task>,
 }
 
-/// Starts a constraint that records an assumption the Planner made instead of asking.
 pub const ASSUMPTION_PREFIX: &str = "Assumption:";
 
 impl Plan {
-    /// The constraints that record assumptions, to be highlighted at the plan Checkpoint.
     pub fn assumptions(&self) -> impl Iterator<Item = &str> {
         self.constraints
             .iter()
@@ -36,7 +34,6 @@ impl Plan {
     }
 }
 
-/// Whether a constraint starts with `Assumption:`, ignoring case and leading whitespace.
 fn is_assumption(constraint: &str) -> bool {
     constraint
         .trim_start()

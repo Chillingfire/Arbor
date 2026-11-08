@@ -1,14 +1,4 @@
 //! The three Tiers: the agentic Planner and Scaffolder, and the non-agentic Writer.
-//!
-//! [`PlannerRun`] starts the Planner, which turns a Request into a Plan via `submit_plan`.
-//! [`ScaffolderRun`] starts the Scaffolder, which turns a Task into a Skeleton, tests and Work
-//! Units via `submit_work_units`, checked by [`ScaffoldCheck`]. [`markers`] finds the Regions.
-//! [`WriterRun`] starts a [`Writer`], which fills one Region per Work Unit with plain model calls
-//! whose replies [`reply`] parses.
-//!
-//! An [`Agent`] runs one model call per [`Agent::turn`], runs the tools it asks for, and ends when
-//! the model calls its submit tool with arguments that parse and validate, or escalates after
-//! [`MAX_SUBMIT_FAILURES`] failed submissions.
 
 mod agent;
 pub mod markers;
