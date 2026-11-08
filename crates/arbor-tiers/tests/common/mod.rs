@@ -16,7 +16,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
 
-/// Answers chat calls from a queue and keeps every request it was sent.
 #[derive(Default)]
 pub struct QueueClient {
     responses: Mutex<VecDeque<Result<ChatResponse, LlmError>>>,
@@ -107,12 +106,10 @@ fn response(content: Option<&str>, tool_calls: Vec<ToolCall>, usage: Usage) -> C
     }
 }
 
-/// A reply with text and no tool calls.
 pub fn text(content: &str) -> ChatResponse {
     response(Some(content), vec![], usage(100, 10))
 }
 
-/// A reply calling the given tools, each `(name, arguments)`.
 pub fn calls(calls: &[(&str, Value)]) -> ChatResponse {
     calls_using(calls, usage(100, 10))
 }
@@ -130,7 +127,7 @@ pub fn calls_using(calls: &[(&str, Value)], usage: Usage) -> ChatResponse {
     response(None, tool_calls, usage)
 }
 
-/// A stand-in for a Plan: the submit tool takes `{ "answer": <positive number> }`.
+/// A stand-in for a Plan.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 pub struct Answer {
     pub answer: u32,
