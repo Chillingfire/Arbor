@@ -134,14 +134,14 @@ pub struct Answer {
 }
 
 pub fn submission() -> Submission<Answer> {
-    Submission {
-        name: "submit_answer",
-        description: "Submit the answer.",
-        validate: |value| match value.answer {
+    Submission::new(
+        "submit_answer",
+        "Submit the answer.",
+        |value: &Answer| match value.answer {
             0 => Err("answer must be positive".into()),
             _ => Ok(()),
         },
-    }
+    )
 }
 
 pub fn agent(dir: &TempDir, mode: ClarificationMode, context_length: u64) -> Agent<Answer> {

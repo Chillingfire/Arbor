@@ -3,8 +3,8 @@ use std::fmt;
 use arbor_config::ClarificationMode;
 use arbor_core::{Tier, Usage, Usd};
 use arbor_llm::{
-    ChatRequest, ContentPart, LlmClient, LlmError, Message, ModelInfo, ToolCall, ToolChoice,
-    ToolDef,
+    BoxFuture, ChatRequest, ContentPart, LlmClient, LlmError, Message, ModelInfo, ToolCall,
+    ToolChoice, ToolDef,
 };
 use arbor_tools::Tools;
 use schemars::JsonSchema;
@@ -14,12 +14,40 @@ pub const MAX_SUBMIT_FAILURES: usize = 3;
 
 pub const SUBMIT_NOW_PERCENT: u64 = 80;
 
+/// Checks what the schema can't. An `Err` goes back to the model.
+pub type Validate<T> =
+    Box<dyn for<'a> Fn(&'a T) -> BoxFuture<'a, Result<(), String>> + Send + Sync>;
+
 /// The tool that ends an agentic run. Its parameter schema is generated from `T`.
 pub struct Submission<T> {
     pub name: &'static str,
     pub description: &'static str,
-    /// Checks what the schema can't. An `Err` goes back to the model.
-    pub validate: fn(&T) -> Result<(), String>,
+    pub validate: Validate<T>,
+}
+
+impl<T: Sync + 'static> Submission<T> {
+    pub fn new(
+        name: &'static str,
+        description: &'static str,
+        validate: impl Fn(&T) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_async(name, description, move |value| {
+            let result = validate(value);
+            Box::pin(async move { result })
+        })
+    }
+
+    pub fn with_async(
+        name: &'static str,
+        description: &'static str,
+        validate: impl for<'a> Fn(&'a T) -> BoxFuture<'a, Result<(), String>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            validate: Box::new(validate),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -249,7 +277,8 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             } else if submitted.is_some() {
                 "Ignored: a submission was already accepted.".to_owned()
             } else {
-                match self.parse(&call.arguments) {
+                let parsed = self.parse(&call.arguments).await;
+                match parsed {
                     Ok(value) => {
                         submitted = Some(value);
                         "Submitted.".to_owned()
@@ -273,10 +302,10 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         (failed && self.failures.len() >= MAX_SUBMIT_FAILURES).then(|| self.escalate())
     }
 
-    fn parse(&self, arguments: &str) -> Result<T, String> {
+    async fn parse(&self, arguments: &str) -> Result<T, String> {
         let value: T = serde_json::from_str(arguments)
             .map_err(|err| format!("the arguments don't match the schema: {err}"))?;
-        (self.submission.validate)(&value)?;
+        (self.submission.validate)(&value).await?;
         Ok(value)
     }
 

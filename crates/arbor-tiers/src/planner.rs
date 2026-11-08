@@ -49,12 +49,12 @@ impl PlannerRun<'_> {
 }
 
 fn submission() -> Submission<Plan> {
-    Submission {
-        name: SUBMIT_PLAN,
-        description: "Submit the Plan for the Request: its goal, constraints, and ordered Tasks. \
-                      Call it exactly once, when the Plan is complete.",
-        validate: validate_plan,
-    }
+    Submission::new(
+        SUBMIT_PLAN,
+        "Submit the Plan for the Request: its goal, constraints, and ordered Tasks. Call it \
+         exactly once, when the Plan is complete.",
+        validate_plan,
+    )
 }
 
 pub fn validate_plan(plan: &Plan) -> Result<(), String> {
