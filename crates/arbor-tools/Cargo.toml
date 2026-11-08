@@ -9,3 +9,19 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+arbor-config = { path = "../arbor-config" }
+arbor-llm = { path = "../arbor-llm" }
+globset = "0.4"
+ignore = "0.4"
+regex = "1"
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shell-words = "1"
+tokio = { version = "1", features = ["process", "time"] }
+which = "8"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
