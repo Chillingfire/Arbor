@@ -78,6 +78,7 @@ fn run<'a>(
         },
         cap_tokens: 100,
         first_id: WorkUnitId(4),
+        feedback: None,
     }
 }
 
@@ -156,6 +157,47 @@ async fn the_opening_message_names_the_first_work_unit_id() {
             .text
             .starts_with("Number this Task's Work Units from WU-4")
     );
+    assert_eq!(content.len(), 2, "no rejection without feedback");
+}
+
+#[tokio::test]
+async fn a_rerun_after_rejection_sees_the_feedback_and_revises_the_skeleton_in_place() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), SKELETON).unwrap();
+    let prompt = prompt(&dir, ClarificationMode::Assume);
+    let mut scaffolder = ScaffolderRun {
+        feedback: Some("Split the overflow handling into its own Work Unit."),
+        ..run(
+            &dir,
+            &prompt,
+            model(200_000, true),
+            ClarificationMode::Assume,
+            None,
+        )
+    }
+    .start()
+    .unwrap();
+    let units = work_units("Return a + b.");
+    let client = QueueClient::new([calls(&[submit(&units)])]);
+    let turn = scaffolder.turn(&client).await.unwrap();
+    assert_eq!(turn.outcome, Some(Outcome::Submitted(units)));
+
+    let messages = client.last_request().messages;
+    assert_eq!(
+        messages[0],
+        prompt.messages()[0],
+        "the static prompt is unchanged"
+    );
+    let Message::User { content } = &messages[1] else {
+        panic!("expected the inputs, got {:?}", messages[1]);
+    };
+    assert_eq!(content[0].text, prompt.inputs);
+    let rejection = &content[2].text;
+    assert!(rejection.contains("rejected your Skeleton and Work Units"));
+    assert!(rejection.contains("still in the worktree"));
+    assert!(rejection.contains("Split the overflow handling into its own Work Unit."));
+    assert!(rejection.ends_with("then call `submit_work_units` again."));
 }
 
 #[tokio::test]

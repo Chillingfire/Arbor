@@ -39,6 +39,9 @@ pub struct ScaffolderRun<'a> {
     pub cap_tokens: u32,
     /// The lowest Work Unit ID this Task may use, so IDs stay unique across the Session.
     pub first_id: WorkUnitId,
+    /// Set when the Human Operator rejected the previous Skeleton and Work Units at the scaffold
+    /// Checkpoint: their feedback.
+    pub feedback: Option<&'a str>,
 }
 
 impl ScaffolderRun<'_> {
@@ -72,6 +75,9 @@ impl ScaffolderRun<'_> {
             "Number this Task's Work Units from {} upwards; lower IDs belong to earlier Tasks.",
             self.first_id
         )));
+        if let Some(feedback) = self.feedback {
+            content.push(ContentPart::text(rejection_text(feedback)));
+        }
         let settings = AgentSettings {
             tier: Tier::Scaffolder,
             model: self.model,
@@ -82,6 +88,15 @@ impl ScaffolderRun<'_> {
         let check = ScaffoldCheck::new(self.worktree, self.checks, self.cap_tokens, self.first_id);
         Agent::new(settings, submission(Arc::new(check)), tools, messages)
     }
+}
+
+fn rejection_text(feedback: &str) -> String {
+    format!(
+        "# Rejected Skeleton and Work Units\n\nThe Human Operator rejected your Skeleton and Work \
+         Units for this Task at the Checkpoint. The previous Skeleton and tests are still in the \
+         worktree.\n\nTheir feedback:\n\n{feedback}\n\nRevise the Skeleton, tests and Work Units \
+         to address the feedback, then call `{SUBMIT_WORK_UNITS}` again."
+    )
 }
 
 fn submission(check: Arc<ScaffoldCheck>) -> Submission<WorkUnits> {
