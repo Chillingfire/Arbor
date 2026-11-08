@@ -7,6 +7,7 @@
 //! [`MAX_SUBMIT_FAILURES`] failed submissions.
 
 mod agent;
+pub mod markers;
 mod planner;
 
 pub use agent::{

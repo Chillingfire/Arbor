@@ -1,0 +1,172 @@
+use arbor_core::WorkUnitId;
+use arbor_tiers::markers::{MarkerError, Markers, Region};
+
+fn wu(n: u32) -> WorkUnitId {
+    WorkUnitId(n)
+}
+
+fn region(n: u32, begin: usize, end: usize) -> Region {
+    Region {
+        id: wu(n),
+        begin,
+        end,
+    }
+}
+
+#[test]
+fn markers_are_found_in_any_comment_syntax() {
+    let cases = [
+        "// ARBOR:BEGIN WU-7\n    todo!()\n// ARBOR:END WU-7\n",
+        "# ARBOR:BEGIN WU-7\n    pass\n# ARBOR:END WU-7",
+        "<!-- ARBOR:BEGIN WU-7 -->\n<p></p>\n<!-- ARBOR:END WU-7 -->\n",
+        "/* ARBOR:BEGIN WU-7 */\r\nreturn 0;\r\n/* ARBOR:END WU-7 */\r\n",
+        "-- ARBOR:BEGIN\tWU-7\nselect 1;\n-- ARBOR:END   WU-7-->\n",
+    ];
+    for text in cases {
+        let markers = Markers::parse(text);
+        assert_eq!(markers.regions(), [region(7, 0, 2)], "{text:?}");
+        assert_eq!(markers.errors(), [], "{text:?}");
+        assert_eq!(markers.region(wu(7)), Some(&region(7, 0, 2)));
+        assert_eq!(markers.region(wu(7)).unwrap().body(), 1..2);
+    }
+}
+
+#[test]
+fn text_that_only_looks_like_a_marker_is_ignored() {
+    let text = "ARBOR:BEGINNING WU-1\nlet arbor = \"ARBOR:END\";\nARBOR:ENDS\n";
+    assert_eq!(Markers::parse(text), Markers::default());
+}
+
+#[test]
+fn several_regions_in_one_file_are_found_in_order() {
+    let text = "fn a() {\n  // ARBOR:BEGIN WU-1\n  todo!()\n  // ARBOR:END WU-1\n}\n\
+                fn b() {\n  // ARBOR:BEGIN WU-2\n  todo!()\n  // ARBOR:END WU-2\n}\n";
+    let markers = Markers::parse(text);
+    assert_eq!(markers.regions(), [region(1, 1, 3), region(2, 6, 8)]);
+    assert_eq!(markers.check(&[wu(1), wu(2)]), []);
+    assert_eq!(markers.region(wu(3)), None);
+}
+
+#[test]
+fn every_kind_of_broken_pair_is_reported() {
+    let cases: [(&str, Vec<MarkerError>); 7] = [
+        (
+            "// ARBOR:BEGIN WU-1\ntodo!()\n",
+            vec![MarkerError::Unclosed { id: wu(1), line: 0 }],
+        ),
+        (
+            "todo!()\n// ARBOR:END WU-1\n",
+            vec![MarkerError::Unopened { id: wu(1), line: 1 }],
+        ),
+        (
+            "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-2\n",
+            vec![MarkerError::Mismatched {
+                begin: wu(1),
+                begin_line: 0,
+                end: wu(2),
+                end_line: 1,
+            }],
+        ),
+        (
+            "// ARBOR:BEGIN WU-1\n// ARBOR:BEGIN WU-2\n// ARBOR:END WU-2\n// ARBOR:END WU-1\n",
+            vec![
+                MarkerError::Nested {
+                    outer: wu(1),
+                    outer_line: 0,
+                    inner: wu(2),
+                    line: 1,
+                },
+                MarkerError::Unopened { id: wu(1), line: 3 },
+            ],
+        ),
+        (
+            "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n",
+            vec![MarkerError::Duplicated {
+                id: wu(1),
+                lines: vec![0, 2],
+            }],
+        ),
+        (
+            "// ARBOR:BEGIN 7\n// ARBOR:END WU-x\n",
+            vec![
+                MarkerError::Malformed { line: 0 },
+                MarkerError::Malformed { line: 1 },
+            ],
+        ),
+        (
+            "// ARBOR:BEGIN WU-7a\n",
+            vec![MarkerError::Malformed { line: 0 }],
+        ),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(Markers::parse(text).errors(), expected, "{text:?}");
+    }
+}
+
+#[test]
+fn a_duplicated_region_cannot_be_located() {
+    let text = "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n";
+    assert_eq!(Markers::parse(text).region(wu(1)), None);
+}
+
+#[test]
+fn check_adds_a_missing_error_only_for_work_units_never_mentioned() {
+    let text = "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-2\n";
+    assert_eq!(
+        Markers::parse(text).check(&[wu(1), wu(2), wu(3)]),
+        [
+            MarkerError::Unclosed { id: wu(2), line: 2 },
+            MarkerError::Missing { id: wu(3) },
+        ]
+    );
+}
+
+#[test]
+fn errors_read_with_one_based_line_numbers() {
+    let cases = [
+        (
+            MarkerError::Malformed { line: 0 },
+            "line 1: a Marker needs a Work Unit ID, as in `ARBOR:BEGIN WU-7`",
+        ),
+        (
+            MarkerError::Unclosed { id: wu(3), line: 4 },
+            "WU-3: ARBOR:BEGIN on line 5 has no ARBOR:END",
+        ),
+        (
+            MarkerError::Unopened { id: wu(3), line: 4 },
+            "WU-3: ARBOR:END on line 5 has no ARBOR:BEGIN",
+        ),
+        (
+            MarkerError::Mismatched {
+                begin: wu(1),
+                begin_line: 0,
+                end: wu(2),
+                end_line: 9,
+            },
+            "ARBOR:BEGIN WU-1 on line 1 is closed by ARBOR:END WU-2 on line 10",
+        ),
+        (
+            MarkerError::Nested {
+                outer: wu(1),
+                outer_line: 0,
+                inner: wu(2),
+                line: 2,
+            },
+            "ARBOR:BEGIN WU-2 on line 3 is inside WU-1, opened on line 1; Regions can't nest",
+        ),
+        (
+            MarkerError::Duplicated {
+                id: wu(1),
+                lines: vec![0, 5],
+            },
+            "WU-1 has more than one Region, on lines 1, 6",
+        ),
+        (
+            MarkerError::Missing { id: wu(4) },
+            "WU-4 has no ARBOR:BEGIN/ARBOR:END Marker pair",
+        ),
+    ];
+    for (error, expected) in cases {
+        assert_eq!(error.to_string(), expected);
+    }
+}
