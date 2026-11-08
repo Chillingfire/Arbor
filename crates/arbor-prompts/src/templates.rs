@@ -22,16 +22,23 @@ const INSTRUCTIONS_BLOCK: &str = "instructions";
 /// The Session inputs, rendered after the Conventions.
 const INPUTS_BLOCK: &str = "inputs";
 
-/// A prompt template. The Planner, Scaffolder and Writer each have one.
+/// A prompt template. The Planner, Scaffolder and Writer each have one, and the Scaffolder has a
+/// second for proposing Checks when automatic init can't find working ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Template {
     Planner,
     Scaffolder,
     Writer,
+    CheckProposal,
 }
 
 impl Template {
-    pub const ALL: [Template; 3] = [Template::Planner, Template::Scaffolder, Template::Writer];
+    pub const ALL: [Template; 4] = [
+        Template::Planner,
+        Template::Scaffolder,
+        Template::Writer,
+        Template::CheckProposal,
+    ];
 
     /// The lowercase name used for template and prompt files, e.g. `planner`.
     pub fn name(self) -> &'static str {
@@ -39,6 +46,7 @@ impl Template {
             Self::Planner => "planner",
             Self::Scaffolder => "scaffolder",
             Self::Writer => "writer",
+            Self::CheckProposal => "check_proposal",
         }
     }
 
@@ -47,6 +55,7 @@ impl Template {
             Self::Planner => include_str!("../templates/planner.md"),
             Self::Scaffolder => include_str!("../templates/scaffolder.md"),
             Self::Writer => include_str!("../templates/writer.md"),
+            Self::CheckProposal => include_str!("../templates/check_proposal.md"),
         }
     }
 
@@ -55,7 +64,7 @@ impl Template {
         match self {
             Self::Planner => &["clarification_mode"],
             Self::Scaffolder => &["clarification_mode", "cap_tokens"],
-            Self::Writer => &[],
+            Self::Writer | Self::CheckProposal => &[],
         }
     }
 
@@ -65,6 +74,7 @@ impl Template {
             Self::Planner => &["request"],
             Self::Scaffolder => &["request", "plan", "task"],
             Self::Writer => &["work_unit"],
+            Self::CheckProposal => &["detection", "tried_checks"],
         }
     }
 }
@@ -96,6 +106,24 @@ pub struct ScaffolderInputs<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct WriterInputs<'a> {
     pub work_unit: &'a WorkUnit,
+}
+
+/// What the Scaffolder proposes Checks from when automatic init found none that work.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckProposalInputs<'a> {
+    /// What manifest detection found, as a sentence.
+    pub detection: &'a str,
+    /// The detected commands that were run and failed, if any.
+    pub tried_checks: &'a [TriedCheck],
+}
+
+/// A detected Check command that automatic init ran, and its output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriedCheck {
+    /// `scaffold` or `unit`.
+    pub check: String,
+    pub command: String,
+    pub output: String,
 }
 
 #[derive(Debug)]
@@ -250,6 +278,18 @@ impl Prompts {
         self.render(Template::Writer, None, context)
     }
 
+    pub fn check_proposal(
+        &self,
+        conventions: &Conventions,
+        inputs: &CheckProposalInputs,
+    ) -> Result<Prompt, PromptError> {
+        let context = BTreeMap::from([
+            ("detection", Value::from(inputs.detection)),
+            ("tried_checks", tried_checks(inputs.tried_checks)),
+        ]);
+        self.render(Template::CheckProposal, Some(conventions), context)
+    }
+
     fn render(
         &self,
         template: Template,
@@ -366,6 +406,19 @@ fn mode(mode: ClarificationMode) -> Value {
     })
 }
 
+fn tried_checks(tried: &[TriedCheck]) -> Value {
+    tried
+        .iter()
+        .map(|tried| {
+            Value::from(BTreeMap::from([
+                ("check", Value::from(tried.check.as_str())),
+                ("command", Value::from(tried.command.as_str())),
+                ("output", Value::from(tried.output.as_str())),
+            ]))
+        })
+        .collect()
+}
+
 /// Example Session inputs for checking a template. Samples with different `seed`s differ in every
 /// input, so instructions that render the same for both don't depend on the inputs.
 fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
@@ -395,6 +448,11 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         acceptance_criteria: vec![text("criterion")],
         test_filter: text("filter"),
     };
+    let tried = [TriedCheck {
+        check: text("check"),
+        command: text("command"),
+        output: text("output"),
+    }];
     let all = [
         ("clarification_mode", mode(ClarificationMode::Ask)),
         ("cap_tokens", Value::from(8000)),
@@ -402,6 +460,8 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         ("plan", Value::from(Serde(&plan))),
         ("task", Value::from(Serde(&task))),
         ("work_unit", Value::from(Serde(&work_unit))),
+        ("detection", Value::from(text("detection"))),
+        ("tried_checks", tried_checks(&tried)),
     ];
     let known = [template.static_variables(), template.input_variables()].concat();
     all.into_iter()

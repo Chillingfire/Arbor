@@ -5,8 +5,8 @@ use arbor_config::ClarificationMode;
 use arbor_core::{Plan, Priority, Request, Snippet, Task, WorkUnit, WorkUnitId};
 use arbor_llm::{ContentPart, Message};
 use arbor_prompts::{
-    Conventions, PlannerInputs, Prompt, PromptError, Prompts, ScaffolderInputs, Template,
-    WriterInputs,
+    CheckProposalInputs, Conventions, PlannerInputs, Prompt, PromptError, Prompts,
+    ScaffolderInputs, Template, TriedCheck, WriterInputs,
 };
 use tempfile::tempdir;
 
@@ -87,6 +87,18 @@ fn writer(prompts: &Prompts) -> Prompt {
         .unwrap()
 }
 
+fn check_proposal(prompts: &Prompts, conventions: &Conventions, tried: &[TriedCheck]) -> Prompt {
+    prompts
+        .check_proposal(
+            conventions,
+            &CheckProposalInputs {
+                detection: "Detected a Rust project from Cargo.toml.",
+                tried_checks: tried,
+            },
+        )
+        .unwrap()
+}
+
 fn override_template(root: &Path, template: &str, text: &str) {
     let dir = root.join(".arbor").join("prompts");
     fs::create_dir_all(&dir).unwrap();
@@ -102,6 +114,7 @@ fn every_builtin_template_has_the_four_sections() {
         planner(&prompts, &conventions, "Greet people"),
         scaffolder(&prompts, &conventions, ClarificationMode::Ask),
         writer(&prompts),
+        check_proposal(&prompts, &conventions, &[]),
     ] {
         let sections: Vec<&str> = prompt
             .instructions
@@ -314,4 +327,42 @@ fn broken_templates_fail_at_load() {
         );
         assert!(err.to_string().contains("planner.md"), "{err}");
     }
+}
+
+#[test]
+fn the_check_proposal_sees_the_conventions_and_each_failed_command_with_its_output() {
+    let dir = tempdir().unwrap();
+    let tried = [TriedCheck {
+        check: "scaffold".to_owned(),
+        command: "cargo check --all-targets".to_owned(),
+        output: "error: could not find `Cargo.toml`".to_owned(),
+    }];
+    let prompt = check_proposal(&Prompts::builtin(), &conventions(dir.path()), &tried);
+
+    assert_eq!(prompt.template, Template::CheckProposal);
+    assert!(prompt.conventions.unwrap().contains("British spelling"));
+    assert!(prompt.instructions.contains("submit_checks"));
+    assert!(
+        prompt
+            .inputs
+            .contains("Detected a Rust project from Cargo.toml.")
+    );
+    assert!(
+        prompt
+            .inputs
+            .contains("## scaffold: `cargo check --all-targets`")
+    );
+    assert!(prompt.inputs.contains("could not find `Cargo.toml`"));
+}
+
+#[test]
+fn without_failed_commands_the_check_proposal_shows_only_the_detection() {
+    let prompt = check_proposal(&Prompts::builtin(), &Conventions::default(), &[]);
+    assert_eq!(
+        prompt.inputs,
+        "# Detection
+
+Detected a Rust project from Cargo.toml.
+"
+    );
 }
