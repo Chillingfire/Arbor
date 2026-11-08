@@ -8,6 +8,7 @@
 
 mod approval;
 mod branch;
+mod changes;
 mod command;
 mod commit;
 mod mainline;

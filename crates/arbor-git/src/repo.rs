@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::branch::SessionBranch;
+use crate::changes;
 use crate::command::{GitError, git, git_succeeds};
 use crate::mainline::Mainline;
 use crate::worktree::Worktree;
@@ -106,6 +107,34 @@ impl Repo {
         self.add_worktree(branch, path, &mainline.start_ref())
     }
 
+    /// Like [`Self::create_worktree`], but brings the operator's uncommitted changes in:
+    /// modified, staged, deleted, renamed, and untracked files that aren't ignored. They become
+    /// the Session branch's first commit, made with the operator's identity, which Rewind can
+    /// reset to. With no changes, the branch starts at the mainline.
+    ///
+    /// The operator's checkout, index, and stashes are not touched. The changes are taken
+    /// relative to the checkout's `HEAD`, which may be another branch or behind `origin`, and
+    /// applied onto the mainline. If they don't apply cleanly, this fails without creating the
+    /// branch or the worktree, and the operator should leave the changes out or abort.
+    pub fn create_worktree_with_changes(
+        &self,
+        mainline: &Mainline,
+        branch: &SessionBranch,
+        path: &Path,
+    ) -> Result<Worktree, GitError> {
+        self.check_branch_name(branch.as_str())?;
+        let start = git(
+            &self.root,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{}^{{commit}}", mainline.start_ref()),
+            ],
+        )?;
+        let commit = changes::commit_onto(&self.root, &start, &mainline.start_point())?;
+        self.add_worktree(branch, path, commit.as_deref().unwrap_or(&start))
+    }
+
     fn add_worktree(
         &self,
         branch: &SessionBranch,
@@ -132,7 +161,9 @@ impl Repo {
     }
 
     /// The paths with uncommitted changes in the operator's checkout, including untracked
-    /// files. Empty when the tree is clean.
+    /// files. Empty when the tree is clean. Ask the operator whether to bring them into the
+    /// Session ([`Self::create_worktree_with_changes`]), leave them out
+    /// ([`Self::create_worktree`]), or abort.
     pub fn uncommitted_changes(&self) -> Result<Vec<String>, GitError> {
         let status = git(
             &self.root,

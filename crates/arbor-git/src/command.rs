@@ -51,6 +51,12 @@ impl<'a> Git<'a> {
         }
     }
 
+    /// Uses `index` instead of the repository's own index, which is left untouched.
+    pub(crate) fn index(mut self, index: &'a Path) -> Self {
+        self.index = Some(index);
+        self
+    }
+
     pub(crate) fn input(mut self, input: &'a [u8]) -> Self {
         self.input = Some(input);
         self
