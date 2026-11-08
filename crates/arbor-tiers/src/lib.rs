@@ -6,6 +6,7 @@ mod planner;
 pub mod reply;
 mod scaffold_check;
 mod scaffolder;
+mod task_completion;
 mod writer;
 
 pub use agent::{
@@ -18,6 +19,9 @@ pub use scaffold_check::{
     writer_cap_report, writer_input_tokens,
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
+pub use task_completion::{
+    NO_UNIT_CHECK, check_markers, leftover_markers, run_task_check, task_check_warning, task_diff,
+};
 pub use writer::{
     Attempt, AttemptError, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS,
     RETRY_OUTPUT_CHARS, WRITER_SEED, Writer, WriterError, WriterRun, commit_subject,
