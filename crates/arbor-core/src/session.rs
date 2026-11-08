@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::cost::UsageTotals;
+use crate::cost::{UsageTotals, Usd};
 use crate::event::Event;
 use crate::types::{Plan, Request, WorkUnit, WorkUnitId};
 
@@ -31,6 +31,9 @@ pub enum Effect {
     RunTaskChecks {
         task: usize,
     },
+    /// The Budget Cap was reached: start no new LLM call, and ask the Human Operator to raise the
+    /// cap or stop. A call already in flight is left to finish and its usage recorded.
+    ShowBudgetCheckpoint,
     EndSession,
 }
 
@@ -66,6 +69,8 @@ pub enum Phase {
         task: usize,
     },
     Done,
+    /// The Human Operator stopped the Session at a budget Checkpoint.
+    Stopped,
 }
 
 /// An event that doesn't fit the Session's current state. The state is left unchanged.
@@ -87,6 +92,11 @@ pub enum ApplyError {
         expected: WorkUnitId,
         got: WorkUnitId,
     },
+    /// A Budget Cap at or below what the Session has already spent, which would pause at once.
+    BudgetCapReached {
+        cap: Usd,
+        spent: Usd,
+    },
 }
 
 impl fmt::Display for ApplyError {
@@ -102,6 +112,12 @@ impl fmt::Display for ApplyError {
             Self::WrongWorkUnit { expected, got } => {
                 write!(f, "event for {got} while {expected} is in progress")
             }
+            Self::BudgetCapReached { cap, spent } => write!(
+                f,
+                "budget cap ${:.4} is not above the ${:.4} already spent",
+                cap.dollars(),
+                spent.dollars()
+            ),
         }
     }
 }
@@ -119,6 +135,7 @@ pub struct Session {
     work_units: Vec<WorkUnit>,
     commits: Vec<(WorkUnitId, String)>,
     usage: UsageTotals,
+    budget_cap: Option<Usd>,
 }
 
 impl Session {
@@ -160,6 +177,21 @@ impl Session {
         &self.usage
     }
 
+    pub fn budget_cap(&self) -> Option<Usd> {
+        self.budget_cap
+    }
+
+    /// The Budget Cap is reached, so no new LLM call may start until the Human Operator raises
+    /// the cap or stops. Outcomes of the call that reached it are still applied, so the Session
+    /// may move on underneath; `pending` shows the budget Checkpoint until it is resolved.
+    pub fn is_at_budget_checkpoint(&self) -> bool {
+        is_live(&self.phase)
+            && self
+                .budget_cap
+                .is_some_and(|cap| self.usage.total().cost >= cap)
+    }
+
+    /// Finished with every Task done. A Session stopped at a budget Checkpoint is not done.
     pub fn is_done(&self) -> bool {
         self.phase == Phase::Done
     }
@@ -237,6 +269,17 @@ impl Session {
                 self.usage.record(*tier, *usage);
                 phase.clone()
             }
+            (phase, &Event::BudgetCapSet { cap }) if is_live(phase) => {
+                let spent = self.usage.total().cost;
+                if let Some(cap) = cap
+                    && cap <= spent
+                {
+                    return Err(ApplyError::BudgetCapReached { cap, spent });
+                }
+                self.budget_cap = cap;
+                phase.clone()
+            }
+            (_, Event::SessionStopped) if self.is_at_budget_checkpoint() => Phase::Stopped,
             _ => return Err(unexpected()),
         };
         self.phase = next;
@@ -245,6 +288,9 @@ impl Session {
 
     /// The effects the current state is waiting on. After a resume, these redo the in-flight work.
     pub fn pending(&self) -> Vec<Effect> {
+        if self.is_at_budget_checkpoint() {
+            return vec![Effect::ShowBudgetCheckpoint];
+        }
         let effect = match &self.phase {
             Phase::NotStarted => return vec![],
             Phase::Planning { feedback } => Effect::RunPlanner {
@@ -264,7 +310,7 @@ impl Session {
                 id: self.work_units[unit].id,
             },
             &Phase::TaskChecking { task } => Effect::RunTaskChecks { task },
-            Phase::Done => Effect::EndSession,
+            Phase::Done | Phase::Stopped => Effect::EndSession,
         };
         vec![effect]
     }
@@ -294,7 +340,7 @@ impl Session {
 
 /// Started and not yet finished, so LLM calls can happen.
 fn is_live(phase: &Phase) -> bool {
-    !matches!(phase, Phase::NotStarted | Phase::Done)
+    !matches!(phase, Phase::NotStarted | Phase::Done | Phase::Stopped)
 }
 
 fn first_duplicate(work_units: &[WorkUnit]) -> Option<WorkUnitId> {

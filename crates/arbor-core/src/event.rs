@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::cost::Usage;
+use crate::cost::{Usage, Usd};
 use crate::types::{Plan, Request, Tier, WorkUnit, WorkUnitId};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
@@ -42,4 +42,12 @@ pub enum Event {
         tier: Tier,
         usage: Usage,
     },
+    /// The Human Operator set the Session's Budget Cap, or removed it with `None`. At a budget
+    /// Checkpoint, this is the "raise the cap" choice.
+    BudgetCapSet {
+        #[serde(rename = "cap_nano_usd")]
+        cap: Option<Usd>,
+    },
+    /// The Human Operator chose to stop at a budget Checkpoint.
+    SessionStopped,
 }
