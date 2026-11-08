@@ -45,6 +45,9 @@ dependencies = [
 [[package]]
 name = "arbor-git"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "arbor-llm"
