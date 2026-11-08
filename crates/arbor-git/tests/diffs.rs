@@ -67,6 +67,22 @@ fn a_diff_covers_commits_and_uncommitted_changes_since_the_base() {
 }
 
 #[test]
+fn a_committed_diff_leaves_out_uncommitted_changes() {
+    let session = Session::new();
+    let base = session.worktree.head().unwrap();
+    session.commit_file("src/lib.rs", "fn a() {}\n");
+    write(
+        session.worktree.path(),
+        "src/lib.rs",
+        "fn uncommitted() {}\n",
+    );
+
+    let diff = session.worktree.committed_diff_from(&base).unwrap();
+    assert!(diff.contains("+fn a() {}"), "{diff}");
+    assert!(!diff.contains("uncommitted"), "{diff}");
+}
+
+#[test]
 fn the_fork_point_ignores_later_mainline_commits() {
     let session = Session::new();
     let start = session.worktree.head().unwrap();

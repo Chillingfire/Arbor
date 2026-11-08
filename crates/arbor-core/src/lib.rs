@@ -13,6 +13,6 @@ pub use log::{EventLog, ReadError, read_events};
 pub use revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
 pub use session::{ApplyError, Effect, Phase, Session};
 pub use types::{
-    ASSUMPTION_PREFIX, LeftoverMarker, Plan, Priority, Request, Snippet, Task, Tier, WorkUnit,
-    WorkUnitId,
+    ASSUMPTION_PREFIX, CommitOrigin, LeftoverMarker, Plan, Priority, Request, SessionCommit,
+    Snippet, Task, Tier, WorkUnit, WorkUnitId,
 };

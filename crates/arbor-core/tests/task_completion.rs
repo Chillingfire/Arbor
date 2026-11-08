@@ -1,8 +1,8 @@
 mod common;
 
 use arbor_core::{
-    ApplyError, Effect, Event, LeftoverMarker, MAX_REVISIONS, Phase, Revision, RevisionCause,
-    Session, WorkUnitId,
+    ApplyError, CommitOrigin, Effect, Event, LeftoverMarker, MAX_REVISIONS, Phase, Revision,
+    RevisionCause, Session, SessionCommit, WorkUnitId,
 };
 use common::{plan, request, work_unit};
 
@@ -61,6 +61,12 @@ fn cause(output: &str) -> RevisionCause {
     }
 }
 
+fn fixed(commit: Option<&str>) -> Event {
+    Event::OperatorFixed {
+        commit: commit.map(str::to_owned),
+    }
+}
+
 fn revision(diagnosis: &str, ids: &[u32]) -> Event {
     Event::RevisionSubmitted {
         revision: Revision {
@@ -102,7 +108,7 @@ fn only_the_revised_work_units_are_written_again_then_the_task_is_checked() {
     let task_commits: Vec<_> = session
         .task_commits()
         .iter()
-        .map(|(_, commit)| commit.as_str())
+        .map(|commit| commit.hash.as_str())
         .collect();
     assert_eq!(task_commits, ["c1", "c2", "c3"]);
     assert_eq!(session.revisions().len(), 1);
@@ -183,8 +189,16 @@ fn an_operator_fix_at_the_escalation_checkpoint_reruns_the_task_check() {
         apply_all(&mut session, &write_and_commit(2, "r"));
     }
     session.apply(&failed("still failing")).unwrap();
-    let effects = session.apply(&Event::OperatorFixed).unwrap();
+    let effects = session.apply(&fixed(Some("fix"))).unwrap();
     assert_eq!(effects, [Effect::RunTaskChecks { task: 0 }]);
+    assert_eq!(
+        session.task_commits().last(),
+        Some(&SessionCommit {
+            hash: "fix".into(),
+            origin: CommitOrigin::OperatorFix,
+        }),
+        "the fix is part of the Task diff and Rewind sees it"
+    );
 
     let effects = session.apply(&failed("broken again")).unwrap();
     assert!(
@@ -279,11 +293,21 @@ fn the_session_cannot_finish_while_markers_remain() {
         .apply(&Event::MarkersChecked { remaining: vec![] })
         .expect_err("the Checkpoint waits for the Human Operator's fix");
 
-    let effects = session.apply(&Event::OperatorFixed).unwrap();
+    let effects = session.apply(&fixed(Some("m1"))).unwrap();
     assert_eq!(effects, [Effect::CheckMarkers]);
     session.apply(&Event::MarkersChecked { remaining }).unwrap();
     assert!(matches!(session.phase(), Phase::MarkerCheckpoint { .. }));
-    session.apply(&Event::OperatorFixed).unwrap();
+    session.apply(&fixed(None)).unwrap();
+    let hashes: Vec<_> = session
+        .commits()
+        .iter()
+        .map(|commit| commit.hash.as_str())
+        .collect();
+    assert_eq!(
+        hashes,
+        ["c1", "c2", "m1"],
+        "nothing to commit records nothing"
+    );
     session
         .apply(&Event::MarkersChecked { remaining: vec![] })
         .unwrap();

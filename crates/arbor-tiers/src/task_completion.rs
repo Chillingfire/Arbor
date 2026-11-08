@@ -4,8 +4,8 @@
 use std::path::Path;
 
 use arbor_config::Checks;
-use arbor_core::{Event, LeftoverMarker, WorkUnitId};
-use arbor_git::{CommitId, GitError, Mainline, Worktree};
+use arbor_core::{Event, LeftoverMarker, SessionCommit};
+use arbor_git::{CommitId, CommitMessage, GitError, Mainline, Worktree};
 use arbor_tools::{CheckName, run_check};
 
 pub const NO_UNIT_CHECK: &str = "No unit check is configured in arbor.toml, so Arbor can't run \
@@ -36,20 +36,36 @@ pub fn task_check_warning(checks: &Checks) -> Option<&'static str> {
 
 /// Everything the Task changed: from the parent of its first commit, or from `HEAD` before it
 /// has any, to the files in the worktree. Takes `Session::task_commits`.
-pub fn task_diff(
-    worktree: &Worktree,
-    task_commits: &[(WorkUnitId, String)],
-) -> Result<String, GitError> {
+pub fn task_diff(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<String, GitError> {
     let base = match task_commits.first() {
-        Some((_, first)) => worktree.parent_of(&CommitId::from(first.clone()))?,
+        Some(first) => worktree.parent_of(&CommitId::from(first.hash.clone()))?,
         None => worktree.head()?,
     };
     worktree.diff_from(&base)
 }
 
-/// Looks for Markers in everything the Session branch changed and returns `MarkersChecked`.
+/// Default subjects for [`commit_operator_fix`]. Like every commit, they don't mention Arbor
+/// (ADR-0009).
+pub const TASK_FIX_SUBJECT: &str = "Fix the failing tests.";
+pub const MARKER_FIX_SUBJECT: &str = "Remove leftover placeholder comments.";
+
+/// Commits what the Human Operator changed by hand at a Checkpoint, with their git identity, and
+/// returns `OperatorFixed`. Committing first keeps the fix out of the next Work Unit's commit and
+/// lets Rewind see it.
+pub fn commit_operator_fix(
+    worktree: &Worktree,
+    message: &CommitMessage,
+) -> Result<Event, GitError> {
+    let commit = worktree.commit(message)?;
+    Ok(Event::OperatorFixed {
+        commit: commit.map(|hash| hash.as_str().to_owned()),
+    })
+}
+
+/// Looks for Markers in what the Session branch has committed and returns `MarkersChecked`.
+/// Uncommitted changes don't count, since a push or merge would leave them behind.
 pub fn check_markers(worktree: &Worktree, mainline: &Mainline) -> Result<Event, GitError> {
-    let branch_diff = worktree.diff_from(&worktree.fork_point(mainline)?)?;
+    let branch_diff = worktree.committed_diff_from(&worktree.fork_point(mainline)?)?;
     Ok(Event::MarkersChecked {
         remaining: leftover_markers(&branch_diff),
     })

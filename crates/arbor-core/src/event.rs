@@ -47,7 +47,10 @@ pub enum Event {
         revision: Revision,
     },
     /// The Human Operator fixed the problem at the open Checkpoint by hand, so Arbor checks again.
-    OperatorFixed,
+    /// `commit` is the fix Arbor committed, or `None` when there was nothing to commit.
+    OperatorFixed {
+        commit: Option<String>,
+    },
     /// The end-of-session Marker check ran over the branch diff. The Session finishes only when
     /// `remaining` is empty.
     MarkersChecked {

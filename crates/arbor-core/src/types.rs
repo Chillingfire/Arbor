@@ -93,6 +93,20 @@ pub enum Priority {
     Helpful,
 }
 
+/// A commit Arbor made on the Session branch. Rewind and the Task diff start from these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCommit {
+    pub hash: String,
+    pub origin: CommitOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOrigin {
+    WorkUnit(WorkUnitId),
+    /// The Human Operator's fix at a Checkpoint.
+    OperatorFix,
+}
+
 /// A line the Session branch adds that still holds `ARBOR:`, found by the end-of-session Marker
 /// check (ADR-0002).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -83,26 +83,32 @@ impl Worktree {
     /// A unified diff from `base` to the files in the worktree, committed or not. Untracked files
     /// are left out.
     pub fn diff_from(&self, base: &CommitId) -> Result<String, GitError> {
-        let hash = self.verified(base)?;
+        self.diff(self.verified(base)?, None)
+    }
+
+    /// A unified diff from `base` to `HEAD`: only what is committed on the branch.
+    pub fn committed_diff_from(&self, base: &CommitId) -> Result<String, GitError> {
+        self.diff(self.verified(base)?, Some("HEAD"))
+    }
+
+    fn diff(&self, base_hash: &str, to_revision: Option<&str>) -> Result<String, GitError> {
         // Every option the operator's diff config could change is pinned, so the text is the
         // same on every machine.
-        let diff = Git::new(
-            &self.path,
-            &[
-                "diff",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-relative",
-                "--no-renames",
-                "--unified=3",
-                "--src-prefix=a/",
-                "--dst-prefix=b/",
-                hash,
-                "--",
-            ],
-        )
-        .bytes()?;
+        let mut args = vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--no-renames",
+            "--unified=3",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            base_hash,
+        ];
+        args.extend(to_revision);
+        args.push("--");
+        let diff = Git::new(&self.path, &args).bytes()?;
         Ok(String::from_utf8_lossy(&diff).into_owned())
     }
 

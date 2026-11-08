@@ -5,10 +5,11 @@ use std::path::Path;
 use std::process::Command;
 
 use arbor_config::Checks;
-use arbor_core::{Event, LeftoverMarker, WorkUnitId};
+use arbor_core::{CommitOrigin, Event, LeftoverMarker, SessionCommit, WorkUnitId};
 use arbor_git::{CommitMessage, Mainline, Repo, SessionBranch, Worktree};
 use arbor_tiers::{
-    NO_UNIT_CHECK, check_markers, leftover_markers, run_task_check, task_check_warning, task_diff,
+    MARKER_FIX_SUBJECT, NO_UNIT_CHECK, check_markers, commit_operator_fix, leftover_markers,
+    run_task_check, task_check_warning, task_diff,
 };
 use tempfile::{TempDir, tempdir};
 
@@ -70,6 +71,13 @@ impl Session {
     }
 }
 
+fn work_unit_commit(id: u32, hash: String) -> SessionCommit {
+    SessionCommit {
+        hash,
+        origin: CommitOrigin::WorkUnit(WorkUnitId(id)),
+    }
+}
+
 fn marker(file: &str, line: usize, text: &str) -> LeftoverMarker {
     LeftoverMarker {
         file: file.into(),
@@ -87,7 +95,7 @@ fn markers_the_branch_adds_are_found_but_not_those_on_the_mainline() {
         Event::MarkersChecked { remaining: vec![] }
     );
 
-    session.write(
+    session.commit(
         "calc.py",
         "def add(a, b):\n    # ARBOR:BEGIN WU-1\n    return a + b\n",
     );
@@ -100,6 +108,40 @@ fn markers_the_branch_adds_are_found_but_not_those_on_the_mainline() {
 }
 
 #[test]
+fn an_uncommitted_fix_does_not_pass_the_marker_check_until_it_is_committed() {
+    let session = Session::new();
+    session.commit("calc.py", "# ARBOR:END WU-1\n");
+    session.write("calc.py", "def add(a, b):\n    return a + b\n");
+    let Event::MarkersChecked { remaining } =
+        check_markers(&session.worktree, &session.mainline).unwrap()
+    else {
+        panic!("expected MarkersChecked");
+    };
+    assert_eq!(
+        remaining.len(),
+        1,
+        "the branch's commits still hold the Marker"
+    );
+
+    let message = CommitMessage::new(MARKER_FIX_SUBJECT).unwrap();
+    let Event::OperatorFixed { commit: Some(fix) } =
+        commit_operator_fix(&session.worktree, &message).unwrap()
+    else {
+        panic!("expected the fix to be committed");
+    };
+    assert_eq!(session.worktree.head().unwrap().as_str(), fix);
+    assert_eq!(
+        check_markers(&session.worktree, &session.mainline).unwrap(),
+        Event::MarkersChecked { remaining: vec![] }
+    );
+    assert_eq!(
+        commit_operator_fix(&session.worktree, &message).unwrap(),
+        Event::OperatorFixed { commit: None },
+        "with nothing changed there is nothing to commit"
+    );
+}
+
+#[test]
 fn the_task_diff_starts_where_the_tasks_first_commit_did() {
     let session = Session::new();
     session.commit("before.txt", "an earlier Task\n");
@@ -108,7 +150,7 @@ fn the_task_diff_starts_where_the_tasks_first_commit_did() {
     let first = session.commit("calc.py", "def add(a, b):\n    return a + b\n");
     let second = session.commit("calc.py", "def add(a, b):\n    return a - b\n");
     session.write("calc.py", "def add(a, b):\n    return a * b\n");
-    let task_commits = [(WorkUnitId(1), first), (WorkUnitId(2), second)];
+    let task_commits = [work_unit_commit(1, first), work_unit_commit(2, second)];
     let diff = task_diff(&session.worktree, &task_commits).unwrap();
     assert!(diff.contains("+    return a * b"), "{diff}");
     assert!(!diff.contains("before.txt"), "{diff}");

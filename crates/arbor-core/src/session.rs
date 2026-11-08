@@ -3,7 +3,9 @@ use std::fmt;
 use crate::cost::{UsageTotals, Usd};
 use crate::event::Event;
 use crate::revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
-use crate::types::{LeftoverMarker, Plan, Request, WorkUnit, WorkUnitId};
+use crate::types::{
+    CommitOrigin, LeftoverMarker, Plan, Request, SessionCommit, WorkUnit, WorkUnitId,
+};
 
 /// What the outer crates should do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,7 +187,7 @@ pub struct Session {
     write_queue: Vec<WorkUnitId>,
     /// The highest Work Unit ID submitted in the Session.
     highest_id: Option<WorkUnitId>,
-    commits: Vec<(WorkUnitId, String)>,
+    commits: Vec<SessionCommit>,
     /// Where the current Task's commits start in `commits`.
     task_commits_start: usize,
     /// The current Task's Revisions.
@@ -224,13 +226,13 @@ impl Session {
         &self.work_units
     }
 
-    pub fn commits(&self) -> &[(WorkUnitId, String)] {
+    pub fn commits(&self) -> &[SessionCommit] {
         &self.commits
     }
 
     /// The commits made since the current Task started, oldest first. The first one's parent is
     /// where the Task diff starts.
-    pub fn task_commits(&self) -> &[(WorkUnitId, String)] {
+    pub fn task_commits(&self) -> &[SessionCommit] {
         &self.commits[self.task_commits_start..]
     }
 
@@ -341,7 +343,7 @@ impl Session {
             }
             (&Phase::Committing { task, unit }, Event::WorkUnitCommitted { id, commit }) => {
                 self.expect_work_unit(unit, *id)?;
-                self.commits.push((*id, commit.clone()));
+                self.record_commit(commit, CommitOrigin::WorkUnit(*id));
                 self.write_from(task, unit + 1)
             }
             (&Phase::TaskChecking { task }, Event::TaskChecksPassed) => {
@@ -372,7 +374,8 @@ impl Session {
                 self.apply_revision(cause, revision);
                 self.write_from(task, 0)
             }
-            (&Phase::EscalationCheckpoint { task, .. }, Event::OperatorFixed) => {
+            (&Phase::EscalationCheckpoint { task, .. }, Event::OperatorFixed { commit }) => {
+                self.record_operator_fix(commit);
                 Phase::TaskChecking { task }
             }
             (Phase::CheckingMarkers, Event::MarkersChecked { remaining }) => {
@@ -384,7 +387,10 @@ impl Session {
                     }
                 }
             }
-            (Phase::MarkerCheckpoint { .. }, Event::OperatorFixed) => Phase::CheckingMarkers,
+            (Phase::MarkerCheckpoint { .. }, Event::OperatorFixed { commit }) => {
+                self.record_operator_fix(commit);
+                Phase::CheckingMarkers
+            }
             (phase, Event::UsageRecorded { tier, usage }) if is_live(phase) => {
                 self.usage.record(*tier, *usage);
                 phase.clone()
@@ -457,6 +463,19 @@ impl Session {
             Phase::Writing { task, unit }
         } else {
             Phase::TaskChecking { task }
+        }
+    }
+
+    fn record_commit(&mut self, hash: &str, origin: CommitOrigin) {
+        self.commits.push(SessionCommit {
+            hash: hash.to_owned(),
+            origin,
+        });
+    }
+
+    fn record_operator_fix(&mut self, commit: &Option<String>) {
+        if let Some(hash) = commit {
+            self.record_commit(hash, CommitOrigin::OperatorFix);
         }
     }
 

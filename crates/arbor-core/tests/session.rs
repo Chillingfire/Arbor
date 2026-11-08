@@ -209,7 +209,11 @@ fn work_units_and_tasks_run_in_order() {
             Effect::CheckMarkers,
         ]
     );
-    let commits: Vec<_> = session.commits().iter().map(|(_, c)| c.as_str()).collect();
+    let commits: Vec<_> = session
+        .commits()
+        .iter()
+        .map(|commit| commit.hash.as_str())
+        .collect();
     assert_eq!(commits, ["c1", "c2", "c3"]);
 }
 
