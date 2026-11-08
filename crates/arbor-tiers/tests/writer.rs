@@ -13,7 +13,7 @@ use arbor_prompts::{Prompts, WriterInputs};
 use arbor_tiers::reply::ReplyError;
 use arbor_tiers::{
     AttemptOutcome, FailureReason, MAX_WRITER_ATTEMPTS, WRITER_SEED, Writer, WriterError,
-    WriterRun, commit_subject,
+    WriterRun, commit_subject, writer_input_tokens,
 };
 use common::{QueueClient, last_user_text, text};
 use tempfile::{TempDir, tempdir};
@@ -98,7 +98,13 @@ fn checks() -> Checks {
     }
 }
 
+const CAP_TOKENS: u32 = 8_000;
+
 fn writer(dir: &TempDir, checks: Checks) -> Writer {
+    writer_with_cap(dir, checks, CAP_TOKENS)
+}
+
+fn writer_with_cap(dir: &TempDir, checks: Checks, cap_tokens: u32) -> Writer {
     let unit = work_unit();
     let prompt = Prompts::builtin()
         .writer(&WriterInputs { work_unit: &unit })
@@ -110,6 +116,7 @@ fn writer(dir: &TempDir, checks: Checks) -> Writer {
         temperature: 0.0,
         worktree: dir.path(),
         checks,
+        cap_tokens,
     }
     .start()
 }
@@ -246,7 +253,16 @@ async fn rejected_replies_use_up_the_attempts() {
     assert_eq!(client.requests().len(), 3);
     assert_eq!(head(&dir), before);
 
-    let retry = last_user_text(&client.last_request().messages).to_owned();
+    let messages = client.last_request().messages;
+    assert_eq!(messages.len(), 4, "only the latest failure is sent back");
+    assert_eq!(
+        messages[2],
+        Message::Assistant {
+            content: Some(wrong_context.into()),
+            tool_calls: vec![],
+        }
+    );
+    let retry = last_user_text(&messages);
     assert!(
         retry.starts_with("Your reply was rejected: the first 2 lines"),
         "{retry}"
@@ -419,4 +435,37 @@ async fn a_pass_that_git_ignores_is_an_error() {
         "{err}"
     );
     assert_eq!(file(&dir), SKELETON);
+}
+
+#[tokio::test]
+async fn a_request_over_the_writer_cap_is_never_sent() {
+    let dir = repo();
+    let client = QueueClient::new([text(GOOD)]);
+    let cap = writer_input_tokens(&work_unit()) - 1;
+    let mut writer = writer_with_cap(&dir, checks(), cap);
+    let err = writer.attempt(&client).await.unwrap_err();
+    assert!(matches!(err.error, WriterError::OverCap { .. }), "{err}");
+    assert!(client.requests().is_empty());
+    assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
+}
+
+#[tokio::test]
+async fn retries_stay_within_the_writer_cap() {
+    let base = writer_input_tokens(&work_unit());
+
+    let dir = repo();
+    let client = QueueClient::new([text(WRONG), text(GOOD)]);
+    let mut writer = writer_with_cap(&dir, checks(), base + 400);
+    writer.attempt(&client).await.unwrap();
+    assert!(writer.input_tokens() <= base + 400);
+    let second = writer.attempt(&client).await.unwrap();
+    assert!(matches!(second.outcome, AttemptOutcome::Passed { .. }));
+
+    let dir = repo();
+    let client = QueueClient::new([text(WRONG)]);
+    let mut writer = writer_with_cap(&dir, checks(), base + 10);
+    writer.attempt(&client).await.unwrap();
+    let err = writer.attempt(&client).await.unwrap_err();
+    assert!(matches!(err.error, WriterError::OverCap { .. }), "{err}");
+    assert_eq!(client.requests().len(), 1);
 }

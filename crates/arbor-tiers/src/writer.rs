@@ -9,12 +9,13 @@ use arbor_config::Checks;
 use arbor_core::{Usage, WorkUnit, WorkUnitId};
 use arbor_git::{CommitId, CommitMessage, GitError, Worktree};
 use arbor_llm::{ChatRequest, ContentPart, FinishReason, LlmClient, LlmError, Message};
-use arbor_prompts::Prompt;
+use arbor_prompts::{Prompt, estimate_tokens};
 use arbor_tools::{CheckName, run_check};
 
 use crate::agent::core_usage;
 use crate::markers::{Markers, splice, strip};
 use crate::reply::{ReplyError, WriterReply, parse_reply};
+use crate::scaffold_check::{with_margin, writer_input_tokens};
 
 pub const MAX_WRITER_ATTEMPTS: usize = 3;
 
@@ -22,7 +23,8 @@ pub const MAX_WRITER_ATTEMPTS: usize = 3;
 /// to the Writer's prompt.
 pub const WRITER_SEED: u64 = 7;
 
-/// About 1,000 tokens of Check output per retry, so retries stay well inside the Writer Cap.
+/// About 1,000 tokens: the most Check output a retry shows, and less when the Writer Cap needs the
+/// room.
 pub const RETRY_OUTPUT_CHARS: usize = 4000;
 
 const MAX_SUBJECT_CHARS: usize = 72;
@@ -34,6 +36,7 @@ pub struct WriterRun<'a> {
     pub temperature: f64,
     pub worktree: &'a Path,
     pub checks: Checks,
+    pub cap_tokens: u32,
 }
 
 impl WriterRun<'_> {
@@ -48,7 +51,10 @@ impl WriterRun<'_> {
             temperature: self.temperature,
             worktree: self.worktree.to_owned(),
             checks: self.checks,
-            messages: self.prompt.messages(),
+            cap_tokens: self.cap_tokens,
+            prompt: self.prompt.messages(),
+            retry: Vec::new(),
+            retry_tokens: 0,
             failures: Vec::new(),
             finished: false,
         }
@@ -61,7 +67,12 @@ pub struct Writer {
     temperature: f64,
     worktree: PathBuf,
     checks: Checks,
-    messages: Vec<Message>,
+    cap_tokens: u32,
+    prompt: Vec<Message>,
+    /// The latest failed reply, when it fits, and the message asking again. Earlier failures
+    /// are left out so retries stay within the Writer Cap.
+    retry: Vec<Message>,
+    retry_tokens: u32,
     failures: Vec<Failure>,
     finished: bool,
 }
@@ -120,6 +131,11 @@ pub enum WriterError {
         id: WorkUnitId,
     },
     Git(GitError),
+    /// The request would be bigger than the Writer Cap, so it wasn't sent.
+    OverCap {
+        tokens: u32,
+        cap_tokens: u32,
+    },
     NotCommitted {
         file: String,
     },
@@ -138,6 +154,11 @@ impl fmt::Display for WriterError {
                 write!(f, "{file} doesn't hold exactly one Region for {id}")
             }
             Self::Git(err) => write!(f, "{err}"),
+            Self::OverCap { tokens, cap_tokens } => write!(
+                f,
+                "the Writer's input would be about {tokens} tokens, over the Writer Cap of \
+                 {cap_tokens}"
+            ),
             Self::NotCommitted { file } => write!(
                 f,
                 "git found nothing to commit after {file} was filled; it may be ignored by git"
@@ -203,10 +224,17 @@ impl Writer {
         self.finished
     }
 
+    /// Estimated the same way as the Writer Cap check on the Work Units.
+    pub fn input_tokens(&self) -> u32 {
+        writer_input_tokens(&self.work_unit).saturating_add(self.retry_tokens)
+    }
+
     pub fn request(&self) -> ChatRequest {
+        let mut messages = self.prompt.clone();
+        messages.extend(self.retry.iter().cloned());
         ChatRequest {
             model: self.model.clone(),
-            messages: self.messages.clone(),
+            messages,
             tools: Vec::new(),
             tool_choice: None,
             temperature: Some(self.temperature),
@@ -224,6 +252,14 @@ impl Writer {
         if self.attempts_left() == 0 {
             return Err(WriterError::NoAttemptsLeft.into());
         }
+        let tokens = self.input_tokens();
+        if tokens > self.cap_tokens {
+            return Err(WriterError::OverCap {
+                tokens,
+                cap_tokens: self.cap_tokens,
+            }
+            .into());
+        }
         let response = client
             .chat(&self.request())
             .await
@@ -239,13 +275,7 @@ impl Writer {
             Ok(outcome) => outcome,
             Err(reason) => {
                 let failure = Failure { reply, reason };
-                self.messages.push(Message::Assistant {
-                    content: Some(failure.reply.clone()),
-                    tool_calls: Vec::new(),
-                });
-                self.messages.push(Message::User {
-                    content: vec![ContentPart::text(retry_message(&failure.reason))],
-                });
+                self.set_retry(&failure);
                 self.failures.push(failure.clone());
                 AttemptOutcome::Failed(failure)
             }
@@ -336,6 +366,24 @@ impl Writer {
         Ok(None)
     }
 
+    fn set_retry(&mut self, failure: &Failure) {
+        let room = self
+            .cap_tokens
+            .saturating_sub(writer_input_tokens(&self.work_unit));
+        let (reply, message) = retry_parts(failure, room);
+        self.retry_tokens = retry_tokens(reply, &message);
+        self.retry.clear();
+        if let Some(reply) = reply {
+            self.retry.push(Message::Assistant {
+                content: Some(reply.to_owned()),
+                tool_calls: Vec::new(),
+            });
+        }
+        self.retry.push(Message::User {
+            content: vec![ContentPart::text(message)],
+        });
+    }
+
     fn no_region(&self) -> WriterError {
         WriterError::NoRegion {
             file: self.work_unit.file.clone(),
@@ -344,8 +392,32 @@ impl Writer {
     }
 }
 
-fn retry_message(reason: &FailureReason) -> String {
-    match reason {
+/// Shortens the Check output first, then leaves out the failed reply, until the retry fits in
+/// `room` tokens. If nothing fits, `attempt` refuses to send it.
+fn retry_parts(failure: &Failure, room: u32) -> (Option<&str>, String) {
+    for reply in [Some(failure.reply.as_str()), None] {
+        let mut output_chars = RETRY_OUTPUT_CHARS;
+        loop {
+            let message = retry_message(&failure.reason, output_chars, reply.is_none());
+            if retry_tokens(reply, &message) <= room {
+                return (reply, message);
+            }
+            if output_chars == 0 {
+                break;
+            }
+            output_chars /= 2;
+        }
+    }
+    (None, retry_message(&failure.reason, 0, true))
+}
+
+fn retry_tokens(reply: Option<&str>, message: &str) -> u32 {
+    let raw = reply.map_or(0, estimate_tokens) + estimate_tokens(message);
+    with_margin(u64::from(raw))
+}
+
+fn retry_message(reason: &FailureReason, output_chars: usize, reply_left_out: bool) -> String {
+    let mut message = match reason {
         FailureReason::Rejected(error) => format!(
             "Your reply was rejected: {error}\n\nReply again with exactly one fenced block, \
              following the output contract."
@@ -354,9 +426,13 @@ fn retry_message(reason: &FailureReason) -> String {
             "Arbor put your code between the Markers, but the Checks failed, so the Region holds \
              its Placeholder again. Their output:\n\n```text\n{}\n```\n\nFix the code and reply \
              again with exactly one fenced block, following the output contract.",
-            shorten(output, RETRY_OUTPUT_CHARS)
+            shorten(output, output_chars)
         ),
+    };
+    if reply_left_out {
+        message.push_str("\n\nYour previous reply is left out here to save space.");
     }
+    message
 }
 
 /// Keeps the start and end of `text`, where compilers and test runners put what matters.
@@ -451,12 +527,36 @@ fn write(path: &Path, text: &str) -> Result<(), WriterError> {
 
 #[cfg(test)]
 mod tests {
-    use super::shorten;
+    use super::{Failure, FailureReason, RETRY_OUTPUT_CHARS, retry_parts, retry_tokens, shorten};
 
     #[test]
     fn long_check_output_keeps_its_start_and_end() {
         assert_eq!(shorten("abcdef", 6), "abcdef");
         assert_eq!(shorten("abcdefgh", 4), "ab\n[4 characters omitted]\ngh");
         assert_eq!(shorten("ééééé", 2), "é\n[3 characters omitted]\né");
+    }
+
+    #[test]
+    fn a_retry_shrinks_to_fit_the_room_left_under_the_writer_cap() {
+        let failure = Failure {
+            reply: "x".repeat(1000),
+            reason: FailureReason::ChecksFailed {
+                output: "e".repeat(2 * RETRY_OUTPUT_CHARS),
+            },
+        };
+        let (reply, full) = retry_parts(&failure, u32::MAX);
+        assert!(reply.is_some());
+        assert!(full.contains(&"e".repeat(RETRY_OUTPUT_CHARS / 2)));
+
+        let room = 1000;
+        let (reply, trimmed) = retry_parts(&failure, room);
+        assert!(reply.is_some());
+        assert!(retry_tokens(reply, &trimmed) <= room);
+        assert!(trimmed.len() < full.len());
+
+        let (reply, bare) = retry_parts(&failure, 300);
+        assert_eq!(reply, None);
+        assert!(bare.ends_with("left out here to save space."), "{bare}");
+        assert!(retry_tokens(None, &bare) <= 300);
     }
 }
