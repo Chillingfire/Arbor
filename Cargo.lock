@@ -67,6 +67,7 @@ dependencies = [
  "arbor-llm",
  "minijinja",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
