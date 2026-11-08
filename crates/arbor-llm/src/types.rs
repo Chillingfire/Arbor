@@ -16,8 +16,7 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// Route only to providers that honour every parameter, e.g. the Writer's temperature and seed.
     pub require_parameters: bool,
-    /// Place a rolling prompt-cache breakpoint on the newest message, so the next call can reuse
-    /// this call's whole prefix. Only models that need explicit breakpoints get one.
+    /// A breakpoint on the newest message lets the next call reuse this call's whole prefix.
     #[serde(default)]
     pub cache_transcript: bool,
 }
@@ -41,8 +40,7 @@ pub enum Message {
     },
 }
 
-/// A block of text. `cache` places a prompt-cache breakpoint after it, for models that need
-/// explicit breakpoints; other providers cache automatically and ignore it.
+/// A block of text. `cache` places a prompt-cache breakpoint after it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentPart {
     pub text: String,

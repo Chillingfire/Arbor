@@ -185,7 +185,6 @@ async fn tool_calls_usage_and_cost_are_returned() {
     );
 }
 
-/// An agentic transcript: system prompt with the Conventions breakpoint, inputs, one tool round.
 fn transcript(model: &str) -> ChatRequest {
     ChatRequest {
         model: model.into(),

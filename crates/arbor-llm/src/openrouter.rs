@@ -135,8 +135,7 @@ struct WireErrorBody {
 /// Anthropic allows at most this many `cache_control` breakpoints in one request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
-/// Whether the model only caches at explicit `cache_control` breakpoints. Anthropic's models do;
-/// the other providers on OpenRouter cache automatically and don't get breakpoints.
+/// Anthropic caches only at explicit breakpoints; the other providers cache automatically.
 fn needs_cache_control(model: &str) -> bool {
     model.starts_with("anthropic/")
 }
@@ -200,7 +199,6 @@ fn request_body(request: &ChatRequest) -> Value {
     body
 }
 
-/// `cache` keeps the parts' own breakpoints; `breakpoint` adds one at the end of the message.
 fn message_json(message: &Message, cache: bool, breakpoint: bool) -> Value {
     match message {
         Message::System { content } => {
@@ -261,13 +259,12 @@ fn parts_json(parts: &[ContentPart], cache: bool, breakpoint: bool) -> Value {
         .collect()
 }
 
-/// Plain text as a single content part with a breakpoint after it.
+/// `cache_control` can only sit on a content part, so plain text becomes a one-part list.
 fn cached_text(text: &str) -> Value {
     json!([{ "type": "text", "text": text, "cache_control": { "type": "ephemeral" } }])
 }
 
-/// Drops the earliest breakpoints beyond [`MAX_CACHE_BREAKPOINTS`], keeping the newest ones,
-/// which cover the longest prefixes.
+/// Keeps the newest breakpoints, which cover the longest prefixes.
 fn limit_breakpoints(messages: &mut [Value]) {
     let mut kept = 0;
     for message in messages.iter_mut().rev() {
