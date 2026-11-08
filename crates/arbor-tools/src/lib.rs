@@ -5,6 +5,7 @@
 mod read;
 mod search;
 mod worktree;
+mod write;
 
 use std::path::PathBuf;
 
@@ -14,6 +15,9 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 use crate::worktree::Worktree;
+
+/// Tools only the Scaffolder may call.
+const SCAFFOLDER_ONLY: &[&str] = &["write_file", "edit_file", "run_checks"];
 
 /// Which Tier the tools serve. The Planner may only read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +58,7 @@ impl Tools {
 
     /// The tools this Tier may call.
     pub fn definitions(&self) -> Vec<ToolDef> {
-        vec![
+        let mut definitions = vec![
             definition::<read::ReadFileArgs>(
                 "read_file",
                 "Read a text file with numbered lines, at most 400 lines at a time. Use offset \
@@ -67,27 +71,46 @@ impl Tools {
             ),
             definition::<search::GlobArgs>(
                 "glob",
-                "Find files whose paths match a glob, skipping files excluded by .gitignore.                  Results are capped.",
+                "Find files whose paths match a glob, skipping files excluded by .gitignore. \
+                 Results are capped.",
             ),
             definition::<search::GrepArgs>(
                 "grep",
-                "Search file contents for a regular expression. Returns path:line: text for                  each matching line, skipping files excluded by .gitignore. Results are capped.",
+                "Search file contents for a regular expression. Returns path:line: text for \
+                 each matching line, skipping files excluded by .gitignore. Results are capped.",
             ),
-        ]
+        ];
+        if self.toolset == Toolset::Scaffolder {
+            definitions.extend([
+                definition::<write::WriteFileArgs>(
+                    "write_file",
+                    "Create or overwrite a file in the worktree with the given content.",
+                ),
+                definition::<write::EditFileArgs>(
+                    "edit_file",
+                    "Replace one exact snippet in a file. The snippet must occur exactly once.",
+                ),
+            ]);
+        }
+        definitions
     }
 
     /// Runs a tool the model called. `arguments` is the JSON text the model wrote. Failures,
     /// including refusals, come back as error output for the model rather than as `Err`.
     pub async fn call(&self, name: &str, arguments: &str) -> ToolOutput {
+        let worktree = &self.worktree;
         let result = match name {
-            "read_file" => {
-                parse(name, arguments).and_then(|args| read::read_file(&self.worktree, args))
+            "read_file" => parse(name, arguments).and_then(|args| read::read_file(worktree, args)),
+            "list_dir" => parse(name, arguments).and_then(|args| read::list_dir(worktree, args)),
+            "glob" => parse(name, arguments).and_then(|args| search::glob(worktree, args)),
+            "grep" => parse(name, arguments).and_then(|args| search::grep(worktree, args)),
+            _ if self.toolset == Toolset::Planner && SCAFFOLDER_ONLY.contains(&name) => Err(
+                format!("{name} is not available to the Planner, which only reads"),
+            ),
+            "write_file" => {
+                parse(name, arguments).and_then(|args| write::write_file(worktree, args))
             }
-            "list_dir" => {
-                parse(name, arguments).and_then(|args| read::list_dir(&self.worktree, args))
-            }
-            "glob" => parse(name, arguments).and_then(|args| search::glob(&self.worktree, args)),
-            "grep" => parse(name, arguments).and_then(|args| search::grep(&self.worktree, args)),
+            "edit_file" => parse(name, arguments).and_then(|args| write::edit_file(worktree, args)),
             _ => Err(format!("unknown tool {name}")),
         };
         match result {
