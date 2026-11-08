@@ -48,7 +48,8 @@ pub enum Effect {
     },
     /// Every Task is done: look for Markers left in the branch diff before finishing.
     CheckMarkers,
-    /// Markers remain, so the Session can't finish until the Human Operator removes them.
+    /// Markers remain, so the Session can't finish until the Human Operator removes them or
+    /// approves them as they are.
     ShowMarkerCheckpoint {
         remaining: Vec<LeftoverMarker>,
     },
@@ -391,6 +392,7 @@ impl Session {
                 self.record_operator_fix(commit);
                 Phase::CheckingMarkers
             }
+            (Phase::MarkerCheckpoint { .. }, Event::MarkersApproved) => Phase::Done,
             (phase, Event::UsageRecorded { tier, usage }) if is_live(phase) => {
                 self.usage.record(*tier, *usage);
                 phase.clone()

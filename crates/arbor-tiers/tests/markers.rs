@@ -1,5 +1,7 @@
 use arbor_core::WorkUnitId;
-use arbor_tiers::markers::{MarkerError, Markers, Region, is_marker_line, splice, strip};
+use arbor_tiers::markers::{
+    MarkerError, Markers, Region, is_marker_line, is_well_formed_marker, splice, strip,
+};
 
 fn wu(n: u32) -> WorkUnitId {
     WorkUnitId(n)
@@ -261,6 +263,26 @@ fn marker_lines_are_recognised() {
     assert!(is_marker_line("// ARBOR:END WU-oops"));
     assert!(!is_marker_line("let sum = a + b;"));
     assert!(!is_marker_line("ARBOR:BEGINNING"));
+}
+
+#[test]
+fn a_well_formed_marker_names_a_work_unit() {
+    for line in [
+        "    // ARBOR:BEGIN WU-3",
+        "# ARBOR:END WU-12",
+        "<!-- ARBOR:END WU-1 -->",
+    ] {
+        assert!(is_well_formed_marker(line), "{line}");
+    }
+    for line in [
+        "// ARBOR:END WU-oops",
+        "// ARBOR:BEGIN WU-<n>",
+        "ARBOR:BEGINNING",
+        "const BEGIN: &str = \"ARBOR:BEGIN\";",
+        "let sum = a + b;",
+    ] {
+        assert!(!is_well_formed_marker(line), "{line}");
+    }
 }
 
 #[test]

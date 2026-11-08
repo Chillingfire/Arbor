@@ -170,7 +170,7 @@ diff --git a/src/lib.rs b/src/lib.rs
  }
 @@ -10 +10,2 @@
 -x
-++++ ARBOR:END in a line that starts with +++
+++++ ARBOR:END WU-4 in a line that starts with +++
 +// ARBOR:END WU-1
 \\ No newline at end of file
 diff --git a/gone.rs b/gone.rs
@@ -186,9 +186,31 @@ diff --git a/gone.rs b/gone.rs
             marker(
                 "src/lib.rs",
                 10,
-                "+++ ARBOR:END in a line that starts with +++"
+                "+++ ARBOR:END WU-4 in a line that starts with +++"
             ),
             marker("src/lib.rs", 11, "// ARBOR:END WU-1"),
+        ]
+    );
+}
+
+#[test]
+fn only_well_formed_markers_are_leftovers() {
+    let diff = "\
+--- a/src/markers.rs
++++ b/src/markers.rs
+@@ -0,0 +1,6 @@
++pub const BEGIN: &str = \"ARBOR:BEGIN\";
++// ARBOR:BEGINNING is not a Marker
++// ARBOR:END WU-oops
++Markers look like `ARBOR:BEGIN WU-<n>`.
++    # ARBOR:BEGIN WU-12
++// ARBOR:END WU-12
+";
+    assert_eq!(
+        leftover_markers(diff),
+        [
+            marker("src/markers.rs", 5, "# ARBOR:BEGIN WU-12"),
+            marker("src/markers.rs", 6, "// ARBOR:END WU-12"),
         ]
     );
 }

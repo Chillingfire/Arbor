@@ -51,11 +51,14 @@ pub enum Event {
     OperatorFixed {
         commit: Option<String>,
     },
-    /// The end-of-session Marker check ran over the branch diff. The Session finishes only when
-    /// `remaining` is empty.
+    /// The end-of-session Marker check ran over the branch's commits. With Markers `remaining`,
+    /// the Session waits at the Marker Checkpoint.
     MarkersChecked {
         remaining: Vec<LeftoverMarker>,
     },
+    /// The Human Operator approved the remaining Markers as they are, e.g. because they are
+    /// fixtures or docs that only look like Markers. The Session finishes.
+    MarkersApproved,
     /// One LLM call finished and its provider reported this usage. Recorded for every call,
     /// including calls redone after a resume, since each one was paid for. Written after the
     /// call's outcome events, so a call that reaches the Budget Cap still lands its result.

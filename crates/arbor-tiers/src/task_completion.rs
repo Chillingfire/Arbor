@@ -8,11 +8,10 @@ use arbor_core::{Event, LeftoverMarker, SessionCommit};
 use arbor_git::{CommitId, CommitMessage, GitError, Mainline, Worktree};
 use arbor_tools::{CheckName, run_check};
 
+use crate::markers::is_well_formed_marker;
+
 pub const NO_UNIT_CHECK: &str = "No unit check is configured in arbor.toml, so Arbor can't run \
                                  the Task's tests. Skipping it.";
-
-/// Text that marks a line as a Marker, or what is left of one.
-const MARKER_TAG: &str = "ARBOR:";
 
 /// Runs `checks.unit` and returns `TaskChecksPassed` or `TaskChecksFailed`. With no unit check
 /// configured the Task passes, after [`task_check_warning`]. `Err` means the Check couldn't run.
@@ -71,7 +70,8 @@ pub fn check_markers(worktree: &Worktree, mainline: &Mainline) -> Result<Event, 
     })
 }
 
-/// The lines a unified diff adds that hold `ARBOR:`, with their line numbers in the new file.
+/// The lines a unified diff adds that hold a well-formed Marker, with their line numbers in the new
+/// file. A line that only mentions `ARBOR:`, e.g. in docs or a constant, is not one.
 pub fn leftover_markers(diff: &str) -> Vec<LeftoverMarker> {
     let mut leftovers = Vec::new();
     let mut file: Option<String> = None;
@@ -86,7 +86,7 @@ pub fn leftover_markers(diff: &str) -> Vec<LeftoverMarker> {
             continue;
         };
         let added = hunk_added_lines(&mut lines, hunk);
-        leftovers.extend(added.filter(|(_, text)| text.contains(MARKER_TAG)).map(
+        leftovers.extend(added.filter(|(_, text)| is_well_formed_marker(text)).map(
             |(number, text)| LeftoverMarker {
                 file: file.clone(),
                 line: number,

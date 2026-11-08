@@ -313,3 +313,39 @@ fn the_session_cannot_finish_while_markers_remain() {
         .unwrap();
     assert!(session.is_done());
 }
+
+#[test]
+fn approving_the_remaining_markers_as_they_are_finishes_the_session() {
+    let mut session = at_task_checks(&["A"]);
+    session.apply(&Event::TaskChecksPassed).unwrap();
+    session
+        .apply(&Event::MarkersChecked {
+            remaining: vec![leftover("tests/fixtures/skeleton.rs", 3)],
+        })
+        .unwrap();
+    let effects = session.apply(&Event::MarkersApproved).unwrap();
+    assert_eq!(effects, [Effect::EndSession]);
+    assert!(session.is_done());
+}
+
+#[test]
+fn markers_can_only_be_approved_at_the_marker_checkpoint() {
+    let mut session = at_task_checks(&["A"]);
+    session.apply(&Event::TaskChecksPassed).unwrap();
+    let before = session.clone();
+    assert!(matches!(
+        session.apply(&Event::MarkersApproved),
+        Err(ApplyError::Unexpected { .. })
+    ));
+    assert_eq!(session, before);
+}
+
+#[test]
+fn markers_approved_round_trips_through_json() {
+    let json = serde_json::to_string(&Event::MarkersApproved).unwrap();
+    assert_eq!(json, r#"{"type":"markers_approved"}"#);
+    assert_eq!(
+        serde_json::from_str::<Event>(&json).unwrap(),
+        Event::MarkersApproved
+    );
+}
