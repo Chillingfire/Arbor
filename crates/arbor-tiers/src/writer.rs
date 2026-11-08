@@ -10,8 +10,7 @@ use arbor_core::{Usage, WorkUnit, WorkUnitId};
 use arbor_git::{CommitId, CommitMessage, GitError, Worktree};
 use arbor_llm::{ChatRequest, ContentPart, FinishReason, LlmClient, LlmError, Message};
 use arbor_prompts::Prompt;
-use arbor_tools::{Tools, Toolset};
-use serde_json::json;
+use arbor_tools::{CheckName, run_check};
 
 use crate::agent::core_usage;
 use crate::markers::{Markers, splice, strip};
@@ -48,7 +47,6 @@ impl WriterRun<'_> {
             model: self.model,
             temperature: self.temperature,
             worktree: self.worktree.to_owned(),
-            tools: Tools::new(self.worktree, Toolset::Scaffolder, self.checks.clone()),
             checks: self.checks,
             messages: self.prompt.messages(),
             failures: Vec::new(),
@@ -63,7 +61,6 @@ pub struct Writer {
     temperature: f64,
     worktree: PathBuf,
     checks: Checks,
-    tools: Tools,
     messages: Vec<Message>,
     failures: Vec<Failure>,
     finished: bool,
@@ -124,6 +121,8 @@ pub enum WriterError {
         id: WorkUnitId,
     },
     Git(GitError),
+    /// A Check couldn't run at all, e.g. its command wasn't found.
+    Check(String),
     Finished,
     NoAttemptsLeft,
 }
@@ -137,6 +136,7 @@ impl fmt::Display for WriterError {
                 write!(f, "{file} doesn't hold exactly one Region for {id}")
             }
             Self::Git(err) => write!(f, "{err}"),
+            Self::Check(message) => write!(f, "a Check couldn't run: {message}"),
             Self::Finished => f.write_str("the Writer has already finished"),
             Self::NoAttemptsLeft => write!(
                 f,
@@ -250,8 +250,11 @@ impl Writer {
 
         let spliced = splice(&original, &region, &body);
         write(&path, &spliced)?;
-        if let Some(output) = self.run_checks().await {
+        let failed = self.run_checks().await;
+        if !matches!(failed, Ok(None)) {
             write(&path, &original)?;
+        }
+        if let Some(output) = failed? {
             return Ok(Err(FailureReason::ChecksFailed { output }));
         }
 
@@ -265,21 +268,29 @@ impl Writer {
     }
 
     /// The output of the first Check that fails.
-    async fn run_checks(&self) -> Option<String> {
-        let mut runs = Vec::new();
-        if self.checks.scaffold.is_some() {
-            runs.push(json!({ "check": "scaffold" }));
-        }
-        if self.checks.unit_filtered.is_some() {
-            runs.push(json!({ "check": "unit_filtered", "filter": self.work_unit.test_filter }));
-        }
-        for args in runs {
-            let output = self.tools.call("run_checks", &args.to_string()).await;
+    async fn run_checks(&self) -> Result<Option<String>, WriterError> {
+        let checks = &self.checks;
+        let filter = Some(self.work_unit.test_filter.as_str());
+        let runs = [
+            (CheckName::Scaffold, checks.scaffold.is_some(), None),
+            (
+                CheckName::UnitFiltered,
+                checks.unit_filtered.is_some(),
+                filter,
+            ),
+        ];
+        for (check, configured, filter) in runs {
+            if !configured {
+                continue;
+            }
+            let output = run_check(&self.worktree, checks, check, filter)
+                .await
+                .map_err(WriterError::Check)?;
             if output.is_error {
-                return Some(output.text);
+                return Ok(Some(output.text));
             }
         }
-        None
+        Ok(None)
     }
 
     fn no_region(&self) -> WriterError {

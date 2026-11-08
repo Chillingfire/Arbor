@@ -17,9 +17,9 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const KEEP_LINES: usize = 100;
 const MAX_OUTPUT_LINE_CHARS: usize = 500;
 
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-enum CheckName {
+pub enum CheckName {
     /// Verifies that the Skeleton builds.
     Scaffold,
     /// Builds and runs all tests.
@@ -41,7 +41,16 @@ pub(crate) async fn run_checks(
     checks: &Checks,
     args: RunChecksArgs,
 ) -> Result<ToolOutput, String> {
-    let (name, template) = match args.check {
+    run_check(worktree, checks, args.check, args.filter.as_deref()).await
+}
+
+pub(crate) async fn run_check(
+    worktree: &Worktree,
+    checks: &Checks,
+    check: CheckName,
+    filter: Option<&str>,
+) -> Result<ToolOutput, String> {
+    let (name, template) = match check {
         CheckName::Scaffold => ("scaffold", &checks.scaffold),
         CheckName::Unit => ("unit", &checks.unit),
         CheckName::UnitFiltered => ("unit_filtered", &checks.unit_filtered),
@@ -49,8 +58,8 @@ pub(crate) async fn run_checks(
     let template = template
         .as_deref()
         .ok_or_else(|| format!("no {name} check is configured in arbor.toml"))?;
-    let filter = match args.check {
-        CheckName::UnitFiltered => Some(valid_filter(args.filter.as_deref())?),
+    let filter = match check {
+        CheckName::UnitFiltered => Some(valid_filter(filter)?),
         _ => None,
     };
     let argv = command_line(template, filter)?;

@@ -8,13 +8,14 @@ mod search;
 mod worktree;
 mod write;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use arbor_config::Checks;
 use arbor_llm::ToolDef;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
+pub use crate::checks::CheckName;
 use crate::worktree::Worktree;
 
 /// Tools only the Scaffolder may call.
@@ -25,6 +26,19 @@ const SCAFFOLDER_ONLY: &[&str] = &["write_file", "edit_file", "run_checks"];
 pub enum Toolset {
     Planner,
     Scaffolder,
+}
+
+/// Runs one configured Check for Arbor itself rather than for a model. `Err` means the Check
+/// couldn't run at all: it isn't configured, its command can't be parsed or started, or the filter
+/// is invalid. A Check that runs and fails is `Ok` with `is_error` set.
+pub async fn run_check(
+    worktree: &Path,
+    checks: &Checks,
+    check: CheckName,
+    filter: Option<&str>,
+) -> Result<ToolOutput, String> {
+    let worktree = Worktree::new(worktree.to_owned());
+    checks::run_check(&worktree, checks, check, filter).await
 }
 
 /// A tool's result, sent back to the model as text.

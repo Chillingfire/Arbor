@@ -363,3 +363,18 @@ fn commit_subjects_are_plain_sentences_from_the_spec() {
         "{subject}"
     );
 }
+
+#[tokio::test]
+async fn a_check_that_cannot_start_is_an_error_not_an_attempt() {
+    let dir = repo();
+    let broken = Checks {
+        scaffold: Some("no-such-program-for-arbor --version".into()),
+        ..checks()
+    };
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, broken);
+    let err = writer.attempt(&client).await.unwrap_err();
+    assert!(matches!(err, WriterError::Check(_)), "{err}");
+    assert_eq!(file(&dir), SKELETON);
+    assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
+}
