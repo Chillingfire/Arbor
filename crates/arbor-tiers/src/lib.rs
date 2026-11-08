@@ -4,6 +4,7 @@ mod agent;
 pub mod markers;
 mod planner;
 pub mod reply;
+mod revision;
 mod scaffold_check;
 mod scaffolder;
 mod task_completion;
@@ -14,9 +15,10 @@ pub use agent::{
     TurnError, UnsupportedModel, Validate, core_usage, require_tool_calling,
 };
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
+pub use revision::{RevisionRun, SUBMIT_REVISION};
 pub use scaffold_check::{
     NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, field_problems, marker_problems,
-    writer_cap_report, writer_input_tokens,
+    revision_field_problems, writer_cap_report, writer_input_tokens,
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
 pub use task_completion::{
