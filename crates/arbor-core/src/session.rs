@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::cost::{UsageTotals, Usd};
 use crate::event::Event;
+use crate::revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
 use crate::types::{Plan, Request, WorkUnit, WorkUnitId};
 
 /// What the outer crates should do next.
@@ -31,6 +32,18 @@ pub enum Effect {
     RunTaskChecks {
         task: usize,
     },
+    /// Run a Scaffolder Revision for `cause`. It is given the Task diff and the Task's earlier
+    /// [`Session::revisions`].
+    RunRevision {
+        task: usize,
+        cause: RevisionCause,
+    },
+    /// The Revisions are used up, so the Human Operator decides before anything goes to the
+    /// Planner.
+    ShowEscalationCheckpoint {
+        task: usize,
+        cause: RevisionCause,
+    },
     /// The Budget Cap was reached: start no new LLM call, and ask the Human Operator to raise the
     /// cap or stop. A call already in flight is left to finish and its usage recorded. Once the
     /// cap is raised, the phase's own effect comes back; if it is the `Run*` effect of a run that
@@ -39,8 +52,8 @@ pub enum Effect {
     EndSession,
 }
 
-/// Where a Session is. `task` indexes the approved Plan's Tasks and `unit` the current Task's
-/// Work Units.
+/// Where a Session is. `task` indexes the approved Plan's Tasks. `unit` indexes the Work Units
+/// being written in this pass: all of the Task's, or after a Revision only the revised ones.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Phase {
     #[default]
@@ -70,6 +83,14 @@ pub enum Phase {
     TaskChecking {
         task: usize,
     },
+    Revising {
+        task: usize,
+        cause: RevisionCause,
+    },
+    EscalationCheckpoint {
+        task: usize,
+        cause: RevisionCause,
+    },
     Done,
     /// The Human Operator stopped the Session at a budget Checkpoint.
     Stopped,
@@ -87,6 +108,10 @@ pub enum ApplyError {
         task_order: Vec<usize>,
     },
     DuplicateWorkUnit {
+        id: WorkUnitId,
+    },
+    /// A Revision gives a new Work Unit an ID that an earlier one already used.
+    WorkUnitIdTaken {
         id: WorkUnitId,
     },
     /// The event names a Work Unit other than the one in progress.
@@ -116,6 +141,9 @@ impl fmt::Display for ApplyError {
                 write!(f, "invalid task order {task_order:?}")
             }
             Self::DuplicateWorkUnit { id } => write!(f, "duplicate work unit {id}"),
+            Self::WorkUnitIdTaken { id } => {
+                write!(f, "{id} was already used by an earlier work unit")
+            }
             Self::WrongWorkUnit { expected, got } => {
                 write!(f, "event for {got} while {expected} is in progress")
             }
@@ -141,9 +169,17 @@ pub struct Session {
     request: Option<Request>,
     /// The submitted Plan, replaced by the approved one on approval.
     plan: Option<Plan>,
-    /// The current Task's Work Units.
+    /// The current Task's Work Units, as last revised.
     work_units: Vec<WorkUnit>,
+    /// The Work Units this pass writes, in order.
+    write_queue: Vec<WorkUnitId>,
+    /// The highest Work Unit ID submitted in the Session.
+    highest_id: Option<WorkUnitId>,
     commits: Vec<(WorkUnitId, String)>,
+    /// Where the current Task's commits start in `commits`.
+    task_commits_start: usize,
+    /// The current Task's Revisions.
+    revisions: Vec<RevisionRound>,
     usage: UsageTotals,
     budget_cap: Option<Usd>,
 }
@@ -180,6 +216,23 @@ impl Session {
 
     pub fn commits(&self) -> &[(WorkUnitId, String)] {
         &self.commits
+    }
+
+    /// The commits made since the current Task started, oldest first. The first one's parent is
+    /// where the Task diff starts.
+    pub fn task_commits(&self) -> &[(WorkUnitId, String)] {
+        &self.commits[self.task_commits_start..]
+    }
+
+    /// The current Task's Revisions so far, oldest first.
+    pub fn revisions(&self) -> &[RevisionRound] {
+        &self.revisions
+    }
+
+    /// The lowest ID no Work Unit in the Session has used.
+    pub fn next_work_unit_id(&self) -> WorkUnitId {
+        self.highest_id
+            .map_or(WorkUnitId(1), |id| WorkUnitId(id.0 + 1))
     }
 
     /// Tokens and cost per Tier, from every recorded LLM call.
@@ -262,12 +315,14 @@ impl Session {
                     return Err(ApplyError::DuplicateWorkUnit { id });
                 }
                 self.work_units = work_units.clone();
+                self.note_ids(work_units);
                 Phase::ScaffoldChecking { task }
             }
             (&Phase::ScaffoldChecking { task }, Event::ScaffoldChecksPassed) => {
                 Phase::ScaffoldCheckpoint { task }
             }
             (&Phase::ScaffoldCheckpoint { task }, Event::ScaffoldApproved) => {
+                self.write_queue = self.work_units.iter().map(|unit| unit.id).collect();
                 self.write_from(task, 0)
             }
             (&Phase::Writing { task, unit }, Event::WorkUnitPassed { id }) => {
@@ -280,6 +335,8 @@ impl Session {
                 self.write_from(task, unit + 1)
             }
             (&Phase::TaskChecking { task }, Event::TaskChecksPassed) => {
+                self.revisions.clear();
+                self.task_commits_start = self.commits.len();
                 if task + 1 < self.task_count() {
                     Phase::Scaffolding {
                         task: task + 1,
@@ -288,6 +345,25 @@ impl Session {
                 } else {
                     Phase::Done
                 }
+            }
+            (&Phase::TaskChecking { task }, Event::TaskChecksFailed { output }) => {
+                let cause = RevisionCause::TaskChecksFailed {
+                    output: output.clone(),
+                };
+                if self.revisions.len() < MAX_REVISIONS {
+                    Phase::Revising { task, cause }
+                } else {
+                    Phase::EscalationCheckpoint { task, cause }
+                }
+            }
+            (Phase::Revising { task, cause }, Event::RevisionSubmitted { revision }) => {
+                let (task, cause) = (*task, cause.clone());
+                self.check_revision_ids(revision)?;
+                self.apply_revision(cause, revision);
+                self.write_from(task, 0)
+            }
+            (&Phase::EscalationCheckpoint { task, .. }, Event::OperatorFixed) => {
+                Phase::TaskChecking { task }
             }
             (phase, Event::UsageRecorded { tier, usage }) if is_live(phase) => {
                 self.usage.record(*tier, *usage);
@@ -328,12 +404,20 @@ impl Session {
             &Phase::ScaffoldChecking { task } => Effect::RunScaffoldChecks { task },
             &Phase::ScaffoldCheckpoint { task } => Effect::ShowScaffoldCheckpoint { task },
             &Phase::Writing { unit, .. } => Effect::RunWriter {
-                id: self.work_units[unit].id,
+                id: self.write_queue[unit],
             },
             &Phase::Committing { unit, .. } => Effect::CommitWorkUnit {
-                id: self.work_units[unit].id,
+                id: self.write_queue[unit],
             },
             &Phase::TaskChecking { task } => Effect::RunTaskChecks { task },
+            Phase::Revising { task, cause } => Effect::RunRevision {
+                task: *task,
+                cause: cause.clone(),
+            },
+            Phase::EscalationCheckpoint { task, cause } => Effect::ShowEscalationCheckpoint {
+                task: *task,
+                cause: cause.clone(),
+            },
             Phase::Done | Phase::Stopped => Effect::EndSession,
         };
         vec![effect]
@@ -343,17 +427,58 @@ impl Session {
         self.plan.as_ref().map_or(0, |plan| plan.tasks.len())
     }
 
-    /// Writes the Task's Work Units from `unit` on, or checks the Task when none are left.
+    /// Writes the queued Work Units from `unit` on, or checks the Task when none are left.
     fn write_from(&self, task: usize, unit: usize) -> Phase {
-        if unit < self.work_units.len() {
+        if unit < self.write_queue.len() {
             Phase::Writing { task, unit }
         } else {
             Phase::TaskChecking { task }
         }
     }
 
+    fn note_ids(&mut self, work_units: &[WorkUnit]) {
+        let highest = work_units.iter().map(|unit| unit.id).max();
+        self.highest_id = self.highest_id.max(highest);
+    }
+
+    /// A revised Work Unit keeps an ID from the current Task; a new one takes an unused ID.
+    fn check_revision_ids(&self, revision: &Revision) -> Result<(), ApplyError> {
+        if let Some(id) = first_duplicate(&revision.work_units) {
+            return Err(ApplyError::DuplicateWorkUnit { id });
+        }
+        let in_task = |id| self.work_units.iter().any(|unit| unit.id == id);
+        let taken = revision
+            .work_units
+            .iter()
+            .map(|unit| unit.id)
+            .find(|&id| !in_task(id) && id < self.next_work_unit_id());
+        match taken {
+            Some(id) => Err(ApplyError::WorkUnitIdTaken { id }),
+            None => Ok(()),
+        }
+    }
+
+    fn apply_revision(&mut self, cause: RevisionCause, revision: &Revision) {
+        for revised in &revision.work_units {
+            match self
+                .work_units
+                .iter_mut()
+                .find(|unit| unit.id == revised.id)
+            {
+                Some(unit) => *unit = revised.clone(),
+                None => self.work_units.push(revised.clone()),
+            }
+        }
+        self.note_ids(&revision.work_units);
+        self.write_queue = revision.work_units.iter().map(|unit| unit.id).collect();
+        self.revisions.push(RevisionRound {
+            cause,
+            revision: revision.clone(),
+        });
+    }
+
     fn expect_work_unit(&self, unit: usize, got: WorkUnitId) -> Result<(), ApplyError> {
-        let expected = self.work_units[unit].id;
+        let expected = self.write_queue[unit];
         if got == expected {
             Ok(())
         } else {
