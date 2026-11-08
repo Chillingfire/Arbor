@@ -1,10 +1,12 @@
-//! The agentic Tiers.
+//! The three Tiers: the agentic Planner and Scaffolder, and the non-agentic Writer.
 
 mod agent;
 pub mod markers;
 mod planner;
+pub mod reply;
 mod scaffold_check;
 mod scaffolder;
+mod writer;
 
 pub use agent::{
     Agent, AgentSettings, MAX_SUBMIT_FAILURES, Outcome, SUBMIT_NOW_PERCENT, Submission, Turn,
@@ -16,3 +18,7 @@ pub use scaffold_check::{
     writer_cap_report, writer_input_tokens,
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
+pub use writer::{
+    Attempt, AttemptError, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS,
+    RETRY_OUTPUT_CHARS, WRITER_SEED, Writer, WriterError, WriterRun, commit_subject,
+};

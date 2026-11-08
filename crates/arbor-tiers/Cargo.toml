@@ -1,6 +1,6 @@
 [package]
 name = "arbor-tiers"
-description = "The agentic Tiers: model calls, tool use and structured submission."
+description = "The Tiers: model calls, tool use, structured submission and the Writer's splice."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 arbor-config.workspace = true
 arbor-core.workspace = true
+arbor-git.workspace = true
 arbor-llm.workspace = true
 arbor-prompts.workspace = true
 arbor-tools.workspace = true

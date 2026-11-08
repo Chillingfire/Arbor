@@ -29,8 +29,12 @@ pub fn writer_input_tokens(unit: &WorkUnit) -> u32 {
         .chain(snippets)
         .map(u64::from)
         .sum();
-    let with_margin = (raw * (100 + WRITER_CAP_MARGIN_PERCENT)).div_ceil(100);
-    u32::try_from(with_margin).unwrap_or(u32::MAX)
+    with_margin(raw)
+}
+
+pub(crate) fn with_margin(raw_tokens: u64) -> u32 {
+    let tokens = (raw_tokens * (100 + WRITER_CAP_MARGIN_PERCENT)).div_ceil(100);
+    u32::try_from(tokens).unwrap_or(u32::MAX)
 }
 
 /// `None` if every Work Unit fits the Writer Cap.
