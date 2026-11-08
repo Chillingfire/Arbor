@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::approval::RemoteApproval;
+use crate::branch::PREFIX;
 use crate::command::{GitError, git, git_succeeds, git_with_input};
 use crate::commit::{CommitId, CommitMessage};
 
@@ -57,6 +59,21 @@ impl Worktree {
         }
         git(&self.path, &["reset", "--hard", "--quiet", hash])?;
         git(&self.path, &["clean", "-d", "--force", "--quiet"])?;
+        Ok(())
+    }
+
+    /// Pushes the Session branch, and nothing else, to a branch of the same name on `origin`.
+    /// This writes to the remote, so it uses up an approval the operator just gave (ADR-0006).
+    pub fn push(&self, approval: RemoteApproval) -> Result<(), GitError> {
+        let _approval = approval;
+        if !self.branch.starts_with(PREFIX) {
+            return Err(GitError::Refused(format!(
+                "only Session branches can be pushed, not {}",
+                self.branch
+            )));
+        }
+        let refspec = format!("refs/heads/{0}:refs/heads/{0}", self.branch);
+        git(&self.path, &["push", "--quiet", "origin", &refspec])?;
         Ok(())
     }
 }
