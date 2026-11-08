@@ -62,7 +62,7 @@ jobs:
             tar -czf "dist/$name.tar.gz" -C dist "$name"
           fi
           rm -r "dist/$name"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: dist/*
@@ -83,7 +83,7 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match workspace version $version"
             exit 1
           fi
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
