@@ -2,9 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::branch::SessionBranch;
 use crate::command::{GitError, git, git_succeeds};
-use crate::dirty::{DirtyTreeAction, DirtyTreeOutcome};
 use crate::mainline::Mainline;
-use crate::worktree::{Worktree, commit_all};
+use crate::worktree::Worktree;
 
 /// The local mainline names tried, in order, when there is no remote and none was chosen.
 const LOCAL_MAINLINE_GUESSES: &[&str] = &["main", "master"];
@@ -93,9 +92,10 @@ impl Repo {
     }
 
     /// Creates the Session branch from the mainline's start point and checks it out in a new
-    /// worktree at `path`. The local mainline and the operator's checkout are left alone, and
-    /// the branch tracks nothing, so it can't be pushed onto the mainline by accident. Fails if
-    /// the branch already exists.
+    /// worktree at `path`. Any uncommitted changes in the operator's checkout are left out of
+    /// it. The local mainline and the operator's checkout are left alone, and the branch tracks
+    /// nothing, so it can't be pushed onto the mainline by accident. Fails if the branch
+    /// already exists.
     pub fn create_worktree(
         &self,
         mainline: &Mainline,
@@ -103,6 +103,15 @@ impl Repo {
         path: &Path,
     ) -> Result<Worktree, GitError> {
         self.check_branch_name(branch.as_str())?;
+        self.add_worktree(branch, path, &mainline.start_ref())
+    }
+
+    fn add_worktree(
+        &self,
+        branch: &SessionBranch,
+        path: &Path,
+        start: &str,
+    ) -> Result<Worktree, GitError> {
         let path_arg = path
             .to_str()
             .ok_or_else(|| GitError::Refused(format!("{} is not a UTF-8 path", path.display())))?;
@@ -116,7 +125,7 @@ impl Repo {
                 "-b",
                 branch.as_str(),
                 path_arg,
-                &mainline.start_ref(),
+                start,
             ],
         )?;
         Worktree::open(path)
@@ -140,36 +149,6 @@ impl Repo {
             paths.push(path.to_owned());
         }
         Ok(paths)
-    }
-
-    /// Carries out the operator's choice for a dirty tree (see [`Self::uncommitted_changes`]).
-    pub fn resolve_dirty_tree(
-        &self,
-        action: DirtyTreeAction,
-        mainline: &Mainline,
-    ) -> Result<DirtyTreeOutcome, GitError> {
-        match action {
-            DirtyTreeAction::Stash => {
-                git(
-                    &self.root,
-                    &["stash", "push", "--quiet", "--include-untracked"],
-                )?;
-            }
-            DirtyTreeAction::Commit(message) => {
-                let current = git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]);
-                if current.is_ok_and(|branch| branch == mainline.name()) {
-                    return Err(GitError::Refused(format!(
-                        "won't commit on the mainline {}; switch to another branch or choose \
-                         another option",
-                        mainline.name()
-                    )));
-                }
-                commit_all(&self.root, &message)?;
-            }
-            DirtyTreeAction::ProceedWithout => {}
-            DirtyTreeAction::Abort => return Ok(DirtyTreeOutcome::Abort),
-        }
-        Ok(DirtyTreeOutcome::Proceed)
     }
 
     /// Refuses anything that isn't a plain branch name, such as `main~1` or `-x`.

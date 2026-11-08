@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::approval::RemoteApproval;
 use crate::branch::PREFIX;
-use crate::command::{GitError, git, git_succeeds, git_with_input};
+use crate::command::{Git, GitError, git, git_succeeds};
 use crate::commit::{CommitId, CommitMessage};
 
 /// A Session's dedicated git worktree, checked out on its Session branch.
@@ -42,7 +42,20 @@ impl Worktree {
     /// Commits every change in the worktree, including new and deleted files, with the
     /// operator's git identity. Returns `None` without committing if nothing changed.
     pub fn commit(&self, message: &CommitMessage) -> Result<Option<CommitId>, GitError> {
-        commit_all(&self.path, message)
+        let dir = &self.path;
+        git(dir, &["add", "--all"])?;
+        if git_succeeds(dir, &["diff", "--cached", "--quiet"])? {
+            return Ok(None);
+        }
+        // `whitespace` keeps description lines that start with `#`, which the default would drop.
+        let text = message.text();
+        Git::new(
+            dir,
+            &["commit", "--quiet", "--cleanup=whitespace", "--file=-"],
+        )
+        .input(text.as_bytes())
+        .bytes()?;
+        self.head().map(Some)
     }
 
     /// Resets the worktree to a recorded commit, for Rewind and Replan: the Session branch moves
@@ -76,22 +89,4 @@ impl Worktree {
         git(&self.path, &["push", "--quiet", "origin", &refspec])?;
         Ok(())
     }
-}
-
-/// Stages everything in the checkout at `dir` and commits it.
-pub(crate) fn commit_all(
-    dir: &Path,
-    message: &CommitMessage,
-) -> Result<Option<CommitId>, GitError> {
-    git(dir, &["add", "--all"])?;
-    if git_succeeds(dir, &["diff", "--cached", "--quiet"])? {
-        return Ok(None);
-    }
-    // `whitespace` keeps description lines that start with `#`, which the default would drop.
-    git_with_input(
-        dir,
-        &["commit", "--quiet", "--cleanup=whitespace", "--file=-"],
-        Some(&message.text()),
-    )?;
-    git(dir, &["rev-parse", "HEAD"]).map(|hash| Some(CommitId::from(hash)))
 }

@@ -100,38 +100,42 @@ impl Cloned {
                 &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")],
             );
         }
-        git(
-            dir.path(),
-            &[
-                "clone",
-                "--quiet",
-                origin.to_str().unwrap(),
-                clone.to_str().unwrap(),
-            ],
-        );
-        configure(&clone);
+        clone_into(&origin, &clone);
         Self { dir, origin, clone }
     }
 
-    /// Adds a commit to origin's `main` from a second clone, so `clone` is behind.
+    /// Commits a file to origin's `main` from a second clone, so `clone` is behind.
     pub fn advance_origin(&self, path: &str) -> String {
+        self.push_to_origin(path, "upstream\n")
+    }
+
+    /// Commits `text` as `path` on origin's `main` from a second clone.
+    pub fn push_to_origin(&self, path: &str, text: &str) -> String {
         let other = self.dir.path().join("other");
         if !other.exists() {
-            git(
-                self.dir.path(),
-                &[
-                    "clone",
-                    "--quiet",
-                    self.origin.to_str().unwrap(),
-                    other.to_str().unwrap(),
-                ],
-            );
-            configure(&other);
+            clone_into(&self.origin, &other);
         }
         git(&other, &["switch", "--quiet", "main"]);
         git(&other, &["pull", "--quiet", "--ff-only"]);
-        let commit = commit_file(&other, path, "upstream\n", "Upstream change");
+        let commit = commit_file(&other, path, text, "Upstream change");
         git(&other, &["push", "--quiet", "origin", "main"]);
         commit
     }
+}
+
+/// Clones `origin` into `dest` with [`configure`] applied from the start, so the checkout
+/// doesn't depend on this machine's line-ending settings.
+fn clone_into(origin: &Path, dest: &Path) {
+    git(
+        origin.parent().unwrap(),
+        &[
+            "clone",
+            "--quiet",
+            "--config",
+            "core.autocrlf=false",
+            origin.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ],
+    );
+    configure(dest);
 }
