@@ -12,7 +12,7 @@ mod worktree;
 
 pub use branch::SessionBranch;
 pub use command::GitError;
-pub use commit::CommitId;
+pub use commit::{CommitId, CommitMessage};
 pub use mainline::Mainline;
 pub use repo::{Fetch, Repo};
 pub use worktree::Worktree;
