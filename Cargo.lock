@@ -21,6 +21,7 @@ dependencies = [
  "arbor-llm",
  "arbor-tools",
  "arbor-tui",
+ "tempfile",
 ]
 
 [[package]]
