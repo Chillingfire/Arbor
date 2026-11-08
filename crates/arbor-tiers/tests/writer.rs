@@ -1,7 +1,4 @@
-//! The Writer against a real git repository and real Checks, with a scripted model.
-//!
-//! The project is a Python file that nothing runs. Its Checks are `git grep` commands, which
-//! pass or fail on the file's text and work wherever the tests do, Windows included.
+//! The Checks are `git grep` commands, so they work wherever the tests do, Windows included.
 
 mod common;
 
@@ -46,7 +43,6 @@ def sub(a, b):
 const GOOD: &str = "```python\n\ndef add(a, b):\n    return a + b\n\ndef sub(a, b):\n```";
 const WRONG: &str = "```python\n\ndef add(a, b):\n    return a * b\n\ndef sub(a, b):\n```";
 
-/// Runs git in `dir` and returns its trimmed stdout. Panics if git fails.
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -61,7 +57,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-/// A repository on `main` whose one commit holds the Skeleton.
 fn repo() -> TempDir {
     let dir = tempdir().unwrap();
     let path = dir.path();
@@ -94,8 +89,7 @@ fn work_unit() -> WorkUnit {
     }
 }
 
-/// The scaffold Check passes for the Skeleton. The filtered Unit Check passes only once the
-/// file holds the test filter, i.e. the right code.
+/// The filtered Unit Check passes only once the file holds the test filter, i.e. the right code.
 fn checks() -> Checks {
     Checks {
         scaffold: Some("git grep --quiet -e def -- calc.py".into()),
