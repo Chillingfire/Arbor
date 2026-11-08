@@ -28,6 +28,17 @@ pub enum CheckName {
     UnitFiltered,
 }
 
+impl CheckName {
+    /// The check's key under `[checks]` in `arbor.toml`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Scaffold => "scaffold",
+            Self::Unit => "unit",
+            Self::UnitFiltered => "unit_filtered",
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct RunChecksArgs {
     /// Which configured check to run.
@@ -50,14 +61,14 @@ pub(crate) async fn run_check(
     check: CheckName,
     filter: Option<&str>,
 ) -> Result<ToolOutput, String> {
-    let (name, template) = match check {
-        CheckName::Scaffold => ("scaffold", &checks.scaffold),
-        CheckName::Unit => ("unit", &checks.unit),
-        CheckName::UnitFiltered => ("unit_filtered", &checks.unit_filtered),
+    let template = match check {
+        CheckName::Scaffold => &checks.scaffold,
+        CheckName::Unit => &checks.unit,
+        CheckName::UnitFiltered => &checks.unit_filtered,
     };
     let template = template
         .as_deref()
-        .ok_or_else(|| format!("no {name} check is configured in arbor.toml"))?;
+        .ok_or_else(|| format!("no {} check is configured in arbor.toml", check.name()))?;
     let filter = match check {
         CheckName::UnitFiltered => Some(valid_filter(filter)?),
         _ => None,
@@ -95,6 +106,12 @@ pub(crate) async fn run_check(
         text: format!("$ {shown}\n{status}\n\n{}", trim_output(&combined)),
         is_error: !output.status.success(),
     })
+}
+
+pub(crate) fn validate_command(worktree: &Worktree, template: &str) -> Result<(), String> {
+    let argv = command_line(template, None)?;
+    resolve_program(&argv[0], &worktree.root()?)?;
+    Ok(())
 }
 
 /// A filter the model supplied. It can't start with `-`, so it can't pass the test runner an
