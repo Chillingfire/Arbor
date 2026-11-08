@@ -1,6 +1,8 @@
-//! The agentic Tiers: the Planner, and later the Scaffolder.
+//! The agentic Tiers: the Planner and the Scaffolder.
 //!
 //! [`PlannerRun`] starts the Planner, which turns a Request into a Plan via `submit_plan`.
+//! [`ScaffolderRun`] starts the Scaffolder, which turns a Task into a Skeleton, tests and Work
+//! Units via `submit_work_units`, checked by [`ScaffoldCheck`]. [`markers`] finds the Regions.
 //!
 //! An [`Agent`] runs one model call per [`Agent::turn`], runs the tools it asks for, and ends when
 //! the model calls its submit tool with arguments that parse and validate, or escalates after
@@ -10,6 +12,7 @@ mod agent;
 pub mod markers;
 mod planner;
 mod scaffold_check;
+mod scaffolder;
 
 pub use agent::{
     Agent, AgentSettings, MAX_SUBMIT_FAILURES, Outcome, SUBMIT_NOW_PERCENT, Submission, Turn,
@@ -20,3 +23,4 @@ pub use scaffold_check::{
     NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, field_problems, marker_problems,
     writer_cap_report, writer_input_tokens,
 };
+pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
