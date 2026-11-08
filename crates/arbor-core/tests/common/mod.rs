@@ -71,5 +71,6 @@ pub fn full_session_events() -> Vec<arbor_core::Event> {
             commit: "c2".into(),
         },
         Event::TaskChecksPassed,
+        Event::MarkersChecked { remaining: vec![] },
     ]
 }

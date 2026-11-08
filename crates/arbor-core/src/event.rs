@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cost::{Usage, Usd};
 use crate::revision::Revision;
-use crate::types::{Plan, Request, Tier, WorkUnit, WorkUnitId};
+use crate::types::{LeftoverMarker, Plan, Request, Tier, WorkUnit, WorkUnitId};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +48,11 @@ pub enum Event {
     },
     /// The Human Operator fixed the problem at the open Checkpoint by hand, so Arbor checks again.
     OperatorFixed,
+    /// The end-of-session Marker check ran over the branch diff. The Session finishes only when
+    /// `remaining` is empty.
+    MarkersChecked {
+        remaining: Vec<LeftoverMarker>,
+    },
     /// One LLM call finished and its provider reported this usage. Recorded for every call,
     /// including calls redone after a resume, since each one was paid for. Written after the
     /// call's outcome events, so a call that reaches the Budget Cap still lands its result.

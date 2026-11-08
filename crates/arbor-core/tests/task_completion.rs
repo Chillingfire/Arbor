@@ -1,7 +1,8 @@
 mod common;
 
 use arbor_core::{
-    ApplyError, Effect, Event, MAX_REVISIONS, Phase, Revision, RevisionCause, Session, WorkUnitId,
+    ApplyError, Effect, Event, LeftoverMarker, MAX_REVISIONS, Phase, Revision, RevisionCause,
+    Session, WorkUnitId,
 };
 use common::{plan, request, work_unit};
 
@@ -233,4 +234,58 @@ fn revision_events_round_trip_through_json() {
         "{json}"
     );
     assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+}
+
+fn leftover(file: &str, line: usize) -> LeftoverMarker {
+    LeftoverMarker {
+        file: file.into(),
+        line,
+        text: "// ARBOR:BEGIN WU-2".into(),
+    }
+}
+
+#[test]
+fn after_the_last_task_the_branch_is_checked_for_markers_before_finishing() {
+    let mut session = at_task_checks(&["A"]);
+    let effects = session.apply(&Event::TaskChecksPassed).unwrap();
+    assert_eq!(effects, [Effect::CheckMarkers]);
+    assert!(!session.is_done());
+
+    let effects = session
+        .apply(&Event::MarkersChecked { remaining: vec![] })
+        .unwrap();
+    assert_eq!(effects, [Effect::EndSession]);
+    assert!(session.is_done());
+}
+
+#[test]
+fn the_session_cannot_finish_while_markers_remain() {
+    let mut session = at_task_checks(&["A"]);
+    session.apply(&Event::TaskChecksPassed).unwrap();
+    let remaining = vec![leftover("src/main.rs", 12)];
+    let effects = session
+        .apply(&Event::MarkersChecked {
+            remaining: remaining.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        effects,
+        [Effect::ShowMarkerCheckpoint {
+            remaining: remaining.clone()
+        }]
+    );
+    assert!(!session.is_done());
+    session
+        .apply(&Event::MarkersChecked { remaining: vec![] })
+        .expect_err("the Checkpoint waits for the Human Operator's fix");
+
+    let effects = session.apply(&Event::OperatorFixed).unwrap();
+    assert_eq!(effects, [Effect::CheckMarkers]);
+    session.apply(&Event::MarkersChecked { remaining }).unwrap();
+    assert!(matches!(session.phase(), Phase::MarkerCheckpoint { .. }));
+    session.apply(&Event::OperatorFixed).unwrap();
+    session
+        .apply(&Event::MarkersChecked { remaining: vec![] })
+        .unwrap();
+    assert!(session.is_done());
 }

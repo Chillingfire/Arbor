@@ -3,7 +3,7 @@ use std::fmt;
 use crate::cost::{UsageTotals, Usd};
 use crate::event::Event;
 use crate::revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
-use crate::types::{Plan, Request, WorkUnit, WorkUnitId};
+use crate::types::{LeftoverMarker, Plan, Request, WorkUnit, WorkUnitId};
 
 /// What the outer crates should do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,12 @@ pub enum Effect {
     ShowEscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
+    },
+    /// Every Task is done: look for Markers left in the branch diff before finishing.
+    CheckMarkers,
+    /// Markers remain, so the Session can't finish until the Human Operator removes them.
+    ShowMarkerCheckpoint {
+        remaining: Vec<LeftoverMarker>,
     },
     /// The Budget Cap was reached: start no new LLM call, and ask the Human Operator to raise the
     /// cap or stop. A call already in flight is left to finish and its usage recorded. Once the
@@ -90,6 +96,10 @@ pub enum Phase {
     EscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
+    },
+    CheckingMarkers,
+    MarkerCheckpoint {
+        remaining: Vec<LeftoverMarker>,
     },
     Done,
     /// The Human Operator stopped the Session at a budget Checkpoint.
@@ -343,7 +353,7 @@ impl Session {
                         feedback: None,
                     }
                 } else {
-                    Phase::Done
+                    Phase::CheckingMarkers
                 }
             }
             (&Phase::TaskChecking { task }, Event::TaskChecksFailed { output }) => {
@@ -365,6 +375,16 @@ impl Session {
             (&Phase::EscalationCheckpoint { task, .. }, Event::OperatorFixed) => {
                 Phase::TaskChecking { task }
             }
+            (Phase::CheckingMarkers, Event::MarkersChecked { remaining }) => {
+                if remaining.is_empty() {
+                    Phase::Done
+                } else {
+                    Phase::MarkerCheckpoint {
+                        remaining: remaining.clone(),
+                    }
+                }
+            }
+            (Phase::MarkerCheckpoint { .. }, Event::OperatorFixed) => Phase::CheckingMarkers,
             (phase, Event::UsageRecorded { tier, usage }) if is_live(phase) => {
                 self.usage.record(*tier, *usage);
                 phase.clone()
@@ -417,6 +437,10 @@ impl Session {
             Phase::EscalationCheckpoint { task, cause } => Effect::ShowEscalationCheckpoint {
                 task: *task,
                 cause: cause.clone(),
+            },
+            Phase::CheckingMarkers => Effect::CheckMarkers,
+            Phase::MarkerCheckpoint { remaining } => Effect::ShowMarkerCheckpoint {
+                remaining: remaining.clone(),
             },
             Phase::Done | Phase::Stopped => Effect::EndSession,
         };

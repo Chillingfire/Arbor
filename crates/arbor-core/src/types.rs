@@ -93,6 +93,16 @@ pub enum Priority {
     Helpful,
 }
 
+/// A line the Session branch adds that still holds `ARBOR:`, found by the end-of-session Marker
+/// check (ADR-0002).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftoverMarker {
+    pub file: String,
+    /// 1-based, in the file as it is now.
+    pub line: usize,
+    pub text: String,
+}
+
 /// One of the three LLM roles a Session splits work across (ADR-0001).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
