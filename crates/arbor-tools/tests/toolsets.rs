@@ -32,7 +32,8 @@ fn scaffolder_adds_writes_and_has_no_shell() {
             "glob",
             "grep",
             "write_file",
-            "edit_file"
+            "edit_file",
+            "run_checks"
         ]
     );
 }

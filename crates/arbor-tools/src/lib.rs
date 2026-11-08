@@ -2,6 +2,7 @@
 //!
 //! There is deliberately no shell tool (ADR-0008).
 
+mod checks;
 mod read;
 mod search;
 mod worktree;
@@ -37,7 +38,6 @@ pub struct ToolOutput {
 pub struct Tools {
     worktree: Worktree,
     toolset: Toolset,
-    #[allow(dead_code)]
     checks: Checks,
 }
 
@@ -90,6 +90,12 @@ impl Tools {
                     "edit_file",
                     "Replace one exact snippet in a file. The snippet must occur exactly once.",
                 ),
+                definition::<checks::RunChecksArgs>(
+                    "run_checks",
+                    "Run one of the project's configured checks in the worktree and return its \
+                     exit code and output. scaffold verifies the build; unit runs all tests; \
+                     unit_filtered runs the tests matching filter.",
+                ),
             ]);
         }
         definitions
@@ -99,7 +105,7 @@ impl Tools {
     /// including refusals, come back as error output for the model rather than as `Err`.
     pub async fn call(&self, name: &str, arguments: &str) -> ToolOutput {
         let worktree = &self.worktree;
-        let result = match name {
+        let text = match name {
             "read_file" => parse(name, arguments).and_then(|args| read::read_file(worktree, args)),
             "list_dir" => parse(name, arguments).and_then(|args| read::list_dir(worktree, args)),
             "glob" => parse(name, arguments).and_then(|args| search::glob(worktree, args)),
@@ -111,17 +117,31 @@ impl Tools {
                 parse(name, arguments).and_then(|args| write::write_file(worktree, args))
             }
             "edit_file" => parse(name, arguments).and_then(|args| write::edit_file(worktree, args)),
+            "run_checks" => {
+                let output = match parse(name, arguments) {
+                    Ok(args) => checks::run_checks(worktree, &self.checks, args).await,
+                    Err(message) => Err(message),
+                };
+                return output.unwrap_or_else(ToolOutput::error);
+            }
             _ => Err(format!("unknown tool {name}")),
         };
-        match result {
-            Ok(text) => ToolOutput {
-                text,
-                is_error: false,
-            },
-            Err(text) => ToolOutput {
-                text,
-                is_error: true,
-            },
+        text.map_or_else(ToolOutput::error, ToolOutput::success)
+    }
+}
+
+impl ToolOutput {
+    fn success(text: String) -> Self {
+        Self {
+            text,
+            is_error: false,
+        }
+    }
+
+    fn error(text: String) -> Self {
+        Self {
+            text,
+            is_error: true,
         }
     }
 }
