@@ -2,10 +2,14 @@ use std::fs;
 use std::path::Path;
 
 use arbor_config::ClarificationMode;
-use arbor_core::{Plan, Priority, Request, Snippet, Task, WorkUnit, WorkUnitId};
+use arbor_core::{
+    Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task, WorkUnit,
+    WorkUnitId,
+};
 use arbor_llm::{ContentPart, Message};
 use arbor_prompts::{
-    Conventions, PlannerInputs, Prompt, PromptError, Prompts, ScaffolderInputs, Tier, WriterInputs,
+    Conventions, PlannerInputs, Prompt, PromptError, Prompts, RevisionInputs, ScaffolderInputs,
+    Tier, WriterInputs,
 };
 use tempfile::tempdir;
 
@@ -73,6 +77,7 @@ fn scaffolder(prompts: &Prompts, conventions: &Conventions, mode: ClarificationM
                 task: &task(),
                 clarification_mode: mode,
                 cap_tokens: 8000,
+                revision: None,
             },
         )
         .unwrap()
@@ -198,6 +203,64 @@ fn the_scaffolder_is_told_the_writer_cap_and_the_clarification_mode() {
     assert!(assume.instructions.contains("Clarification Mode is Assume"));
     assert!(ask.inputs.contains("No new dependencies"));
     assert!(ask.inputs.contains("A function that greets by name."));
+}
+
+#[test]
+fn a_revision_sees_the_failure_the_task_diff_its_work_units_and_earlier_revisions() {
+    let dir = tempdir().unwrap();
+    let prompts = Prompts::builtin();
+    let conventions = conventions(dir.path());
+    let cause = RevisionCause::TaskChecksFailed {
+        output: "test greets_twice ... FAILED".to_owned(),
+    };
+    let earlier = [RevisionRound {
+        cause: cause.clone(),
+        revision: Revision {
+            diagnosis: "greet() dropped the comma".to_owned(),
+            work_units: vec![work_unit()],
+        },
+    }];
+    let units = [work_unit()];
+    let revision = RevisionInputs {
+        cause: &cause,
+        task_diff: "+pub fn greet(name: &str) -> String {",
+        work_units: &units,
+        earlier: &earlier,
+    };
+    let inputs = ScaffolderInputs {
+        request: &request("Greet people"),
+        plan: &plan(),
+        task: &task(),
+        clarification_mode: ClarificationMode::Assume,
+        cap_tokens: 8000,
+        revision: Some(revision),
+    };
+    let revising = prompts.scaffolder(&conventions, &inputs).unwrap();
+    let scaffolding = scaffolder(&prompts, &conventions, ClarificationMode::Assume);
+
+    assert_eq!(revising.instructions, scaffolding.instructions);
+    assert!(
+        revising
+            .inputs
+            .starts_with(&scaffolding.inputs[..scaffolding.inputs.len() - 1])
+    );
+    for expected in [
+        "# Revision 2",
+        "the full Unit Check failed afterwards",
+        "test greets_twice ... FAILED",
+        "````diff\n+pub fn greet(name: &str) -> String {\n````",
+        "### WU-7 in `src/greet.rs`",
+        "Test filter: `greet`",
+        "<snippet path=\"src/greet.rs\" priority=\"required\">",
+        "1. greet() dropped the comma (revised WU-7)",
+    ] {
+        assert!(
+            revising.inputs.contains(expected),
+            "{expected}\n\n{}",
+            revising.inputs
+        );
+    }
+    assert!(!scaffolding.inputs.contains("# Revision"));
 }
 
 #[test]

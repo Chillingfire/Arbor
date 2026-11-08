@@ -53,6 +53,7 @@ fn prompt(dir: &TempDir, mode: ClarificationMode) -> Prompt {
         task: &task,
         clarification_mode: mode,
         cap_tokens: 100,
+        revision: None,
     };
     Prompts::builtin()
         .scaffolder(&conventions, &inputs)

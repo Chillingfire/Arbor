@@ -73,6 +73,7 @@ dependencies = [
  "arbor-core",
  "arbor-llm",
  "minijinja",
+ "serde",
  "tempfile",
  "tokio",
 ]
