@@ -241,6 +241,7 @@ impl Writer {
             seed: Some(WRITER_SEED),
             max_tokens: None,
             require_parameters: true,
+            cache_transcript: false,
         }
     }
 
