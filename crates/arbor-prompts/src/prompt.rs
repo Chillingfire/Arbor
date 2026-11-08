@@ -4,20 +4,20 @@ use std::path::{Path, PathBuf};
 
 use arbor_llm::{ContentPart, Message};
 
-use crate::Tier;
+use crate::Template;
 
 /// A rendered prompt for one call, split into its parts in prompt order: static parts first, so
 /// the provider can cache them.
 ///
 /// 1. `instructions`: the rendered template (Role, Inputs, Output contract, Rules). The same for
-///    every call of this Tier while the settings it uses don't change.
+///    every call of this template while the settings it uses don't change.
 /// 2. `conventions`: the project's Conventions. The same for a whole Session. Always `None` for
 ///    the Writer.
 /// 3. `inputs`: the Session inputs for this call, e.g. the Request or the Work Unit.
 /// 4. The transcript, which the caller appends after [`Prompt::messages`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
-    pub tier: Tier,
+    pub template: Template,
     pub instructions: String,
     pub conventions: Option<String>,
     pub inputs: String,
@@ -58,12 +58,12 @@ impl Prompt {
         .join("\n")
     }
 
-    /// Writes [`Prompt::text`] to `<session_dir>/prompts/<tier>.md`, replacing the Tier's previous
-    /// prompt, and returns the path.
+    /// Writes [`Prompt::text`] to `<session_dir>/prompts/<template>.md`, replacing that template's
+    /// previous prompt, and returns the path.
     pub fn save(&self, session_dir: &Path) -> io::Result<PathBuf> {
         let dir = session_dir.join("prompts");
         fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{}.md", self.tier.name()));
+        let path = dir.join(format!("{}.md", self.template.name()));
         fs::write(&path, self.text())?;
         Ok(path)
     }
