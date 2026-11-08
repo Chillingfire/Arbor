@@ -10,31 +10,26 @@ use arbor_tools::Tools;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
-/// How many failed submissions an agentic run gets before it escalates.
 pub const MAX_SUBMIT_FAILURES: usize = 3;
 
-/// At this share of the model's context window, the model is told to submit now (in percent).
 pub const SUBMIT_NOW_PERCENT: u64 = 80;
 
-/// The tool an agentic Tier ends its run with. Its parameter schema is generated from `T`.
+/// The tool that ends an agentic run. Its parameter schema is generated from `T`.
 pub struct Submission<T> {
     pub name: &'static str,
     pub description: &'static str,
-    /// Checks a parsed submission beyond its schema. An `Err` goes back to the model.
+    /// Checks what the schema can't. An `Err` goes back to the model.
     pub validate: fn(&T) -> Result<(), String>,
 }
 
-/// What an agentic run needs to know about its Tier and model.
 #[derive(Debug, Clone)]
 pub struct AgentSettings {
     pub tier: Tier,
-    /// The model's OpenRouter metadata, for its ID, tool support and context window.
     pub model: ModelInfo,
     pub temperature: f64,
     pub clarification_mode: ClarificationMode,
 }
 
-/// The model can't fill an agentic Tier because it doesn't support tool calling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedModel {
     pub tier: Tier,
@@ -53,7 +48,6 @@ impl fmt::Display for UnsupportedModel {
 
 impl std::error::Error for UnsupportedModel {}
 
-/// Rejects a model that can't call tools, which the Planner and Scaffolder need.
 pub fn require_tool_calling(tier: Tier, model: &ModelInfo) -> Result<(), UnsupportedModel> {
     if model.supported_parameters.iter().any(|p| p == "tools") {
         Ok(())
@@ -65,36 +59,29 @@ pub fn require_tool_calling(tier: Tier, model: &ModelInfo) -> Result<(), Unsuppo
     }
 }
 
-/// One model call and the tool calls it made.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Turn<T> {
-    /// What the call used, to record as `UsageRecorded` after the outcome's own events.
+    /// Record as `UsageRecorded` after the outcome's own events.
     pub usage: Usage,
-    /// `None` while the run goes on: call [`Agent::turn`] again.
     pub outcome: Option<Outcome<T>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome<T> {
-    /// A submission that parsed and validated. The run is over.
     Submitted(T),
-    /// Clarification Mode is Ask and the model asked the Human Operator these questions, all in
-    /// one batch. Pass the answers to [`Agent::answer`], then keep calling [`Agent::turn`].
+    /// Answer with [`Agent::answer`], then keep calling [`Agent::turn`].
     Questions(String),
-    /// The model failed to submit [`MAX_SUBMIT_FAILURES`] times. The run is over, and the work
-    /// goes to the next level of Escalation.
-    Escalated { failures: Vec<String> },
+    Escalated {
+        failures: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnError {
-    /// The call failed and the transcript is unchanged, so [`Agent::turn`] can be retried.
+    /// The transcript is unchanged, so the turn can be retried.
     Llm(LlmError),
-    /// The model asked questions and [`Agent::answer`] hasn't been called yet.
     AwaitingAnswers,
-    /// [`Agent::answer`] was called with no questions waiting.
     NoQuestions,
-    /// The run already ended with a submission or an Escalation.
     Finished,
 }
 
@@ -124,12 +111,8 @@ enum State {
     Finished,
 }
 
-/// One agentic run of the Planner or Scaffolder: it explores with its tools and ends by calling
-/// its submit tool.
-///
-/// The run advances one model call per [`Agent::turn`], so the caller can record each call's
-/// outcome and usage, stop at a budget Checkpoint between calls, and later carry on with the same
-/// transcript. Dropping a `turn` future cancels its call and leaves the transcript as it was.
+/// One model call per [`Agent::turn`], so the caller can record each call and stop at a budget
+/// Checkpoint between calls.
 pub struct Agent<T> {
     settings: AgentSettings,
     submission: Submission<T>,
@@ -144,7 +127,6 @@ pub struct Agent<T> {
 }
 
 impl<T: DeserializeOwned + JsonSchema> Agent<T> {
-    /// `messages` opens the transcript: the rendered prompt and the Session inputs.
     pub fn new(
         settings: AgentSettings,
         submission: Submission<T>,
@@ -172,12 +154,10 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         })
     }
 
-    /// The transcript so far.
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
-    /// Makes one model call and runs the tools it asks for.
     pub async fn turn(&mut self, client: &dyn LlmClient) -> Result<Turn<T>, TurnError> {
         match self.state {
             State::Running => {}
@@ -204,7 +184,6 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         })
     }
 
-    /// Passes on the Human Operator's answers to the model's questions.
     pub fn answer(&mut self, answers: &str) -> Result<(), TurnError> {
         match self.state {
             State::AwaitingAnswers => {}
@@ -233,7 +212,6 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         }
     }
 
-    /// The model replied with text instead of calling a tool.
     fn on_reply(&mut self, text: &str) -> Option<Outcome<T>> {
         let may_ask = self.settings.clarification_mode == ClarificationMode::Ask && !self.asked;
         if may_ask && !text.trim().is_empty() {
@@ -314,7 +292,6 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         }
     }
 
-    /// Tells the model to submit once its context is [`SUBMIT_NOW_PERCENT`] full.
     fn check_context(&mut self, used_tokens: u64) {
         let window = self.settings.model.context_length;
         if self.told_to_submit || used_tokens * 100 < window * SUBMIT_NOW_PERCENT {
@@ -336,7 +313,6 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
     }
 }
 
-/// The submit tool's parameters: `T`'s JSON Schema.
 fn parameters<T: JsonSchema>() -> serde_json::Value {
     let mut schema =
         serde_json::to_value(schemars::schema_for!(T)).expect("a JSON Schema serializes to JSON");
@@ -347,7 +323,6 @@ fn parameters<T: JsonSchema>() -> serde_json::Value {
     schema
 }
 
-/// Converts the provider's report into the Session's exact accounting units.
 pub fn core_usage(usage: &arbor_llm::Usage) -> Usage {
     Usage {
         input_tokens: usage.input_tokens,
