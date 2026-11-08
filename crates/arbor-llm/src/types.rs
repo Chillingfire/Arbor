@@ -16,6 +16,9 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// Route only to providers that honour every parameter, e.g. the Writer's temperature and seed.
     pub require_parameters: bool,
+    /// A breakpoint on the newest message lets the next call reuse this call's whole prefix.
+    #[serde(default)]
+    pub cache_transcript: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

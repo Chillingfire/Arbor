@@ -27,8 +27,7 @@ impl Prompt {
     /// The opening messages: a system message holding the static parts, with a cache breakpoint
     /// on the last of them, then a user message holding the inputs.
     ///
-    /// The caller appends the transcript and places the second breakpoint, on its newest part,
-    /// with [`ContentPart::cached`].
+    /// The caller places the transcript's breakpoint with `ChatRequest::cache_transcript`.
     pub fn messages(&self) -> Vec<Message> {
         let system = match &self.conventions {
             Some(conventions) => vec![

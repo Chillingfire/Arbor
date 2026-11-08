@@ -130,3 +130,13 @@ async fn an_unrecorded_model_is_unknown() {
         })
     );
 }
+
+#[test]
+fn a_request_recorded_before_transcript_caching_still_loads() {
+    let mut recorded = serde_json::to_value(request("hi")).unwrap();
+    recorded.as_object_mut().unwrap().remove("cache_transcript");
+
+    let loaded: ChatRequest = serde_json::from_value(recorded).unwrap();
+
+    assert_eq!(loaded, request("hi"));
+}
