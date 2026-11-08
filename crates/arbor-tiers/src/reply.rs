@@ -195,15 +195,26 @@ impl CodeReply {
 }
 
 fn opening_fence(line: &str) -> Option<(usize, &str)> {
-    let line = line.trim_start();
+    let line = unindent(line)?;
     let ticks = line.len() - line.trim_start_matches('`').len();
     let info = &line[ticks..];
     (ticks >= 3 && !info.contains('`')).then_some((ticks, info.trim()))
 }
 
 fn closes(line: &str, ticks: usize) -> bool {
-    let line = line.trim();
+    let Some(line) = unindent(line) else {
+        return false;
+    };
+    let line = line.trim_end();
     line.len() >= ticks && line.bytes().all(|b| b == b'`')
+}
+
+/// As in Markdown, a fence may be indented by at most 3 spaces, so an indented ```` ``` ````
+/// inside the code, e.g. in a Python docstring, doesn't end the block.
+fn unindent(line: &str) -> Option<&str> {
+    let spaces = line.len() - line.trim_start_matches(' ').len();
+    let rest = &line[spaces..];
+    (spaces <= 3 && !rest.starts_with('\t')).then_some(rest)
 }
 
 /// Fenced so blank lines and indentation stay visible.

@@ -36,6 +36,16 @@ fn a_single_code_block_is_read_line_by_line() {
             "```rust\n/// ```\n/// x\n/// ```\nfn f() {}\n```",
             code("rust", &["/// ```", "/// x", "/// ```", "fn f() {}"]),
         ),
+        // A fence indented by 4 or more is code, as in Markdown.
+        (
+            "```python\n    \"\"\"\n    ```\n    x\n    ```\n    \"\"\"\n```",
+            code(
+                "python",
+                &["    \"\"\"", "    ```", "    x", "    ```", "    \"\"\""],
+            ),
+        ),
+        ("   ```rust\na\n   ```", code("rust", &["a"])),
+        ("```rust\na\n\t```\n```", code("rust", &["a", "\t```"])),
     ];
     for (text, expected) in cases {
         assert_eq!(parse_reply(text), Ok(expected), "{text:?}");
