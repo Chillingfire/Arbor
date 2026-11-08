@@ -2,6 +2,7 @@
 
 mod agent;
 mod check_proposal;
+mod init;
 pub mod markers;
 mod planner;
 pub mod reply;
@@ -15,6 +16,10 @@ pub use agent::{
 };
 pub use check_proposal::{
     CheckProposalRun, ProposedChecks, SUBMIT_CHECKS, validate_proposed_checks,
+};
+pub use init::{
+    AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
+    ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,
 };
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
 pub use scaffold_check::{
