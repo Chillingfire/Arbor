@@ -5,7 +5,7 @@ use arbor_core::{Tier, Usd};
 use arbor_llm::{LlmError, Message, ToolChoice};
 use arbor_tiers::{Agent, AgentSettings, Outcome, TurnError, UnsupportedModel};
 use arbor_tools::{Tools, Toolset};
-use common::{Answer, QueueClient, ask, calls, model, submission, tool_results};
+use common::{Answer, QueueClient, ask, calls, calls_using, model, submission, tool_results};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -137,6 +137,62 @@ async fn the_first_valid_submission_in_a_reply_wins() {
     let results = tool_results(agent.messages());
     assert_eq!(results.len(), 3, "every tool call gets a result");
     assert!(results[2].starts_with("Ignored"));
+}
+
+#[tokio::test]
+async fn every_request_caches_the_growing_transcript() {
+    let dir = TempDir::new().unwrap();
+    let mut agent = ask(&dir);
+    let client = QueueClient::new([
+        calls(&[("list_dir", json!({ "path": "." }))]),
+        calls(&[("submit_answer", json!({ "answer": 3 }))]),
+    ]);
+    agent.turn(&client).await.unwrap();
+    agent.turn(&client).await.unwrap();
+
+    let requests = client.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.cache_transcript));
+    // The breakpoint is added per request, so the stored transcript has no stale ones.
+    assert!(matches!(
+        requests[1].messages.last(),
+        Some(Message::Tool { .. })
+    ));
+    assert!(agent.messages().iter().all(|message| match message {
+        Message::User { content } | Message::System { content } =>
+            content.iter().all(|part| !part.cache),
+        _ => true,
+    }));
+}
+
+#[tokio::test]
+async fn cache_tokens_are_carried_into_the_recorded_usage() {
+    let dir = TempDir::new().unwrap();
+    let mut agent = ask(&dir);
+    let usage = arbor_llm::Usage {
+        input_tokens: 5000,
+        output_tokens: 400,
+        cache_read_tokens: 4000,
+        cache_write_tokens: 600,
+        cost_usd: 0.0123,
+    };
+    let client = QueueClient::new([calls_using(
+        &[("submit_answer", json!({ "answer": 1 }))],
+        usage,
+    )]);
+
+    let turn = agent.turn(&client).await.unwrap();
+
+    assert_eq!(
+        turn.usage,
+        arbor_core::Usage {
+            input_tokens: 5000,
+            output_tokens: 400,
+            cache_read_tokens: 4000,
+            cache_write_tokens: 600,
+            cost: Usd::from_dollars(0.0123),
+        }
+    );
 }
 
 #[tokio::test]
