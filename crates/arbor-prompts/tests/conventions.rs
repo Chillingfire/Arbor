@@ -18,10 +18,11 @@ fn long_lines(count: usize) -> String {
 }
 
 #[test]
-fn estimate_is_four_bytes_per_token_rounded_up() {
+fn estimate_is_two_and_a_half_bytes_per_token_rounded_up() {
     assert_eq!(estimate_tokens(""), 0);
-    assert_eq!(estimate_tokens("abcd"), 1);
+    assert_eq!(estimate_tokens("ab"), 1);
     assert_eq!(estimate_tokens("abcde"), 2);
+    assert_eq!(estimate_tokens("abcdef"), 3);
     assert_eq!(estimate_tokens("é"), 1);
 }
 

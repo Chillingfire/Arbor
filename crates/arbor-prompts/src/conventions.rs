@@ -14,13 +14,15 @@ const README_NAMES: &[&str] = &["README.md", "README", "README.rst", "README.txt
 
 const TRUNCATED_NOTE: &str = "[truncated: the Conventions cap was reached]\n";
 
-/// Estimates how many tokens `text` costs: one per four bytes of UTF-8, rounded up.
+/// Estimates how many tokens `text` costs: one per two and a half bytes of UTF-8, rounded up.
 ///
-/// This is deliberately simple and deterministic, with no tokenizer. Four bytes is close to what
-/// BPE tokenizers average on English prose and code, and non-ASCII text costs more bytes, so it
-/// errs on the side of overcounting. Actual counts from OpenRouter are logged for tuning.
+/// This is deliberately simple and deterministic, with no tokenizer. Measured against the input
+/// tokens OpenRouter reported for the default Claude 5.5 models (`tests/live_tokens.rs`), real
+/// text ran 2.5 to 2.9 bytes per token: Markdown Conventions 2.5, prompt instructions 2.9, Rust
+/// source 2.7. Using the low end means the estimate errs on the side of overcounting. Models from
+/// other providers use other tokenizers; rerun that test when adding one.
 pub fn estimate_tokens(text: &str) -> u32 {
-    u32::try_from(text.len().div_ceil(4)).unwrap_or(u32::MAX)
+    u32::try_from((text.len() * 2).div_ceil(5)).unwrap_or(u32::MAX)
 }
 
 /// The project's own guidance documents, as given to the Planner and Scaffolder.
