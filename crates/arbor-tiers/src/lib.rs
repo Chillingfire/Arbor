@@ -19,6 +19,6 @@ pub use scaffold_check::{
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
 pub use writer::{
-    Attempt, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS, RETRY_OUTPUT_CHARS,
-    WRITER_SEED, Writer, WriterError, WriterRun, commit_subject,
+    Attempt, AttemptError, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS,
+    RETRY_OUTPUT_CHARS, WRITER_SEED, Writer, WriterError, WriterRun, commit_subject,
 };

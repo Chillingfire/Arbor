@@ -76,9 +76,8 @@ pub struct Attempt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttemptOutcome {
-    /// `None` when the code changed nothing, so there was nothing to commit.
     Passed {
-        commit: Option<CommitId>,
+        commit: CommitId,
     },
     Failed(Failure),
     /// Goes to a Revision rather than a retry.
@@ -121,6 +120,9 @@ pub enum WriterError {
         id: WorkUnitId,
     },
     Git(GitError),
+    NotCommitted {
+        file: String,
+    },
     /// A Check couldn't run at all, e.g. its command wasn't found.
     Check(String),
     Finished,
@@ -136,6 +138,10 @@ impl fmt::Display for WriterError {
                 write!(f, "{file} doesn't hold exactly one Region for {id}")
             }
             Self::Git(err) => write!(f, "{err}"),
+            Self::NotCommitted { file } => write!(
+                f,
+                "git found nothing to commit after {file} was filled; it may be ignored by git"
+            ),
             Self::Check(message) => write!(f, "a Check couldn't run: {message}"),
             Self::Finished => f.write_str("the Writer has already finished"),
             Self::NoAttemptsLeft => write!(
@@ -147,6 +153,32 @@ impl fmt::Display for WriterError {
 }
 
 impl std::error::Error for WriterError {}
+
+/// The model's usage comes with the error when the call was made, so the Budget Cap still counts
+/// it.
+#[derive(Debug)]
+pub struct AttemptError {
+    pub error: WriterError,
+    pub usage: Option<Usage>,
+}
+
+impl fmt::Display for AttemptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for AttemptError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl From<WriterError> for AttemptError {
+    fn from(error: WriterError) -> Self {
+        Self { error, usage: None }
+    }
+}
 
 impl From<GitError> for WriterError {
     fn from(err: GitError) -> Self {
@@ -185,19 +217,25 @@ impl Writer {
     }
 
     /// An `Err` uses up no attempt.
-    pub async fn attempt(&mut self, client: &dyn LlmClient) -> Result<Attempt, WriterError> {
+    pub async fn attempt(&mut self, client: &dyn LlmClient) -> Result<Attempt, AttemptError> {
         if self.finished {
-            return Err(WriterError::Finished);
+            return Err(WriterError::Finished.into());
         }
         if self.attempts_left() == 0 {
-            return Err(WriterError::NoAttemptsLeft);
+            return Err(WriterError::NoAttemptsLeft.into());
         }
         let response = client
             .chat(&self.request())
             .await
             .map_err(WriterError::Llm)?;
+        let usage = core_usage(&response.usage);
         let reply = response.content.unwrap_or_default();
-        let outcome = match self.handle(&reply, &response.finish_reason).await? {
+        let handled = self.handle(&reply, &response.finish_reason).await;
+        let handled = handled.map_err(|error| AttemptError {
+            error,
+            usage: Some(usage),
+        })?;
+        let outcome = match handled {
             Ok(outcome) => outcome,
             Err(reason) => {
                 let failure = Failure { reply, reason };
@@ -215,7 +253,7 @@ impl Writer {
         self.finished = !matches!(outcome, AttemptOutcome::Failed(_));
         Ok(Attempt {
             model: response.model,
-            usage: core_usage(&response.usage),
+            usage,
             outcome,
         })
     }
@@ -250,21 +288,26 @@ impl Writer {
 
         let spliced = splice(&original, &region, &body);
         write(&path, &spliced)?;
-        let failed = self.run_checks().await;
-        if !matches!(failed, Ok(None)) {
+        if let Some(output) = restoring(&path, &original, self.run_checks().await)? {
             write(&path, &original)?;
-        }
-        if let Some(output) = failed? {
             return Ok(Err(FailureReason::ChecksFailed { output }));
         }
+        let commit = restoring(&path, &original, self.commit(&path, &spliced))?;
+        Ok(Ok(AttemptOutcome::Passed { commit }))
+    }
 
-        let region = *Markers::parse(&spliced)
+    fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {
+        let unit = &self.work_unit;
+        let region = *Markers::parse(spliced)
             .region(unit.id)
             .ok_or_else(|| self.no_region())?;
-        write(&path, &strip(&spliced, &region))?;
+        write(path, &strip(spliced, &region))?;
         let message = CommitMessage::new(&commit_subject(&unit.spec, &unit.file))?;
-        let commit = Worktree::open(&self.worktree)?.commit(&message)?;
-        Ok(Ok(AttemptOutcome::Passed { commit }))
+        Worktree::open(&self.worktree)?
+            .commit(&message)?
+            .ok_or_else(|| WriterError::NotCommitted {
+                file: unit.file.clone(),
+            })
     }
 
     /// The output of the first Check that fails.
@@ -377,6 +420,19 @@ fn first_sentence(text: &str) -> &str {
         }
     }
     text
+}
+
+/// Puts the file back as it was before the splice when `result` is an error, so the Region is
+/// still there for the next attempt. The original error wins over a failed restore.
+fn restoring<T>(
+    path: &Path,
+    original: &str,
+    result: Result<T, WriterError>,
+) -> Result<T, WriterError> {
+    if result.is_err() {
+        let _ = fs::write(path, original);
+    }
+    result
 }
 
 fn read(path: &Path) -> Result<String, WriterError> {

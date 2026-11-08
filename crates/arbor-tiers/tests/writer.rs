@@ -131,10 +131,7 @@ async fn a_passing_reply_is_spliced_stripped_and_committed() {
 
     let attempt = writer.attempt(&client).await.unwrap();
 
-    let AttemptOutcome::Passed {
-        commit: Some(commit),
-    } = attempt.outcome
-    else {
+    let AttemptOutcome::Passed { commit } = attempt.outcome else {
         panic!("expected a commit, got {:?}", attempt.outcome);
     };
     assert_eq!(attempt.usage.input_tokens, 100);
@@ -147,10 +144,9 @@ async fn a_passing_reply_is_spliced_stripped_and_committed() {
     );
     assert_eq!(git(dir.path(), &["status", "--porcelain"]), "");
     assert!(writer.is_finished());
-    assert!(matches!(
-        writer.attempt(&client).await,
-        Err(WriterError::Finished)
-    ));
+    let err = writer.attempt(&client).await.unwrap_err();
+    assert!(matches!(err.error, WriterError::Finished));
+    assert_eq!(err.usage, None);
 }
 
 #[tokio::test]
@@ -245,10 +241,8 @@ async fn rejected_replies_use_up_the_attempts() {
     ));
     assert_eq!(writer.failures().len(), 3);
     assert_eq!(writer.attempts_left(), 0);
-    assert!(matches!(
-        writer.attempt(&client).await,
-        Err(WriterError::NoAttemptsLeft)
-    ));
+    let err = writer.attempt(&client).await.unwrap_err();
+    assert!(matches!(err.error, WriterError::NoAttemptsLeft));
     assert_eq!(client.requests().len(), 3);
     assert_eq!(head(&dir), before);
 
@@ -333,6 +327,7 @@ async fn a_file_without_the_region_is_an_error_not_an_attempt() {
         err.to_string(),
         "calc.py doesn't hold exactly one Region for WU-1"
     );
+    assert_eq!(err.usage.map(|usage| usage.input_tokens), Some(100));
     assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
 }
 
@@ -374,7 +369,54 @@ async fn a_check_that_cannot_start_is_an_error_not_an_attempt() {
     let client = QueueClient::new([text(GOOD)]);
     let mut writer = writer(&dir, broken);
     let err = writer.attempt(&client).await.unwrap_err();
-    assert!(matches!(err, WriterError::Check(_)), "{err}");
+    assert!(matches!(err.error, WriterError::Check(_)), "{err}");
     assert_eq!(file(&dir), SKELETON);
     assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
+}
+
+#[tokio::test]
+async fn a_failed_commit_puts_the_region_back() {
+    let dir = repo();
+    let before = head(&dir);
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, checks());
+
+    let err = writer.attempt(&client).await.unwrap_err();
+    assert!(matches!(err.error, WriterError::Git(_)), "{err}");
+    assert!(err.usage.is_some());
+    assert_eq!(file(&dir), SKELETON);
+    assert_eq!(head(&dir), before);
+    assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
+}
+
+#[tokio::test]
+async fn a_pass_that_git_ignores_is_an_error() {
+    let dir = tempdir().unwrap();
+    let path = dir.path();
+    git(path, &["init", "--quiet", "-b", "main"]);
+    git(path, &["config", "user.name", "Test Operator"]);
+    git(path, &["config", "user.email", "operator@example.com"]);
+    git(path, &["config", "commit.gpgsign", "false"]);
+    fs::write(path.join(".gitignore"), "calc.py\n").unwrap();
+    git(path, &["add", "--all"]);
+    git(path, &["commit", "--quiet", "-m", "Ignore the calculator"]);
+    fs::write(path.join("calc.py"), SKELETON).unwrap();
+    let client = QueueClient::new([text(GOOD)]);
+
+    let err = writer(&dir, Checks::default())
+        .attempt(&client)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err.error, WriterError::NotCommitted { .. }),
+        "{err}"
+    );
+    assert_eq!(file(&dir), SKELETON);
 }
