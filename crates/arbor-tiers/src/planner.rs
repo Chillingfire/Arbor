@@ -6,24 +6,18 @@ use arbor_tools::{Tools, Toolset};
 
 use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
 
-/// The tool the Planner ends its run with.
 pub const SUBMIT_PLAN: &str = "submit_plan";
 
-/// Everything a Planner run starts from.
 pub struct PlannerRun<'a> {
-    /// The Planner's prompt, rendered with the same `clarification_mode`.
+    /// Rendered with the same `clarification_mode`.
     pub prompt: &'a Prompt,
-    /// The Planner model's OpenRouter metadata.
     pub model: ModelInfo,
     pub temperature: f64,
     pub clarification_mode: ClarificationMode,
-    /// Read-only tools: the Planner's toolset.
     pub tools: Tools,
-    /// Set when the Human Operator rejected the previous Plan at its Checkpoint.
     pub rejected: Option<Rejection<'a>>,
 }
 
-/// A Plan the Human Operator rejected, and why.
 #[derive(Debug, Clone, Copy)]
 pub struct Rejection<'a> {
     pub plan: &'a Plan,
@@ -31,9 +25,6 @@ pub struct Rejection<'a> {
 }
 
 impl PlannerRun<'_> {
-    /// Starts the run. Its [`Agent::turn`]s end with the submitted [`Plan`], the model's
-    /// questions, or an Escalation to the Human Operator.
-    ///
     /// # Panics
     ///
     /// If the prompt isn't the Planner's or the tools aren't read-only.
@@ -66,8 +57,6 @@ fn submission() -> Submission<Plan> {
     )
 }
 
-/// What the schema can't express: a Plan needs a goal and at least one Task, each with a title
-/// and a description.
 pub fn validate_plan(plan: &Plan) -> Result<(), String> {
     let mut problems = Vec::new();
     if plan.goal.trim().is_empty() {
