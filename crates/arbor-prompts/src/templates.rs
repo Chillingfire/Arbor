@@ -5,10 +5,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use arbor_config::ClarificationMode;
-use arbor_core::{Plan, Priority, Request, Snippet, Task, WorkUnit, WorkUnitId};
+use arbor_core::{
+    Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task, WorkUnit,
+    WorkUnitId,
+};
 use minijinja::syntax::SyntaxConfig;
 use minijinja::value::Serde;
 use minijinja::{Environment, UndefinedBehavior, Value};
+use serde::Serialize;
 
 use crate::Conventions;
 use crate::prompt::Prompt;
@@ -72,7 +76,7 @@ impl Template {
     fn input_variables(self) -> &'static [&'static str] {
         match self {
             Self::Planner => &["request"],
-            Self::Scaffolder => &["request", "plan", "task"],
+            Self::Scaffolder => &["request", "plan", "task", "revision"],
             Self::Writer => &["work_unit"],
             Self::CheckProposal => &["detection", "tried_checks"],
         }
@@ -100,6 +104,19 @@ pub struct ScaffolderInputs<'a> {
     pub task: &'a Task,
     pub clarification_mode: ClarificationMode,
     pub cap_tokens: u32,
+    /// Set when the run is a Revision of the Task's Work Units rather than its scaffolding.
+    pub revision: Option<RevisionInputs<'a>>,
+}
+
+/// What a Scaffolder Revision sees on top of its Task.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct RevisionInputs<'a> {
+    pub cause: &'a RevisionCause,
+    pub task_diff: &'a str,
+    /// The Task's Work Units as they stand.
+    pub work_units: &'a [WorkUnit],
+    /// The Task's earlier Revisions, which this one must not repeat.
+    pub earlier: &'a [RevisionRound],
 }
 
 /// What the Writer is rendered with: only its Work Unit, never the Conventions.
@@ -271,6 +288,7 @@ impl Prompts {
             ("request", Value::from(Serde(inputs.request))),
             ("plan", Value::from(Serde(inputs.plan))),
             ("task", Value::from(Serde(inputs.task))),
+            ("revision", Value::from(Serde(inputs.revision))),
         ]);
         self.render(Template::Scaffolder, Some(conventions), context)
     }
@@ -455,6 +473,22 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         command: text("command"),
         output: text("output"),
     }];
+    let cause = RevisionCause::TaskChecksFailed {
+        output: text("check output"),
+    };
+    let earlier = [RevisionRound {
+        cause: cause.clone(),
+        revision: Revision {
+            diagnosis: text("diagnosis"),
+            work_units: vec![work_unit.clone()],
+        },
+    }];
+    let revision = RevisionInputs {
+        cause: &cause,
+        task_diff: &text("task diff"),
+        work_units: std::slice::from_ref(&work_unit),
+        earlier: &earlier,
+    };
     let all = [
         ("clarification_mode", mode(ClarificationMode::Ask)),
         ("cap_tokens", Value::from(8000)),
@@ -464,6 +498,7 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         ("work_unit", Value::from(Serde(&work_unit))),
         ("detection", Value::from(text("detection"))),
         ("tried_checks", tried_checks(&tried)),
+        ("revision", Value::from(Serde(revision))),
     ];
     let known = [template.static_variables(), template.input_variables()].concat();
     all.into_iter()

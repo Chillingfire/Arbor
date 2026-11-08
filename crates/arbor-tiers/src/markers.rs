@@ -88,6 +88,11 @@ pub fn is_marker_line(line: &str) -> bool {
     parse_line(line, 0).is_some()
 }
 
+/// Only a complete `ARBOR:BEGIN WU-<n>` or `ARBOR:END WU-<n>` counts.
+pub fn is_well_formed_marker(line: &str) -> bool {
+    matches!(parse_line(line, 0), Some(Ok(_)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkerError {
     Malformed {

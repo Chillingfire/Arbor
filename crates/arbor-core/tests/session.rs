@@ -43,6 +43,7 @@ fn happy_path_runs_plan_scaffold_write_to_done() {
                 commit: "abc123".into(),
             },
             Event::TaskChecksPassed,
+            Event::MarkersChecked { remaining: vec![] },
         ],
     );
     assert_eq!(
@@ -59,6 +60,7 @@ fn happy_path_runs_plan_scaffold_write_to_done() {
             Effect::RunWriter { id: WorkUnitId(1) },
             Effect::CommitWorkUnit { id: WorkUnitId(1) },
             Effect::RunTaskChecks { task: 0 },
+            Effect::CheckMarkers,
             Effect::EndSession,
         ]
     );
@@ -204,10 +206,14 @@ fn work_units_and_tasks_run_in_order() {
             Effect::RunWriter { id: WorkUnitId(3) },
             Effect::CommitWorkUnit { id: WorkUnitId(3) },
             Effect::RunTaskChecks { task: 1 },
-            Effect::EndSession,
+            Effect::CheckMarkers,
         ]
     );
-    let commits: Vec<_> = session.commits().iter().map(|(_, c)| c.as_str()).collect();
+    let commits: Vec<_> = session
+        .commits()
+        .iter()
+        .map(|commit| commit.hash.as_str())
+        .collect();
     assert_eq!(commits, ["c1", "c2", "c3"]);
 }
 

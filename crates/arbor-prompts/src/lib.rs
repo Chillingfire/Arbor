@@ -11,6 +11,6 @@ mod templates;
 pub use conventions::{CONVENTIONS_CAP_TOKENS, Conventions, ConventionsError, estimate_tokens};
 pub use prompt::Prompt;
 pub use templates::{
-    CheckProposalInputs, PROMPTS_DIR, PlannerInputs, PromptError, Prompts, ScaffolderInputs,
-    Template, TriedCheck, WriterInputs,
+    CheckProposalInputs, PROMPTS_DIR, PlannerInputs, PromptError, Prompts, RevisionInputs,
+    ScaffolderInputs, Template, TriedCheck, WriterInputs,
 };

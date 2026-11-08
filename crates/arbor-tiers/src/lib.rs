@@ -6,8 +6,10 @@ mod init;
 pub mod markers;
 mod planner;
 pub mod reply;
+mod revision;
 mod scaffold_check;
 mod scaffolder;
+mod task_completion;
 mod writer;
 
 pub use agent::{
@@ -22,11 +24,16 @@ pub use init::{
     ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,
 };
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
+pub use revision::{RevisionRun, SUBMIT_REVISION};
 pub use scaffold_check::{
     NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, field_problems, marker_problems,
-    writer_cap_report, writer_input_tokens,
+    revision_field_problems, writer_cap_report, writer_input_tokens,
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
+pub use task_completion::{
+    MARKER_FIX_SUBJECT, NO_UNIT_CHECK, TASK_FIX_SUBJECT, check_markers, commit_operator_fix,
+    leftover_markers, run_task_check, task_check_warning, task_diff,
+};
 pub use writer::{
     Attempt, AttemptError, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS,
     RETRY_OUTPUT_CHARS, WRITER_SEED, Writer, WriterError, WriterRun, commit_subject,

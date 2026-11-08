@@ -66,6 +66,15 @@ pub fn writer_cap_report(units: &[WorkUnit], cap_tokens: u32) -> Option<String> 
 }
 
 pub fn field_problems(units: &[WorkUnit], first_id: WorkUnitId) -> Vec<String> {
+    revision_field_problems(units, first_id, &[])
+}
+
+/// Like [`field_problems`], but a Work Unit may also keep one of the `revisable` IDs.
+pub fn revision_field_problems(
+    units: &[WorkUnit],
+    first_id: WorkUnitId,
+    revisable: &[WorkUnitId],
+) -> Vec<String> {
     let mut problems = Vec::new();
     if units.is_empty() {
         problems.push("there are no Work Units; submit at least one".to_owned());
@@ -77,10 +86,8 @@ pub fn field_problems(units: &[WorkUnit], first_id: WorkUnitId) -> Vec<String> {
             problems.push(format!("{id} is used by more than one Work Unit"));
         }
         seen.push(id);
-        if id < first_id {
-            problems.push(format!(
-                "{id} is taken by an earlier Task; number Work Units from {first_id}"
-            ));
+        if id < first_id && !revisable.contains(&id) {
+            problems.push(id_taken(id, first_id, revisable));
         }
         if relative_path(&unit.file).is_none() {
             problems.push(format!(
@@ -99,6 +106,17 @@ pub fn field_problems(units: &[WorkUnit], first_id: WorkUnitId) -> Vec<String> {
         }
     }
     problems
+}
+
+fn id_taken(id: WorkUnitId, first_id: WorkUnitId, revisable: &[WorkUnitId]) -> String {
+    if revisable.is_empty() {
+        format!("{id} is taken by an earlier Task; number Work Units from {first_id}")
+    } else {
+        format!(
+            "{id} is not one of this Task's Work Units; keep a revised Work Unit's ID and number \
+             new ones from {first_id}"
+        )
+    }
 }
 
 /// A Region for a Work Unit not in `ids` is a problem too.
@@ -129,6 +147,7 @@ pub struct ScaffoldCheck {
     tools: Tools,
     cap_tokens: u32,
     first_id: WorkUnitId,
+    revisable: Vec<WorkUnitId>,
 }
 
 impl ScaffoldCheck {
@@ -146,7 +165,14 @@ impl ScaffoldCheck {
             tools,
             cap_tokens,
             first_id,
+            revisable: Vec::new(),
         }
+    }
+
+    /// Checks a Revision, whose Work Units may also keep the IDs of the Task's own.
+    pub fn revising(mut self, revisable: Vec<WorkUnitId>) -> Self {
+        self.revisable = revisable;
+        self
     }
 
     pub fn warning(&self) -> Option<&'static str> {
@@ -154,7 +180,7 @@ impl ScaffoldCheck {
     }
 
     pub fn review(&self, units: &[WorkUnit]) -> Result<(), String> {
-        let mut problems = field_problems(units, self.first_id);
+        let mut problems = revision_field_problems(units, self.first_id, &self.revisable);
         for (file, ids) in by_file(units) {
             let Some(path) = relative_path(file) else {
                 continue;
