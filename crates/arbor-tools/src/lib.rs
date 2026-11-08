@@ -3,6 +3,7 @@
 //! There is deliberately no shell tool (ADR-0008).
 
 mod read;
+mod search;
 mod worktree;
 
 use std::path::PathBuf;
@@ -64,6 +65,14 @@ impl Tools {
                 "List a directory's entries. Directories end with /. Files excluded by \
                  .gitignore are left out.",
             ),
+            definition::<search::GlobArgs>(
+                "glob",
+                "Find files whose paths match a glob, skipping files excluded by .gitignore.                  Results are capped.",
+            ),
+            definition::<search::GrepArgs>(
+                "grep",
+                "Search file contents for a regular expression. Returns path:line: text for                  each matching line, skipping files excluded by .gitignore. Results are capped.",
+            ),
         ]
     }
 
@@ -77,6 +86,8 @@ impl Tools {
             "list_dir" => {
                 parse(name, arguments).and_then(|args| read::list_dir(&self.worktree, args))
             }
+            "glob" => parse(name, arguments).and_then(|args| search::glob(&self.worktree, args)),
+            "grep" => parse(name, arguments).and_then(|args| search::grep(&self.worktree, args)),
             _ => Err(format!("unknown tool {name}")),
         };
         match result {

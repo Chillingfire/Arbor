@@ -29,7 +29,7 @@ pub(crate) fn read_file(worktree: &Worktree, args: ReadFileArgs) -> Result<Strin
         return Err(format!("{}: is a directory; use list_dir", args.path));
     }
     let bytes = fs::read(&path).map_err(|err| format!("{}: {err}", args.path))?;
-    if bytes.iter().take(8000).any(|&byte| byte == 0) {
+    if looks_binary(&bytes) {
         return Err(format!("{}: looks like a binary file", args.path));
     }
     let text = String::from_utf8_lossy(&bytes);
@@ -115,4 +115,9 @@ pub(crate) fn cut(line: &str, max: usize) -> String {
         Some((index, _)) => format!("{}… [line cut]", &line[..index]),
         None => line.to_owned(),
     }
+}
+
+/// Whether a file looks binary: a NUL byte near the start.
+pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|&byte| byte == 0)
 }

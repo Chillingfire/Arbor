@@ -64,7 +64,9 @@ version = "0.1.0"
 dependencies = [
  "arbor-config",
  "arbor-llm",
+ "globset",
  "ignore",
+ "regex",
  "schemars",
  "serde",
  "serde_json",
