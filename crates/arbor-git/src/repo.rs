@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use crate::branch::SessionBranch;
 use crate::command::{GitError, git, git_succeeds};
 use crate::mainline::Mainline;
+use crate::worktree::Worktree;
 
 /// The local mainline names tried, in order, when there is no remote and none was chosen.
 const LOCAL_MAINLINE_GUESSES: &[&str] = &["main", "master"];
@@ -87,6 +89,36 @@ impl Repo {
             )));
         }
         Ok(mainline)
+    }
+
+    /// Creates the Session branch from the mainline's start point and checks it out in a new
+    /// worktree at `path`. The local mainline and the operator's checkout are left alone, and
+    /// the branch tracks nothing, so it can't be pushed onto the mainline by accident. Fails if
+    /// the branch already exists.
+    pub fn create_worktree(
+        &self,
+        mainline: &Mainline,
+        branch: &SessionBranch,
+        path: &Path,
+    ) -> Result<Worktree, GitError> {
+        self.check_branch_name(branch.as_str())?;
+        let path_arg = path
+            .to_str()
+            .ok_or_else(|| GitError::Refused(format!("{} is not a UTF-8 path", path.display())))?;
+        git(
+            &self.root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--no-track",
+                "-b",
+                branch.as_str(),
+                path_arg,
+                &mainline.start_ref(),
+            ],
+        )?;
+        Worktree::open(path)
     }
 
     /// Refuses anything that isn't a plain branch name, such as `main~1` or `-x`.
