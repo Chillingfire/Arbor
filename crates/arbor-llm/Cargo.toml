@@ -4,6 +4,7 @@ description = "OpenRouter client behind a trait, plus a scripted fake for tests.
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true

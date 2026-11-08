@@ -6,7 +6,7 @@ members = ["crates/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/Chillingfire/Arbor"
-# TODO(#25): set `license` here (and add the LICENSE file) before publishing to crates.io.
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 # Internal crates carry a version as well as a path so they can be published.

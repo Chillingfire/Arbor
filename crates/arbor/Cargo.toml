@@ -4,6 +4,7 @@ description = "A TUI harness that splits programming work across Planner, Scaffo
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 readme = "../../README.md"
 
 [lints]

@@ -53,7 +53,7 @@ jobs:
         run: |
           name="arbor-${GITHUB_REF_NAME//\//-}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp README.md "dist/$name/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/arbor.exe" "dist/$name/"
             (cd dist && 7z a "$name.zip" "$name" > /dev/null)

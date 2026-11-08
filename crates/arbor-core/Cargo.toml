@@ -4,6 +4,7 @@ description = "Domain types and the pure Session state machine. No I/O: events i
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true

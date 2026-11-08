@@ -4,6 +4,7 @@ description = "Agent tools for the Planner and Scaffolder, confined to the Sessi
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true
