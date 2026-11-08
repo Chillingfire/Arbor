@@ -69,3 +69,12 @@ pub enum Priority {
     Required,
     Helpful,
 }
+
+/// One of the three LLM roles a Session splits work across (ADR-0001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    Planner,
+    Scaffolder,
+    Writer,
+}
