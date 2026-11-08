@@ -1,5 +1,5 @@
 use arbor_core::WorkUnitId;
-use arbor_tiers::markers::{MarkerError, Markers, Region};
+use arbor_tiers::markers::{MarkerError, Markers, Region, is_marker_line, splice, strip};
 
 fn wu(n: u32) -> WorkUnitId {
     WorkUnitId(n)
@@ -169,4 +169,96 @@ fn errors_read_with_one_based_line_numbers() {
     for (error, expected) in cases {
         assert_eq!(error.to_string(), expected);
     }
+}
+
+const SKELETON: &str = "\
+use std::fmt;
+
+fn add(a: i32, b: i32) -> i32 {
+    // ARBOR:BEGIN WU-3
+    todo!()
+    // ARBOR:END WU-3
+}
+
+fn sub(a: i32, b: i32) -> i32 {
+";
+
+#[test]
+fn context_is_the_two_lines_just_outside_the_markers() {
+    let region = *Markers::parse(SKELETON).region(wu(3)).unwrap();
+    let lines: Vec<&str> = SKELETON.lines().collect();
+    assert_eq!(
+        lines[region.context_before()],
+        ["", "fn add(a: i32, b: i32) -> i32 {"]
+    );
+    assert_eq!(lines[region.context_after(lines.len())], ["}", ""]);
+}
+
+#[test]
+fn context_is_shorter_at_the_edges_of_the_file() {
+    let text = "fn f() {\n// ARBOR:BEGIN WU-1\ntodo!()\n// ARBOR:END WU-1\n}";
+    let region = *Markers::parse(text).region(wu(1)).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[region.context_before()], ["fn f() {"]);
+    assert_eq!(lines[region.context_after(lines.len())], ["}"]);
+
+    let bare = "// ARBOR:BEGIN WU-1\ntodo!()\n// ARBOR:END WU-1\n";
+    let region = *Markers::parse(bare).region(wu(1)).unwrap();
+    let lines: Vec<&str> = bare.lines().collect();
+    assert!(region.context_before().is_empty());
+    assert!(region.context_after(lines.len()).is_empty());
+}
+
+#[test]
+fn splice_replaces_only_the_body() {
+    let region = *Markers::parse(SKELETON).region(wu(3)).unwrap();
+    let spliced = splice(SKELETON, &region, &["    let sum = a + b;", "    sum"]);
+    assert_eq!(
+        spliced,
+        SKELETON.replace("    todo!()\n", "    let sum = a + b;\n    sum\n")
+    );
+    // The Markers are still there, around the new body.
+    assert_eq!(Markers::parse(&spliced).region(wu(3)).unwrap().body(), 4..6);
+}
+
+#[test]
+fn splice_keeps_crlf_line_endings_and_allows_an_empty_body() {
+    let text = "a\r\n// ARBOR:BEGIN WU-1\r\nold\r\n// ARBOR:END WU-1\r\nb";
+    let region = *Markers::parse(text).region(wu(1)).unwrap();
+    assert_eq!(
+        splice(text, &region, &["x", "y"]),
+        "a\r\n// ARBOR:BEGIN WU-1\r\nx\r\ny\r\n// ARBOR:END WU-1\r\nb"
+    );
+    assert_eq!(
+        splice(text, &region, &[]),
+        "a\r\n// ARBOR:BEGIN WU-1\r\n// ARBOR:END WU-1\r\nb"
+    );
+}
+
+#[test]
+fn strip_removes_only_that_work_units_markers() {
+    let text = "\
+// ARBOR:BEGIN WU-1
+one
+// ARBOR:END WU-1
+// ARBOR:BEGIN WU-2
+two
+// ARBOR:END WU-2";
+    let first = *Markers::parse(text).region(wu(1)).unwrap();
+    let stripped = strip(text, &first);
+    assert_eq!(stripped, "one\n// ARBOR:BEGIN WU-2\ntwo\n// ARBOR:END WU-2");
+    let markers = Markers::parse(&stripped);
+    assert_eq!(markers.regions(), [region(2, 1, 3)]);
+
+    let second = *markers.region(wu(2)).unwrap();
+    assert_eq!(strip(&stripped, &second), "one\ntwo\n");
+}
+
+#[test]
+fn marker_lines_are_recognised() {
+    assert!(is_marker_line("    // ARBOR:BEGIN WU-3"));
+    assert!(is_marker_line("# ARBOR:END WU-3"));
+    assert!(is_marker_line("// ARBOR:END WU-oops"));
+    assert!(!is_marker_line("let sum = a + b;"));
+    assert!(!is_marker_line("ARBOR:BEGINNING"));
 }

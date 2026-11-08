@@ -22,6 +22,9 @@ pub const BEGIN: &str = "ARBOR:BEGIN";
 /// Ends a Region.
 pub const END: &str = "ARBOR:END";
 
+/// How many lines of context a Writer returns on each side of its code (ADR-0002).
+pub const CONTEXT_LINES: usize = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerKind {
     Begin,
@@ -51,6 +54,64 @@ impl Region {
     pub fn body(&self) -> Range<usize> {
         self.begin + 1..self.end
     }
+
+    /// The lines a Writer echoes above its code: the [`CONTEXT_LINES`] lines just above the BEGIN
+    /// Marker, not the Marker itself. Fewer only when the Region starts near the top of the file.
+    pub fn context_before(&self) -> Range<usize> {
+        self.begin.saturating_sub(CONTEXT_LINES)..self.begin
+    }
+
+    /// The lines a Writer echoes below its code: the [`CONTEXT_LINES`] lines just below the END
+    /// Marker, not the Marker itself. Fewer only when the Region ends near the bottom of a file
+    /// of `line_count` lines.
+    pub fn context_after(&self, line_count: usize) -> Range<usize> {
+        let start = (self.end + 1).min(line_count);
+        start..(self.end + 1 + CONTEXT_LINES).min(line_count)
+    }
+}
+
+/// Replaces the Region's body with `code`, one entry per line, and returns the new text. Every
+/// other line is kept byte for byte, Markers included. The new lines end like the BEGIN Marker's
+/// line, so a file with `\r\n` line endings keeps them.
+///
+/// # Panics
+///
+/// If `region` doesn't come from [`Markers::parse`] of this `text`.
+pub fn splice(text: &str, region: &Region, code: &[&str]) -> String {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let eol = if lines[region.begin].ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut spliced = String::with_capacity(text.len());
+    spliced.extend(lines[..=region.begin].iter().copied());
+    for line in code {
+        spliced.push_str(line);
+        spliced.push_str(eol);
+    }
+    spliced.extend(lines[region.end..].iter().copied());
+    spliced
+}
+
+/// Removes the Region's two Marker lines and keeps everything else, its body included. Done once
+/// the Work Unit passes.
+///
+/// # Panics
+///
+/// If `region` doesn't come from [`Markers::parse`] of this `text`.
+pub fn strip(text: &str, region: &Region) -> String {
+    assert!(region.end < text.split_inclusive('\n').count());
+    text.split_inclusive('\n')
+        .enumerate()
+        .filter(|&(line, _)| line != region.begin && line != region.end)
+        .map(|(_, content)| content)
+        .collect()
+}
+
+/// Whether the line holds a Marker, or something that tries to be one.
+pub fn is_marker_line(line: &str) -> bool {
+    parse_line(line, 0).is_some()
 }
 
 /// A problem with a file's Markers. Any of them fails the Scaffold Check.
