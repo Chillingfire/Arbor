@@ -1,0 +1,19 @@
+[package]
+name = "arbor-prompts"
+description = "Per-Tier prompt templates and Conventions loading."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arbor-config = { path = "../arbor-config" }
+arbor-core = { path = "../arbor-core" }
+arbor-llm = { path = "../arbor-llm" }
+minijinja = { version = "3", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
