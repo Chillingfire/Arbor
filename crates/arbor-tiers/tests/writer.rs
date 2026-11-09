@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 
 use arbor_config::Checks;
-use arbor_core::{Priority, Snippet, WorkUnit, WorkUnitId};
+use arbor_core::{Priority, Snippet, WorkUnit, WorkUnitFailure, WorkUnitId};
 use arbor_llm::{ChatResponse, FinishReason, Message};
 use arbor_prompts::{Prompts, WriterInputs};
 use arbor_tiers::reply::ReplyError;
@@ -105,6 +105,15 @@ fn writer(dir: &TempDir, checks: Checks) -> Writer {
 }
 
 fn writer_with_cap(dir: &TempDir, checks: Checks, cap_tokens: u32) -> Writer {
+    start_writer(dir, checks, cap_tokens, true)
+}
+
+fn start_writer(
+    dir: &TempDir,
+    checks: Checks,
+    cap_tokens: u32,
+    missing_response_allowed: bool,
+) -> Writer {
     let unit = work_unit();
     let prompt = Prompts::builtin()
         .writer(&WriterInputs { work_unit: &unit })
@@ -117,6 +126,7 @@ fn writer_with_cap(dir: &TempDir, checks: Checks, cap_tokens: u32) -> Writer {
         worktree: dir.path(),
         checks,
         cap_tokens,
+        missing_response_allowed,
     }
     .start()
 }
@@ -302,6 +312,62 @@ async fn a_missing_response_finishes_the_writer_without_touching_the_file() {
     assert_eq!(file(&dir), SKELETON);
     assert!(writer.is_finished());
     assert!(writer.failures().is_empty());
+    assert_eq!(
+        writer.work_unit_failure(),
+        Some(WorkUnitFailure {
+            id: WorkUnitId(1),
+            attempts: vec![],
+            missing_response: Some(vec!["the Number type".into(), "what sub returns".into()]),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_second_missing_response_for_a_work_unit_is_rejected_and_costs_a_retry() {
+    let dir = repo();
+    let missing = "```missing\nthe Number type\n```";
+    let client = QueueClient::new([text(missing), text(GOOD)]);
+    let mut writer = start_writer(&dir, checks(), CAP_TOKENS, false);
+
+    let attempt = writer.attempt(&client).await.unwrap();
+    assert!(matches!(
+        attempt.outcome,
+        AttemptOutcome::Failed(failure)
+            if failure.reason == FailureReason::Rejected(ReplyError::MissingResponseUsed)
+    ));
+    assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS - 1);
+    assert!(!writer.is_finished());
+
+    let retry = writer.attempt(&client).await.unwrap();
+    assert!(matches!(retry.outcome, AttemptOutcome::Passed { .. }));
+    let retry_message = last_user_text(&client.last_request().messages).to_owned();
+    assert!(
+        retry_message.contains("already sent its one `missing` block"),
+        "{retry_message}"
+    );
+}
+
+#[tokio::test]
+async fn a_writer_out_of_retries_reports_every_failed_attempt_for_the_revision() {
+    let dir = repo();
+    let client = QueueClient::new([text(WRONG), text(WRONG), text(WRONG)]);
+    let mut writer = writer(&dir, checks());
+
+    writer.attempt(&client).await.unwrap();
+    assert_eq!(writer.work_unit_failure(), None, "retries are left");
+    writer.attempt(&client).await.unwrap();
+    writer.attempt(&client).await.unwrap();
+
+    let failure = writer.work_unit_failure().unwrap();
+    assert_eq!(failure.id, WorkUnitId(1));
+    assert_eq!(failure.missing_response, None);
+    assert_eq!(failure.attempts.len(), MAX_WRITER_ATTEMPTS);
+    assert_eq!(failure.attempts[0].reply, WRONG);
+    assert!(
+        failure.attempts[0].error.starts_with("the Checks failed:"),
+        "{}",
+        failure.attempts[0].error
+    );
 }
 
 #[tokio::test]
