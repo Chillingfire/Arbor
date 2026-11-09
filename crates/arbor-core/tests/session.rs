@@ -1,6 +1,6 @@
 mod common;
 
-use arbor_core::{ApplyError, Effect, Event, Session, WorkUnitId};
+use arbor_core::{ApplyError, CommitOrigin, Effect, Event, Session, SessionCommit, WorkUnitId};
 use common::{plan, request, work_unit};
 
 fn apply_all(session: &mut Session, events: &[Event]) -> Vec<Effect> {
@@ -37,6 +37,7 @@ fn happy_path_runs_plan_scaffold_write_to_done() {
             },
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
+            Event::SkeletonCommitted { commit: None },
             Event::WorkUnitPassed { id: WorkUnitId(1) },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(1),
@@ -57,6 +58,7 @@ fn happy_path_runs_plan_scaffold_write_to_done() {
             },
             Effect::RunScaffoldChecks { task: 0 },
             Effect::ShowScaffoldCheckpoint { task: 0 },
+            Effect::CommitSkeleton { task: 0 },
             Effect::RunWriter { id: WorkUnitId(1) },
             Effect::CommitWorkUnit { id: WorkUnitId(1) },
             Effect::RunTaskChecks { task: 0 },
@@ -159,6 +161,7 @@ fn work_units_and_tasks_run_in_order() {
             },
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
+            Event::SkeletonCommitted { commit: None },
             Event::WorkUnitPassed { id: WorkUnitId(1) },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(1),
@@ -175,6 +178,7 @@ fn work_units_and_tasks_run_in_order() {
             },
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
+            Event::SkeletonCommitted { commit: None },
             Event::WorkUnitPassed { id: WorkUnitId(3) },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(3),
@@ -192,6 +196,7 @@ fn work_units_and_tasks_run_in_order() {
             },
             Effect::RunScaffoldChecks { task: 0 },
             Effect::ShowScaffoldCheckpoint { task: 0 },
+            Effect::CommitSkeleton { task: 0 },
             Effect::RunWriter { id: WorkUnitId(1) },
             Effect::CommitWorkUnit { id: WorkUnitId(1) },
             Effect::RunWriter { id: WorkUnitId(2) },
@@ -203,6 +208,7 @@ fn work_units_and_tasks_run_in_order() {
             },
             Effect::RunScaffoldChecks { task: 1 },
             Effect::ShowScaffoldCheckpoint { task: 1 },
+            Effect::CommitSkeleton { task: 1 },
             Effect::RunWriter { id: WorkUnitId(3) },
             Effect::CommitWorkUnit { id: WorkUnitId(3) },
             Effect::RunTaskChecks { task: 1 },
@@ -267,6 +273,9 @@ fn events_out_of_order_are_refused_and_change_nothing() {
 fn events_for_another_work_unit_are_refused() {
     let mut session = at_scaffold_checkpoint(&[1, 2]);
     session.apply(&Event::ScaffoldApproved).unwrap();
+    session
+        .apply(&Event::SkeletonCommitted { commit: None })
+        .unwrap();
     let before = session.clone();
     assert_eq!(
         session.apply(&Event::WorkUnitPassed { id: WorkUnitId(2) }),
@@ -311,8 +320,35 @@ fn duplicate_work_unit_ids_are_refused() {
 #[test]
 fn a_task_without_work_units_goes_straight_to_task_checks() {
     let mut session = at_scaffold_checkpoint(&[]);
+    session.apply(&Event::ScaffoldApproved).unwrap();
+    assert_eq!(
+        session
+            .apply(&Event::SkeletonCommitted { commit: None })
+            .unwrap(),
+        [Effect::RunTaskChecks { task: 0 }]
+    );
+}
+
+#[test]
+fn the_approved_skeleton_is_committed_before_any_writer_runs() {
+    let mut session = at_scaffold_checkpoint(&[1]);
     assert_eq!(
         session.apply(&Event::ScaffoldApproved).unwrap(),
-        [Effect::RunTaskChecks { task: 0 }]
+        [Effect::CommitSkeleton { task: 0 }]
+    );
+    assert_eq!(
+        session
+            .apply(&Event::SkeletonCommitted {
+                commit: Some("s1".into())
+            })
+            .unwrap(),
+        [Effect::RunWriter { id: WorkUnitId(1) }]
+    );
+    assert_eq!(
+        session.task_commits(),
+        [SessionCommit {
+            hash: "s1".into(),
+            origin: CommitOrigin::Skeleton
+        }]
     );
 }

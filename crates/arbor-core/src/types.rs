@@ -112,6 +112,7 @@ pub struct SessionCommit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitOrigin {
+    Skeleton,
     WorkUnit(WorkUnitId),
     /// The Human Operator's fix at a Checkpoint.
     OperatorFix,

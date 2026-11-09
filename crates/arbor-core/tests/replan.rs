@@ -20,6 +20,7 @@ fn scaffold_and_write(first_id: u32, task_check_output: &str) -> Vec<Event> {
         },
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
+        Event::SkeletonCommitted { commit: None },
         Event::WorkUnitPassed {
             id: WorkUnitId(first_id),
         },

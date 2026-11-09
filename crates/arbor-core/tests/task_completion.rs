@@ -41,6 +41,7 @@ fn at_task_checks(task_titles: &[&str]) -> Session {
             },
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
+            Event::SkeletonCommitted { commit: None },
         ],
     );
     apply_all(&mut session, &write_and_commit(1, "c1"));
@@ -147,6 +148,7 @@ fn a_revision_may_not_reuse_an_id_from_an_earlier_task() {
             },
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
+            Event::SkeletonCommitted { commit: None },
         ],
     );
     apply_all(&mut session, &write_and_commit(3, "c3"));

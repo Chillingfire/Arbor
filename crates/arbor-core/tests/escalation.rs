@@ -39,6 +39,7 @@ fn writing() -> Session {
             },
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
+            Event::SkeletonCommitted { commit: None },
         ],
     );
     session

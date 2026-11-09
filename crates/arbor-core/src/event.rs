@@ -29,6 +29,10 @@ pub enum Event {
     },
     ScaffoldChecksPassed,
     ScaffoldApproved,
+    /// The approved Skeleton was committed, or `None` when the Scaffolder changed nothing.
+    SkeletonCommitted {
+        commit: Option<String>,
+    },
     /// The Writer's code was spliced and its Work Unit's Checks passed.
     WorkUnitPassed {
         id: WorkUnitId,

@@ -27,6 +27,11 @@ pub enum Effect {
     ShowScaffoldCheckpoint {
         task: usize,
     },
+    /// Commit the approved Skeleton, so a rejected Revision can be discarded by resetting to
+    /// `HEAD`.
+    CommitSkeleton {
+        task: usize,
+    },
     /// Call the Writer, splice its code, and run the Work Unit's Checks.
     RunWriter {
         id: WorkUnitId,
@@ -103,6 +108,9 @@ pub enum Phase {
         task: usize,
     },
     ScaffoldCheckpoint {
+        task: usize,
+    },
+    CommittingSkeleton {
         task: usize,
     },
     Writing {
@@ -411,6 +419,10 @@ impl Session {
             }
             (&Phase::ScaffoldCheckpoint { task }, Event::ScaffoldApproved) => {
                 self.write_queue = self.work_units.iter().map(|unit| unit.id).collect();
+                Phase::CommittingSkeleton { task }
+            }
+            (&Phase::CommittingSkeleton { task }, Event::SkeletonCommitted { commit }) => {
+                self.record_optional_commit(commit, CommitOrigin::Skeleton);
                 self.write_from(task, 0)
             }
             (&Phase::Writing { task, unit }, Event::WorkUnitPassed { id }) => {
@@ -598,6 +610,7 @@ impl Session {
             },
             &Phase::ScaffoldChecking { task } => Effect::RunScaffoldChecks { task },
             &Phase::ScaffoldCheckpoint { task } => Effect::ShowScaffoldCheckpoint { task },
+            &Phase::CommittingSkeleton { task } => Effect::CommitSkeleton { task },
             &Phase::Writing { unit, .. } => Effect::RunWriter {
                 id: self.write_queue[unit],
             },
@@ -715,8 +728,12 @@ impl Session {
     }
 
     fn record_operator_fix(&mut self, commit: &Option<String>) {
+        self.record_optional_commit(commit, CommitOrigin::OperatorFix);
+    }
+
+    fn record_optional_commit(&mut self, commit: &Option<String>, origin: CommitOrigin) {
         if let Some(hash) = commit {
-            self.record_commit(hash, CommitOrigin::OperatorFix);
+            self.record_commit(hash, origin);
         }
     }
 
