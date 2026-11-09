@@ -481,7 +481,9 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         revision: Revision {
             diagnosis: text("diagnosis"),
             work_units: vec![work_unit.clone()],
+            shared_change: None,
         },
+        rejection: None,
     }];
     let revision = RevisionInputs {
         cause: &cause,

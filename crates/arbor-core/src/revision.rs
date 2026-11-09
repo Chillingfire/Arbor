@@ -55,7 +55,12 @@ pub struct Revision {
     pub diagnosis: String,
     /// The Work Units to write again, in order, each with its Region marked again. A revised
     /// Work Unit keeps its ID; a new one, e.g. from a split, takes an ID no Work Unit has used.
+    /// Empty when `shared_change` is set.
     pub work_units: Vec<WorkUnit>,
+    /// Set, with no Work Units, when the fix needs a signature or type that other Work Units
+    /// depend on: it names that change, and the failure goes to the Planner instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_change: Option<String>,
 }
 
 /// One Revision and the failure it answered, kept so a later Revision, and a Replan, see what was
@@ -64,6 +69,10 @@ pub struct Revision {
 pub struct RevisionRound {
     pub cause: RevisionCause,
     pub revision: Revision,
+    /// Why it was rejected, e.g. it only reworded the spec. It still counts toward
+    /// [`MAX_REVISIONS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<String>,
 }
 
 impl RevisionRound {

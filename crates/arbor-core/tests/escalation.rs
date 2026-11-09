@@ -71,12 +71,24 @@ fn failed(failure: &WorkUnitFailure) -> Event {
     }
 }
 
+fn revised(ids: &[u32]) -> Revision {
+    Revision {
+        diagnosis: "The Context Pack lacked the Config type".into(),
+        work_units: ids.iter().map(|&id| work_unit(id)).collect(),
+        shared_change: None,
+    }
+}
+
 fn revision(ids: &[u32]) -> Event {
     Event::RevisionSubmitted {
-        revision: Revision {
-            diagnosis: "The Context Pack lacked the Config type".into(),
-            work_units: ids.iter().map(|&id| work_unit(id)).collect(),
-        },
+        revision: revised(ids),
+    }
+}
+
+fn rewording_rejected(ids: &[u32]) -> Event {
+    Event::RevisionRejected {
+        revision: revised(ids),
+        reason: "the Revision only rewords the spec".into(),
     }
 }
 
@@ -232,4 +244,120 @@ fn work_unit_failed_round_trips_through_json() {
         "{json}"
     );
     assert_eq!(serde_json::from_str::<RevisionCause>(&json).unwrap(), cause);
+}
+
+#[test]
+fn a_rejected_revision_counts_toward_the_limit_and_the_scaffolder_revises_again() {
+    let mut session = writing();
+    let failure = retries_used_up(1);
+    session.apply(&failed(&failure)).unwrap();
+    let effects = session.apply(&rewording_rejected(&[1])).unwrap();
+    assert_eq!(
+        effects,
+        [Effect::RunRevision {
+            task: 0,
+            cause: RevisionCause::WorkUnitFailed(failure.clone()),
+        }]
+    );
+    assert_eq!(
+        session.revisions()[0].rejection.as_deref(),
+        Some("the Revision only rewords the spec")
+    );
+    assert_eq!(session.work_units()[0], work_unit(1));
+
+    let effects = session.apply(&rewording_rejected(&[1])).unwrap();
+    assert_eq!(
+        effects,
+        [Effect::ShowEscalationCheckpoint {
+            task: 0,
+            cause: RevisionCause::WorkUnitFailed(failure),
+        }]
+    );
+}
+
+#[test]
+fn a_shared_signature_change_goes_straight_to_the_escalation_checkpoint() {
+    let mut session = writing();
+    let failure = retries_used_up(1);
+    session.apply(&failed(&failure)).unwrap();
+    let shared = Revision {
+        diagnosis: "parse() must return a Result, and WU-2 and WU-3 call it".into(),
+        work_units: vec![],
+        shared_change: Some("Change parse() to return Result<Config, ParseError>".into()),
+    };
+    let effects = session
+        .apply(&Event::RevisionSubmitted {
+            revision: shared.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        effects,
+        [Effect::ShowEscalationCheckpoint {
+            task: 0,
+            cause: RevisionCause::WorkUnitFailed(failure),
+        }]
+    );
+    assert_eq!(session.revisions()[0].revision, shared);
+}
+
+fn with_revision_checkpoints() -> Session {
+    let mut session = writing();
+    session
+        .apply(&Event::RevisionCheckpointsSet { enabled: true })
+        .unwrap();
+    session.apply(&failed(&retries_used_up(1))).unwrap();
+    session
+}
+
+#[test]
+fn with_revision_checkpoints_on_the_human_operator_approves_each_revision() {
+    let mut session = with_revision_checkpoints();
+    let effects = session.apply(&revision(&[1])).unwrap();
+    assert_eq!(
+        effects,
+        [Effect::ShowRevisionCheckpoint {
+            task: 0,
+            revision: revised(&[1]),
+        }]
+    );
+    assert!(session.revisions().is_empty());
+
+    let effects = session.apply(&Event::RevisionApproved).unwrap();
+    assert_eq!(effects, [Effect::RunWriter { id: WorkUnitId(1) }]);
+    assert_eq!(session.revisions().len(), 1);
+}
+
+#[test]
+fn a_revision_rejected_at_its_checkpoint_counts_and_carries_the_feedback() {
+    let mut session = with_revision_checkpoints();
+    session.apply(&revision(&[1])).unwrap();
+    let effects = session
+        .apply(&Event::CheckpointRejected {
+            feedback: "Give it the Config type instead".into(),
+        })
+        .unwrap();
+    assert!(matches!(effects[..], [Effect::RunRevision { task: 0, .. }]));
+    assert_eq!(
+        session.revisions()[0].rejection.as_deref(),
+        Some("Give it the Config type instead")
+    );
+}
+
+#[test]
+fn revision_checkpoint_events_round_trip_through_json() {
+    for (event, expected) in [
+        (
+            Event::RevisionCheckpointsSet { enabled: true },
+            r#"{"type":"revision_checkpoints_set","enabled":true}"#,
+        ),
+        (Event::RevisionApproved, r#"{"type":"revision_approved"}"#),
+    ] {
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(json, expected);
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+    }
+    let rejected = rewording_rejected(&[1]);
+    let json = serde_json::to_string(&rejected).unwrap();
+    assert!(!json.contains("shared_change"), "{json}");
+    assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), rejected);
 }

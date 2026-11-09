@@ -50,6 +50,17 @@ pub enum Event {
     RevisionSubmitted {
         revision: Revision,
     },
+    /// Arbor rejected the Revision, e.g. because it only reworded the spec. It counts toward the
+    /// Revision limit.
+    RevisionRejected {
+        revision: Revision,
+        reason: String,
+    },
+    /// Turns the Checkpoint after each Revision on or off. Off by default.
+    RevisionCheckpointsSet {
+        enabled: bool,
+    },
+    RevisionApproved,
     /// The Human Operator fixed the problem at the open Checkpoint by hand, so Arbor checks again.
     /// `commit` is the fix Arbor committed, or `None` when there was nothing to commit.
     OperatorFixed {

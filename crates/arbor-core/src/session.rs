@@ -43,8 +43,13 @@ pub enum Effect {
         task: usize,
         cause: RevisionCause,
     },
-    /// The Revisions are used up, so the Human Operator decides before anything goes to the
-    /// Planner.
+    /// Only with Revision Checkpoints turned on (`RevisionCheckpointsSet`).
+    ShowRevisionCheckpoint {
+        task: usize,
+        revision: Revision,
+    },
+    /// The Revisions are used up, or a Revision needs a shared signature changed, so the Human
+    /// Operator decides before anything goes to the Planner.
     ShowEscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
@@ -99,6 +104,11 @@ pub enum Phase {
         task: usize,
         cause: RevisionCause,
     },
+    RevisionCheckpoint {
+        task: usize,
+        cause: RevisionCause,
+        revision: Revision,
+    },
     EscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
@@ -116,7 +126,7 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyError {
     Unexpected {
-        phase: Phase,
+        phase: Box<Phase>,
         event: Box<Event>,
     },
     /// Empty, out of range, or naming a Task twice.
@@ -208,6 +218,7 @@ pub struct Session {
     revisions: Vec<RevisionRound>,
     /// The Work Units whose Writer has sent its one Missing Response.
     missing_responses: BTreeSet<WorkUnitId>,
+    revision_checkpoints: bool,
     usage: UsageTotals,
     budget_cap: Option<Usd>,
 }
@@ -300,7 +311,7 @@ impl Session {
     /// Applies one event and returns the effects that should follow it.
     pub fn apply(&mut self, event: &Event) -> Result<Vec<Effect>, ApplyError> {
         let unexpected = || ApplyError::Unexpected {
-            phase: self.phase.clone(),
+            phase: Box::new(self.phase.clone()),
             event: Box::new(event.clone()),
         };
         let resolves_or_records = matches!(
@@ -392,9 +403,51 @@ impl Session {
             }
             (Phase::Revising { task, cause }, Event::RevisionSubmitted { revision }) => {
                 let (task, cause) = (*task, cause.clone());
-                self.check_revision_ids(&cause, revision)?;
-                self.apply_revision(cause, revision);
+                if revision.shared_change.is_some() {
+                    self.record_round(&cause, revision, None);
+                    Phase::EscalationCheckpoint { task, cause }
+                } else {
+                    self.check_revision_ids(&cause, revision)?;
+                    if self.revision_checkpoints {
+                        Phase::RevisionCheckpoint {
+                            task,
+                            cause,
+                            revision: revision.clone(),
+                        }
+                    } else {
+                        self.apply_revision(&cause, revision);
+                        self.write_from(task, 0)
+                    }
+                }
+            }
+            (Phase::Revising { task, cause }, Event::RevisionRejected { revision, reason }) => {
+                let (task, cause) = (*task, cause.clone());
+                self.record_round(&cause, revision, Some(reason));
+                self.revise_or_escalate(task, cause)
+            }
+            (
+                Phase::RevisionCheckpoint {
+                    task,
+                    cause,
+                    revision,
+                },
+                Event::RevisionApproved,
+            ) => {
+                let (task, cause, revision) = (*task, cause.clone(), revision.clone());
+                self.apply_revision(&cause, &revision);
                 self.write_from(task, 0)
+            }
+            (
+                Phase::RevisionCheckpoint {
+                    task,
+                    cause,
+                    revision,
+                },
+                Event::CheckpointRejected { feedback },
+            ) => {
+                let (task, cause, revision) = (*task, cause.clone(), revision.clone());
+                self.record_round(&cause, &revision, Some(feedback));
+                self.revise_or_escalate(task, cause)
             }
             (Phase::EscalationCheckpoint { task, cause }, Event::OperatorFixed { commit }) => {
                 let (task, failed_unit) = (*task, cause.work_unit());
@@ -435,6 +488,10 @@ impl Session {
                 self.budget_cap = cap;
                 phase.clone()
             }
+            (phase, &Event::RevisionCheckpointsSet { enabled }) if is_live(phase) => {
+                self.revision_checkpoints = enabled;
+                phase.clone()
+            }
             (_, Event::SessionStopped) if self.is_at_budget_checkpoint() => Phase::Stopped,
             _ => return Err(unexpected()),
         };
@@ -469,6 +526,10 @@ impl Session {
             Phase::Revising { task, cause } => Effect::RunRevision {
                 task: *task,
                 cause: cause.clone(),
+            },
+            Phase::RevisionCheckpoint { task, revision, .. } => Effect::ShowRevisionCheckpoint {
+                task: *task,
+                revision: revision.clone(),
             },
             Phase::EscalationCheckpoint { task, cause } => Effect::ShowEscalationCheckpoint {
                 task: *task,
@@ -567,7 +628,7 @@ impl Session {
         }
     }
 
-    fn apply_revision(&mut self, cause: RevisionCause, revision: &Revision) {
+    fn apply_revision(&mut self, cause: &RevisionCause, revision: &Revision) {
         for revised in &revision.work_units {
             match self
                 .work_units
@@ -584,9 +645,19 @@ impl Session {
             Some(failed) => self.queue_after(failed, &revised),
             None => revised,
         };
+        self.record_round(cause, revision, None);
+    }
+
+    fn record_round(
+        &mut self,
+        cause: &RevisionCause,
+        revision: &Revision,
+        rejection: Option<&String>,
+    ) {
         self.revisions.push(RevisionRound {
-            cause,
+            cause: cause.clone(),
             revision: revision.clone(),
+            rejection: rejection.cloned(),
         });
     }
 

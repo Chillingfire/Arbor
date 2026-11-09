@@ -33,6 +33,7 @@ fn revision(diagnosis: &str, ids: &[u32]) -> Revision {
     Revision {
         diagnosis: diagnosis.into(),
         work_units: ids.iter().map(|&id| unit(id, "Add the numbers.")).collect(),
+        shared_change: None,
     }
 }
 
@@ -174,6 +175,7 @@ fn a_second_revision_sees_what_the_first_tried() {
             output: "first failure".into(),
         },
         revision: revision("add() needed wrapping", &[4]),
+        rejection: None,
     }];
     let prompt = prompt(&dir, &earlier);
     assert!(prompt.inputs.contains("# Revision 2"));

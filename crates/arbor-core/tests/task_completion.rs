@@ -72,6 +72,7 @@ fn revision(diagnosis: &str, ids: &[u32]) -> Event {
         revision: Revision {
             diagnosis: diagnosis.into(),
             work_units: ids.iter().map(|&id| work_unit(id)).collect(),
+            shared_change: None,
         },
     }
 }
@@ -125,6 +126,7 @@ fn a_revision_replaces_work_units_by_id_and_adds_new_ones() {
         revision: Revision {
             diagnosis: "WU-2 was too big; split off WU-3".into(),
             work_units: vec![revised.clone(), work_unit(3)],
+            shared_change: None,
         },
     };
     let effects = session.apply(&event).unwrap();

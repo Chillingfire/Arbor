@@ -231,7 +231,9 @@ fn a_revision_sees_the_failure_the_task_diff_its_work_units_and_earlier_revision
         revision: Revision {
             diagnosis: "greet() dropped the comma".to_owned(),
             work_units: vec![work_unit()],
+            shared_change: None,
         },
+        rejection: None,
     }];
     let units = [work_unit()];
     let revision = RevisionInputs {
