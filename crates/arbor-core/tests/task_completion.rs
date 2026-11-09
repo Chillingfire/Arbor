@@ -78,6 +78,16 @@ fn revision(diagnosis: &str, ids: &[u32]) -> Event {
     }
 }
 
+/// The Revision is accepted and its edits committed as `commit`.
+fn accepted(diagnosis: &str, ids: &[u32], commit: Option<&str>) -> [Event; 2] {
+    [
+        revision(diagnosis, ids),
+        Event::RevisionCommitted {
+            commit: commit.map(str::to_owned),
+        },
+    ]
+}
+
 #[test]
 fn a_failed_task_check_sends_its_output_to_a_revision() {
     let mut session = at_task_checks(&["A"]);
@@ -95,13 +105,15 @@ fn a_failed_task_check_sends_its_output_to_a_revision() {
 fn only_the_revised_work_units_are_written_again_then_the_task_is_checked() {
     let mut session = at_task_checks(&["A"]);
     session.apply(&failed("wu_2 failed")).unwrap();
-    let mut effects = session
-        .apply(&revision("WU-2 lacked the parser", &[2]))
-        .unwrap();
+    let mut effects = apply_all(
+        &mut session,
+        &accepted("WU-2 lacked the parser", &[2], Some("rev")),
+    );
     effects.extend(apply_all(&mut session, &write_and_commit(2, "c3")));
     assert_eq!(
         effects,
         [
+            Effect::CommitRevision { task: 0 },
             Effect::RunWriter { id: WorkUnitId(2) },
             Effect::CommitWorkUnit { id: WorkUnitId(2) },
             Effect::RunTaskChecks { task: 0 },
@@ -112,7 +124,8 @@ fn only_the_revised_work_units_are_written_again_then_the_task_is_checked() {
         .iter()
         .map(|commit| commit.hash.as_str())
         .collect();
-    assert_eq!(task_commits, ["c1", "c2", "c3"]);
+    assert_eq!(task_commits, ["c1", "c2", "rev", "c3"]);
+    assert_eq!(session.task_commits()[2].origin, CommitOrigin::Revision);
     assert_eq!(session.revisions().len(), 1);
     assert_eq!(session.revisions()[0].cause, cause("wu_2 failed"));
 }
@@ -131,7 +144,7 @@ fn a_revision_replaces_work_units_by_id_and_adds_new_ones() {
         },
     };
     let effects = session.apply(&event).unwrap();
-    assert_eq!(effects, [Effect::RunWriter { id: WorkUnitId(2) }]);
+    assert_eq!(effects, [Effect::CommitRevision { task: 0 }]);
     assert_eq!(session.work_units(), [work_unit(1), revised, work_unit(3)]);
     assert_eq!(session.next_work_unit_id(), WorkUnitId(4));
 }
@@ -170,7 +183,7 @@ fn after_the_last_revision_fails_the_human_operator_decides() {
     let mut session = at_task_checks(&["A"]);
     for round in 0..MAX_REVISIONS {
         session.apply(&failed("still failing")).unwrap();
-        session.apply(&revision("Try again", &[2])).unwrap();
+        apply_all(&mut session, &accepted("Try again", &[2], None));
         apply_all(&mut session, &write_and_commit(2, &format!("r{round}")));
     }
     let effects = session.apply(&failed("still failing")).unwrap();
@@ -189,7 +202,7 @@ fn an_operator_fix_at_the_escalation_checkpoint_reruns_the_task_check() {
     let mut session = at_task_checks(&["A"]);
     for _ in 0..MAX_REVISIONS {
         session.apply(&failed("still failing")).unwrap();
-        session.apply(&revision("Try again", &[2])).unwrap();
+        apply_all(&mut session, &accepted("Try again", &[2], None));
         apply_all(&mut session, &write_and_commit(2, "r"));
     }
     session.apply(&failed("still failing")).unwrap();
@@ -215,7 +228,7 @@ fn an_operator_fix_at_the_escalation_checkpoint_reruns_the_task_check() {
 fn a_passing_task_check_starts_the_next_task_with_no_revisions() {
     let mut session = at_task_checks(&["A", "B"]);
     session.apply(&failed("wu_2 failed")).unwrap();
-    session.apply(&revision("Fix WU-2", &[2])).unwrap();
+    apply_all(&mut session, &accepted("Fix WU-2", &[2], None));
     apply_all(&mut session, &write_and_commit(2, "c3"));
     let effects = session.apply(&Event::TaskChecksPassed).unwrap();
     assert_eq!(

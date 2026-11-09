@@ -46,6 +46,7 @@ fn use_up_revisions(session: &mut Session, id: u32) {
                         shared_change: None,
                     },
                 },
+                Event::RevisionCommitted { commit: None },
                 Event::WorkUnitPassed { id: WorkUnitId(id) },
                 Event::WorkUnitCommitted {
                     id: WorkUnitId(id),

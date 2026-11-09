@@ -53,6 +53,14 @@ pub enum Effect {
         task: usize,
         revision: Revision,
     },
+    /// Commit the accepted Revision's edits, so a later rejected one is discarded back to them.
+    CommitRevision {
+        task: usize,
+    },
+    /// Put the worktree back to `HEAD`, undoing the edits of a Revision that wasn't accepted.
+    DiscardRevision {
+        task: usize,
+    },
     /// The Revisions are used up, or a Revision needs a shared signature changed, so the Human
     /// Operator decides before anything goes to the Planner.
     ShowEscalationCheckpoint {
@@ -132,6 +140,13 @@ pub enum Phase {
         task: usize,
         cause: RevisionCause,
         revision: Revision,
+    },
+    CommittingRevision {
+        task: usize,
+    },
+    DiscardingRevision {
+        task: usize,
+        cause: RevisionCause,
     },
     EscalationCheckpoint {
         task: usize,
@@ -461,7 +476,7 @@ impl Session {
                 let (task, cause) = (*task, cause.clone());
                 if revision.shared_change.is_some() {
                     self.record_round(&cause, revision, None);
-                    Phase::EscalationCheckpoint { task, cause }
+                    Phase::DiscardingRevision { task, cause }
                 } else {
                     self.check_revision_ids(&cause, revision)?;
                     if self.revision_checkpoints {
@@ -472,14 +487,14 @@ impl Session {
                         }
                     } else {
                         self.apply_revision(&cause, revision);
-                        self.write_from(task, 0)
+                        Phase::CommittingRevision { task }
                     }
                 }
             }
             (Phase::Revising { task, cause }, Event::RevisionRejected { revision, reason }) => {
                 let (task, cause) = (*task, cause.clone());
                 self.record_round(&cause, revision, Some(reason));
-                self.revise_or_escalate(task, cause)
+                Phase::DiscardingRevision { task, cause }
             }
             (
                 Phase::RevisionCheckpoint {
@@ -491,7 +506,7 @@ impl Session {
             ) => {
                 let (task, cause, revision) = (*task, cause.clone(), revision.clone());
                 self.apply_revision(&cause, &revision);
-                self.write_from(task, 0)
+                Phase::CommittingRevision { task }
             }
             (
                 Phase::RevisionCheckpoint {
@@ -503,7 +518,19 @@ impl Session {
             ) => {
                 let (task, cause, revision) = (*task, cause.clone(), revision.clone());
                 self.record_round(&cause, &revision, Some(feedback));
-                self.revise_or_escalate(task, cause)
+                Phase::DiscardingRevision { task, cause }
+            }
+            (&Phase::CommittingRevision { task }, Event::RevisionCommitted { commit }) => {
+                self.record_optional_commit(commit, CommitOrigin::Revision);
+                self.write_from(task, 0)
+            }
+            (Phase::DiscardingRevision { task, cause }, Event::RevisionDiscarded) => {
+                let (task, cause) = (*task, cause.clone());
+                if self.last_round_needs_shared_change() {
+                    Phase::EscalationCheckpoint { task, cause }
+                } else {
+                    self.revise_or_escalate(task, cause)
+                }
             }
             (Phase::EscalationCheckpoint { task, cause }, Event::OperatorFixed { commit }) => {
                 let (task, failed_unit) = (*task, cause.work_unit());
@@ -626,6 +653,8 @@ impl Session {
                 task: *task,
                 revision: revision.clone(),
             },
+            &Phase::CommittingRevision { task } => Effect::CommitRevision { task },
+            &Phase::DiscardingRevision { task, .. } => Effect::DiscardRevision { task },
             Phase::EscalationCheckpoint { task, cause } => Effect::ShowEscalationCheckpoint {
                 task: *task,
                 cause: cause.clone(),
@@ -705,6 +734,12 @@ impl Session {
         } else {
             Phase::EscalationCheckpoint { task, cause }
         }
+    }
+
+    fn last_round_needs_shared_change(&self) -> bool {
+        self.revisions
+            .last()
+            .is_some_and(|round| round.revision.shared_change.is_some())
     }
 
     fn note_missing_response(&mut self, failure: &WorkUnitFailure) {

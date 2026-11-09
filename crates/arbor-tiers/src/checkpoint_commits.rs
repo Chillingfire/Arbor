@@ -11,6 +11,22 @@ pub fn commit_skeleton(worktree: &Worktree, task: &Task) -> Result<Event, GitErr
     Ok(Event::SkeletonCommitted { commit })
 }
 
+/// Commits the edits of a Revision that was accepted, by review or at its Checkpoint, and returns
+/// `RevisionCommitted`.
+pub fn commit_revision(worktree: &Worktree, task: &Task) -> Result<Event, GitError> {
+    let subject = format!("{} (revised structure and tests)", title(task));
+    let commit = commit_all(worktree, &subject)?;
+    Ok(Event::RevisionCommitted { commit })
+}
+
+/// Undoes the edits of a Revision that wasn't accepted and returns `RevisionDiscarded`. `HEAD`
+/// holds the Task's last accepted state, since the Skeleton and every accepted Revision are
+/// committed.
+pub fn discard_revision(worktree: &Worktree) -> Result<Event, GitError> {
+    worktree.reset_to(&worktree.head()?)?;
+    Ok(Event::RevisionDiscarded)
+}
+
 /// Like every commit, it doesn't mention Arbor (ADR-0009).
 fn skeleton_subject(task: &Task) -> String {
     format!("{} (structure and tests)", title(task))

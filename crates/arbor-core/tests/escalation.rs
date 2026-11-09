@@ -86,6 +86,11 @@ fn revision(ids: &[u32]) -> Event {
     }
 }
 
+/// The Revision is accepted and its edits committed.
+fn accepted(ids: &[u32]) -> [Event; 2] {
+    [revision(ids), Event::RevisionCommitted { commit: None }]
+}
+
 fn rewording_rejected(ids: &[u32]) -> Event {
     Event::RevisionRejected {
         revision: revised(ids),
@@ -136,13 +141,14 @@ fn after_a_work_unit_revision_the_writers_go_on_with_the_rest_of_the_task() {
     let mut session = writing();
     apply_all(&mut session, &write_and_commit(1, "c1"));
     session.apply(&failed(&retries_used_up(2))).unwrap();
-    let mut effects = session.apply(&revision(&[2, 4])).unwrap();
+    let mut effects = apply_all(&mut session, &accepted(&[2, 4]));
     effects.extend(apply_all(&mut session, &write_and_commit(2, "c2")));
     effects.extend(apply_all(&mut session, &write_and_commit(4, "c4")));
     effects.extend(apply_all(&mut session, &write_and_commit(3, "c3")));
     assert_eq!(
         effects,
         [
+            Effect::CommitRevision { task: 0 },
             Effect::RunWriter { id: WorkUnitId(2) },
             Effect::CommitWorkUnit { id: WorkUnitId(2) },
             Effect::RunWriter { id: WorkUnitId(4) },
@@ -171,7 +177,7 @@ fn after_two_revisions_of_a_work_unit_the_human_operator_decides() {
     let mut session = writing();
     for _ in 0..MAX_REVISIONS {
         session.apply(&failed(&retries_used_up(1))).unwrap();
-        session.apply(&revision(&[1])).unwrap();
+        apply_all(&mut session, &accepted(&[1]));
     }
     let failure = retries_used_up(1);
     let effects = session.apply(&failed(&failure)).unwrap();
@@ -188,10 +194,10 @@ fn after_two_revisions_of_a_work_unit_the_human_operator_decides() {
 fn work_units_split_off_by_a_revision_share_its_revision_count() {
     let mut session = writing();
     session.apply(&failed(&retries_used_up(1))).unwrap();
-    session.apply(&revision(&[1, 4])).unwrap();
+    apply_all(&mut session, &accepted(&[1, 4]));
     apply_all(&mut session, &write_and_commit(1, "c1"));
     session.apply(&failed(&retries_used_up(4))).unwrap();
-    session.apply(&revision(&[4])).unwrap();
+    apply_all(&mut session, &accepted(&[4]));
     let effects = session.apply(&failed(&retries_used_up(4))).unwrap();
     assert!(
         matches!(effects[..], [Effect::ShowEscalationCheckpoint { .. }]),
@@ -204,7 +210,7 @@ fn each_work_unit_gets_its_own_revisions() {
     let mut session = writing();
     for _ in 0..MAX_REVISIONS {
         session.apply(&failed(&retries_used_up(1))).unwrap();
-        session.apply(&revision(&[1])).unwrap();
+        apply_all(&mut session, &accepted(&[1]));
     }
     apply_all(&mut session, &write_and_commit(1, "c1"));
     let effects = session.apply(&failed(&retries_used_up(2))).unwrap();
@@ -216,7 +222,7 @@ fn an_operator_fix_of_a_failed_work_unit_goes_on_with_the_next_one() {
     let mut session = writing();
     for _ in 0..MAX_REVISIONS {
         session.apply(&failed(&retries_used_up(1))).unwrap();
-        session.apply(&revision(&[1])).unwrap();
+        apply_all(&mut session, &accepted(&[1]));
     }
     session.apply(&failed(&retries_used_up(1))).unwrap();
     assert!(matches!(
@@ -253,6 +259,8 @@ fn a_rejected_revision_counts_toward_the_limit_and_the_scaffolder_revises_again(
     let failure = retries_used_up(1);
     session.apply(&failed(&failure)).unwrap();
     let effects = session.apply(&rewording_rejected(&[1])).unwrap();
+    assert_eq!(effects, [Effect::DiscardRevision { task: 0 }]);
+    let effects = session.apply(&Event::RevisionDiscarded).unwrap();
     assert_eq!(
         effects,
         [Effect::RunRevision {
@@ -266,7 +274,8 @@ fn a_rejected_revision_counts_toward_the_limit_and_the_scaffolder_revises_again(
     );
     assert_eq!(session.work_units()[0], work_unit(1));
 
-    let effects = session.apply(&rewording_rejected(&[1])).unwrap();
+    session.apply(&rewording_rejected(&[1])).unwrap();
+    let effects = session.apply(&Event::RevisionDiscarded).unwrap();
     assert_eq!(
         effects,
         [Effect::ShowEscalationCheckpoint {
@@ -291,6 +300,12 @@ fn a_shared_signature_change_goes_straight_to_the_escalation_checkpoint() {
             revision: shared.clone(),
         })
         .unwrap();
+    assert_eq!(
+        effects,
+        [Effect::DiscardRevision { task: 0 }],
+        "the Revision's edits are undone before the Human Operator sees the worktree"
+    );
+    let effects = session.apply(&Event::RevisionDiscarded).unwrap();
     assert_eq!(
         effects,
         [Effect::ShowEscalationCheckpoint {
@@ -324,6 +339,10 @@ fn with_revision_checkpoints_on_the_human_operator_approves_each_revision() {
     assert!(session.revisions().is_empty());
 
     let effects = session.apply(&Event::RevisionApproved).unwrap();
+    assert_eq!(effects, [Effect::CommitRevision { task: 0 }]);
+    let effects = session
+        .apply(&Event::RevisionCommitted { commit: None })
+        .unwrap();
     assert_eq!(effects, [Effect::RunWriter { id: WorkUnitId(1) }]);
     assert_eq!(session.revisions().len(), 1);
 }
@@ -337,6 +356,8 @@ fn a_revision_rejected_at_its_checkpoint_counts_and_carries_the_feedback() {
             feedback: "Give it the Config type instead".into(),
         })
         .unwrap();
+    assert_eq!(effects, [Effect::DiscardRevision { task: 0 }]);
+    let effects = session.apply(&Event::RevisionDiscarded).unwrap();
     assert!(matches!(effects[..], [Effect::RunRevision { task: 0, .. }]));
     assert_eq!(
         session.revisions()[0].rejection.as_deref(),
@@ -352,6 +373,13 @@ fn revision_checkpoint_events_round_trip_through_json() {
             r#"{"type":"revision_checkpoints_set","enabled":true}"#,
         ),
         (Event::RevisionApproved, r#"{"type":"revision_approved"}"#),
+        (
+            Event::RevisionCommitted {
+                commit: Some("r1".into()),
+            },
+            r#"{"type":"revision_committed","commit":"r1"}"#,
+        ),
+        (Event::RevisionDiscarded, r#"{"type":"revision_discarded"}"#),
     ] {
         let json = serde_json::to_string(&event).unwrap();
         assert_eq!(json, expected);

@@ -66,6 +66,12 @@ pub enum Event {
         enabled: bool,
     },
     RevisionApproved,
+    /// The accepted Revision's edits were committed, or `None` when it changed no file.
+    RevisionCommitted {
+        commit: Option<String>,
+    },
+    /// The worktree is back at `HEAD`, without the edits of the Revision that wasn't accepted.
+    RevisionDiscarded,
     /// At the escalation Checkpoint, the Human Operator sends the failed Task to the Planner.
     ReplanRequested,
     ReplanSubmitted {
