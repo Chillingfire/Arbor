@@ -25,8 +25,15 @@ const FEATURE: &str = "Add longest_word";
 /// The commit of the Skeleton approved at the scaffold Checkpoint, named after the Task.
 const SKELETON_COMMIT: &str = "Add longest_word (structure and tests)";
 
+/// The commit of an accepted Revision that changed files.
+const REVISION_COMMIT: &str = "Add longest_word (revised structure and tests)";
+
 /// The commit subject the Writer takes from the Work Unit's spec (ADR-0009).
 const WRITER_COMMIT: &str = "Return the longest whitespace-separated word in `text`";
+
+/// The Writer's commit for the Work Unit before its Revision, whose spec left out ties.
+const NARROW_WRITER_COMMIT: &str =
+    "Find the longest word in `text`, or `None` when it has no words";
 
 const IMPLEMENTATION: &str = "\
 pub fn longest_word(text: &str) -> Option<&str> {
@@ -213,4 +220,57 @@ async fn missing_response_goes_to_a_revision_that_gives_the_writer_what_it_lacke
     );
     assert_cost(&pipeline.session, Tier::Scaffolder, 0.04 + 0.04);
     assert_cost(&pipeline.session, Tier::Writer, 2.0 * 0.0012);
+}
+
+#[tokio::test]
+async fn revision_rewrites_a_work_unit_after_the_task_checks_fail() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("revision");
+    let mut pipeline = Pipeline::new(&sample, &client);
+
+    pipeline.run(REQUEST).await;
+
+    client.finish();
+    assert!(pipeline.session.is_done());
+    assert_replays(&pipeline);
+    let task_check_output = pipeline
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::TaskChecksFailed { output } => Some(output),
+            _ => None,
+        })
+        .expect("the Task's Unit Check fails once");
+    assert!(task_check_output.contains(TIE_TEST), "{task_check_output}");
+    let revision = pipeline
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::RevisionSubmitted { revision } => Some(revision),
+            _ => None,
+        })
+        .expect("the Scaffolder submits a Revision");
+    assert_eq!(revision.work_units[0].test_filter, "longest_word_tests");
+    let revision_request = &client.sent()[3];
+    let revision_inputs = last_user_text(revision_request);
+    assert!(
+        revision_inputs.contains("# Revision 1"),
+        "{revision_inputs}"
+    );
+    assert!(revision_inputs.contains(TIE_TEST), "{revision_inputs}");
+    assert!(revision_inputs.contains("max_by_key"), "{revision_inputs}");
+    assert_eq!(pipeline.writer_attempts.len(), 2);
+    let library = sample.read("src/lib.rs");
+    assert!(library.contains(IMPLEMENTATION), "{library}");
+    assert!(!library.contains("ARBOR:"), "{library}");
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [
+            SKELETON_COMMIT,
+            NARROW_WRITER_COMMIT,
+            REVISION_COMMIT,
+            WRITER_COMMIT
+        ]
+    );
+    assert_cost(&pipeline.session, Tier::Scaffolder, 0.04 + 0.04);
 }
