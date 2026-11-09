@@ -10,7 +10,9 @@ mod types;
 pub use cost::{Usage, UsageTotals, Usd};
 pub use event::Event;
 pub use log::{EventLog, ReadError, read_events};
-pub use revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
+pub use revision::{
+    FailedAttempt, MAX_REVISIONS, Revision, RevisionCause, RevisionRound, WorkUnitFailure,
+};
 pub use session::{ApplyError, Effect, Phase, Session};
 pub use types::{
     ASSUMPTION_PREFIX, CommitOrigin, LeftoverMarker, Plan, Priority, Request, SessionCommit,

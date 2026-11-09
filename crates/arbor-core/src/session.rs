@@ -1,8 +1,11 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::cost::{UsageTotals, Usd};
 use crate::event::Event;
-use crate::revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
+use crate::revision::{
+    MAX_REVISIONS, Revision, RevisionCause, RevisionRound, WorkUnitFailure, revisions_for,
+};
 use crate::types::{
     CommitOrigin, LeftoverMarker, Plan, Request, SessionCommit, WorkUnit, WorkUnitId,
 };
@@ -127,6 +130,10 @@ pub enum ApplyError {
     WorkUnitIdTaken {
         id: WorkUnitId,
     },
+    /// A Revision of one failed Work Unit may revise only that Work Unit and add new ones.
+    OutsideRevisionScope {
+        id: WorkUnitId,
+    },
     /// The event names a Work Unit other than the one in progress.
     WrongWorkUnit {
         expected: WorkUnitId,
@@ -156,6 +163,12 @@ impl fmt::Display for ApplyError {
             Self::DuplicateWorkUnit { id } => write!(f, "duplicate work unit {id}"),
             Self::WorkUnitIdTaken { id } => {
                 write!(f, "{id} was already used by an earlier work unit")
+            }
+            Self::OutsideRevisionScope { id } => {
+                write!(
+                    f,
+                    "{id} is outside the Revision's scope of one failed Work Unit"
+                )
             }
             Self::WrongWorkUnit { expected, got } => {
                 write!(f, "event for {got} while {expected} is in progress")
@@ -193,6 +206,8 @@ pub struct Session {
     task_commits_start: usize,
     /// The current Task's Revisions.
     revisions: Vec<RevisionRound>,
+    /// The Work Units whose Writer has sent its one Missing Response.
+    missing_responses: BTreeSet<WorkUnitId>,
     usage: UsageTotals,
     budget_cap: Option<Usd>,
 }
@@ -240,6 +255,11 @@ impl Session {
     /// The current Task's Revisions so far, oldest first.
     pub fn revisions(&self) -> &[RevisionRound] {
         &self.revisions
+    }
+
+    /// A Writer may send one Missing Response per Work Unit; a later one costs a retry.
+    pub fn may_send_missing_response(&self, id: WorkUnitId) -> bool {
+        !self.missing_responses.contains(&id)
     }
 
     /// The lowest ID no Work Unit in the Session has used.
@@ -342,6 +362,11 @@ impl Session {
                 self.expect_work_unit(unit, *id)?;
                 Phase::Committing { task, unit }
             }
+            (&Phase::Writing { task, unit }, Event::WorkUnitFailed { failure }) => {
+                self.expect_work_unit(unit, failure.id)?;
+                self.note_missing_response(failure);
+                self.revise_or_escalate(task, RevisionCause::WorkUnitFailed(failure.clone()))
+            }
             (&Phase::Committing { task, unit }, Event::WorkUnitCommitted { id, commit }) => {
                 self.expect_work_unit(unit, *id)?;
                 self.record_commit(commit, CommitOrigin::WorkUnit(*id));
@@ -363,21 +388,24 @@ impl Session {
                 let cause = RevisionCause::TaskChecksFailed {
                     output: output.clone(),
                 };
-                if self.revisions.len() < MAX_REVISIONS {
-                    Phase::Revising { task, cause }
-                } else {
-                    Phase::EscalationCheckpoint { task, cause }
-                }
+                self.revise_or_escalate(task, cause)
             }
             (Phase::Revising { task, cause }, Event::RevisionSubmitted { revision }) => {
                 let (task, cause) = (*task, cause.clone());
-                self.check_revision_ids(revision)?;
+                self.check_revision_ids(&cause, revision)?;
                 self.apply_revision(cause, revision);
                 self.write_from(task, 0)
             }
-            (&Phase::EscalationCheckpoint { task, .. }, Event::OperatorFixed { commit }) => {
+            (Phase::EscalationCheckpoint { task, cause }, Event::OperatorFixed { commit }) => {
+                let (task, failed_unit) = (*task, cause.work_unit());
                 self.record_operator_fix(commit);
-                Phase::TaskChecking { task }
+                match failed_unit {
+                    Some(fixed) => {
+                        self.write_queue = self.queue_after(fixed, &[]);
+                        self.write_from(task, 0)
+                    }
+                    None => Phase::TaskChecking { task },
+                }
             }
             (Phase::CheckingMarkers, Event::MarkersChecked { remaining }) => {
                 if remaining.is_empty() {
@@ -468,6 +496,28 @@ impl Session {
         }
     }
 
+    /// The Human Operator's Checkpoint comes before anything goes to the Planner.
+    fn revise_or_escalate(&self, task: usize, cause: RevisionCause) -> Phase {
+        if revisions_for(&self.revisions, &cause) < MAX_REVISIONS {
+            Phase::Revising { task, cause }
+        } else {
+            Phase::EscalationCheckpoint { task, cause }
+        }
+    }
+
+    fn note_missing_response(&mut self, failure: &WorkUnitFailure) {
+        if failure.missing_response.is_some() {
+            self.missing_responses.insert(failure.id);
+        }
+    }
+
+    /// The Work Units before `failed` in the queue have passed, so they are dropped.
+    fn queue_after(&self, failed: WorkUnitId, replacements: &[WorkUnitId]) -> Vec<WorkUnitId> {
+        let position = self.write_queue.iter().position(|&id| id == failed);
+        let rest = position.map_or(&[][..], |position| &self.write_queue[position + 1..]);
+        replacements.iter().chain(rest).copied().collect()
+    }
+
     fn record_commit(&mut self, hash: &str, origin: CommitOrigin) {
         self.commits.push(SessionCommit {
             hash: hash.to_owned(),
@@ -486,12 +536,26 @@ impl Session {
         self.highest_id = self.highest_id.max(highest);
     }
 
-    /// A revised Work Unit keeps an ID from the current Task; a new one takes an unused ID.
-    fn check_revision_ids(&self, revision: &Revision) -> Result<(), ApplyError> {
+    /// A revised Work Unit keeps an ID from the current Task, only the failed one's when one Work
+    /// Unit failed; a new one takes an unused ID.
+    fn check_revision_ids(
+        &self,
+        cause: &RevisionCause,
+        revision: &Revision,
+    ) -> Result<(), ApplyError> {
         if let Some(id) = first_duplicate(&revision.work_units) {
             return Err(ApplyError::DuplicateWorkUnit { id });
         }
         let in_task = |id| self.work_units.iter().any(|unit| unit.id == id);
+        if let Some(failed) = cause.work_unit()
+            && let Some(id) = revision
+                .work_units
+                .iter()
+                .map(|unit| unit.id)
+                .find(|&id| id != failed && in_task(id))
+        {
+            return Err(ApplyError::OutsideRevisionScope { id });
+        }
         let taken = revision
             .work_units
             .iter()
@@ -515,7 +579,11 @@ impl Session {
             }
         }
         self.note_ids(&revision.work_units);
-        self.write_queue = revision.work_units.iter().map(|unit| unit.id).collect();
+        let revised: Vec<WorkUnitId> = revision.work_units.iter().map(|unit| unit.id).collect();
+        self.write_queue = match cause.work_unit() {
+            Some(failed) => self.queue_after(failed, &revised),
+            None => revised,
+        };
         self.revisions.push(RevisionRound {
             cause,
             revision: revision.clone(),

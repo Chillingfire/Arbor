@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cost::{Usage, Usd};
-use crate::revision::Revision;
+use crate::revision::{Revision, WorkUnitFailure};
 use crate::types::{LeftoverMarker, Plan, Request, Tier, WorkUnit, WorkUnitId};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
@@ -31,6 +31,10 @@ pub enum Event {
     /// The Writer's code was spliced and its Work Unit's Checks passed.
     WorkUnitPassed {
         id: WorkUnitId,
+    },
+    /// The Writer failed its Work Unit: it used up its retries, or sent a Missing Response.
+    WorkUnitFailed {
+        failure: WorkUnitFailure,
     },
     WorkUnitCommitted {
         id: WorkUnitId,
