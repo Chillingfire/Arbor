@@ -209,6 +209,39 @@ async fn a_failed_call_leaves_the_transcript_unchanged_so_it_can_be_retried() {
     assert_eq!(agent.messages(), before);
 }
 
+#[tokio::test]
+async fn a_used_up_tool_call_budget_refuses_more_calls_and_makes_the_model_submit() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "the answer is 7\n").unwrap();
+    let mut agent = ask(&dir).with_tool_call_budget(2);
+    let read = || ("read_file", json!({ "path": "notes.txt" }));
+    let client = QueueClient::new([
+        calls(&[read()]),
+        calls(&[read(), read()]),
+        calls(&[("submit_answer", json!({ "answer": 7 }))]),
+    ]);
+
+    agent.turn(&client).await.unwrap();
+    agent.turn(&client).await.unwrap();
+    let results = tool_results(agent.messages());
+    assert!(results[1].contains("the answer is 7"), "{}", results[1]);
+    assert_eq!(
+        results[2],
+        "Error: the tool-call budget of 2 is used up; call `submit_answer` now."
+    );
+    assert!(
+        common::last_user_text(agent.messages()).contains("tool-call budget of 2"),
+        "the model is told to submit"
+    );
+
+    let turn = agent.turn(&client).await.unwrap();
+    assert_eq!(turn.outcome, Some(Outcome::Submitted(Answer { answer: 7 })));
+    assert_eq!(
+        client.last_request().tool_choice,
+        Some(ToolChoice::Tool("submit_answer".into()))
+    );
+}
+
 #[test]
 fn a_model_without_tool_calling_is_rejected() {
     let dir = TempDir::new().unwrap();

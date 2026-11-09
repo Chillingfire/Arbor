@@ -89,6 +89,7 @@ fn run<'a>(dir: &'a TempDir, prompt: &'a Prompt) -> RevisionRun<'a> {
         cap_tokens: 8000,
         revisable: vec![WorkUnitId(4)],
         first_new_id: WorkUnitId(9),
+        tool_call_budget: 15,
     }
 }
 

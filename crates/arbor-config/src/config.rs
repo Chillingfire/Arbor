@@ -20,6 +20,10 @@ pub struct Config {
     pub failure_brief_tokens: u32,
     /// Sessions idle this long are pruned. 0 means never.
     pub retention_days: u32,
+    /// The tool calls one Scaffolder Revision may make before it must submit.
+    pub revision_tool_call_budget: u32,
+    /// Pause at a Checkpoint after each Revision, not only before the Planner.
+    pub revision_checkpoints: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +81,8 @@ impl Default for Config {
             writer_cap_tokens: 8000,
             failure_brief_tokens: 2000,
             retention_days: 30,
+            revision_tool_call_budget: 15,
+            revision_checkpoints: false,
         }
     }
 }
@@ -164,6 +170,15 @@ struct ProjectFile {
     writer_cap_tokens: Option<u32>,
     failure_brief_tokens: Option<u32>,
     retention_days: Option<u32>,
+    #[serde(default)]
+    revisions: RevisionsFile,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RevisionsFile {
+    tool_call_budget: Option<u32>,
+    checkpoints: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -279,6 +294,12 @@ impl Config {
         }
         if let Some(days) = project.retention_days {
             config.retention_days = days;
+        }
+        if let Some(budget) = project.revisions.tool_call_budget {
+            config.revision_tool_call_budget = budget;
+        }
+        if let Some(checkpoints) = project.revisions.checkpoints {
+            config.revision_checkpoints = checkpoints;
         }
         Ok(config)
     }

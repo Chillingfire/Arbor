@@ -152,6 +152,8 @@ pub struct Agent<T> {
     failures: Vec<String>,
     told_to_submit: bool,
     force_submit: bool,
+    tool_call_budget: Option<usize>,
+    tool_calls_made: usize,
 }
 
 impl<T: DeserializeOwned + JsonSchema> Agent<T> {
@@ -179,7 +181,20 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             failures: Vec::new(),
             told_to_submit: false,
             force_submit: false,
+            tool_call_budget: None,
+            tool_calls_made: 0,
         })
+    }
+
+    /// Caps the tool calls the run may make before it must submit. The submit tool doesn't count.
+    pub fn with_tool_call_budget(mut self, budget: usize) -> Self {
+        self.tool_call_budget = Some(budget);
+        self
+    }
+
+    fn budget_used_up(&self) -> bool {
+        self.tool_call_budget
+            .is_some_and(|budget| self.tool_calls_made >= budget)
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -267,7 +282,14 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         let mut submitted = None;
         let mut failed = false;
         for call in calls {
-            let result = if call.name != self.submission.name {
+            let result = if call.name != self.submission.name && self.budget_used_up() {
+                format!(
+                    "Error: the tool-call budget of {} is used up; call `{}` now.",
+                    self.tool_call_budget.unwrap_or_default(),
+                    self.submission.name
+                )
+            } else if call.name != self.submission.name {
+                self.tool_calls_made += 1;
                 let output = self.tools.call(&call.name, &call.arguments).await;
                 if output.is_error {
                     format!("Error: {}", output.text)
@@ -299,7 +321,19 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             self.state = State::Finished;
             return Some(Outcome::Submitted(value));
         }
-        (failed && self.failures.len() >= MAX_SUBMIT_FAILURES).then(|| self.escalate())
+        if failed && self.failures.len() >= MAX_SUBMIT_FAILURES {
+            return Some(self.escalate());
+        }
+        if self.budget_used_up() && !self.force_submit {
+            self.force_submit = true;
+            self.user(format!(
+                "You have used your tool-call budget of {}. Stop exploring and call `{}` now \
+                 with your best result.",
+                self.tool_call_budget.unwrap_or_default(),
+                self.submission.name
+            ));
+        }
+        None
     }
 
     async fn parse(&self, arguments: &str) -> Result<T, String> {

@@ -29,6 +29,8 @@ pub struct RevisionRun<'a> {
     pub revisable: Vec<WorkUnitId>,
     /// `Session::next_work_unit_id`: new Work Units, e.g. from a split, are numbered from here.
     pub first_new_id: WorkUnitId,
+    /// `Config::revision_tool_call_budget`.
+    pub tool_call_budget: u32,
 }
 
 impl RevisionRun<'_> {
@@ -59,7 +61,9 @@ impl RevisionRun<'_> {
             self.first_new_id,
         )
         .revising(self.revisable);
+        let budget = usize::try_from(self.tool_call_budget).unwrap_or(usize::MAX);
         Agent::new(settings, submission(Arc::new(check)), tools, messages)
+            .map(|agent| agent.with_tool_call_budget(budget))
     }
 }
 
