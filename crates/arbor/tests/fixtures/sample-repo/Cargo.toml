@@ -1,0 +1,11 @@
+[package]
+name = "wordy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+doctest = false
+
+# Keeps each copy a project of its own, wherever the tests put it.
+[workspace]
