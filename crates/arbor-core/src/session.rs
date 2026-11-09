@@ -7,7 +7,7 @@ use crate::revision::{
     MAX_REVISIONS, Revision, RevisionCause, RevisionRound, WorkUnitFailure, revisions_for,
 };
 use crate::types::{
-    CommitOrigin, LeftoverMarker, Plan, Request, SessionCommit, WorkUnit, WorkUnitId,
+    CommitOrigin, LeftoverMarker, Plan, Replan, Request, SessionCommit, WorkUnit, WorkUnitId,
 };
 
 /// What the outer crates should do next.
@@ -53,6 +53,22 @@ pub enum Effect {
     ShowEscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
+    },
+    /// Run the Planner on the failed Task with its failure chain: `cause` and the Task's
+    /// [`Session::revisions`].
+    RunReplan {
+        task: usize,
+        cause: RevisionCause,
+        feedback: Option<String>,
+    },
+    /// The plan Checkpoint for the Tasks that would replace the failed one.
+    ShowReplanCheckpoint {
+        task: usize,
+        replan: Replan,
+    },
+    /// Reset the worktree to the Task's start, discarding its commits and uncommitted changes.
+    ResetTask {
+        task: usize,
     },
     /// Every Task is done: look for Markers left in the branch diff before finishing.
     CheckMarkers,
@@ -113,6 +129,19 @@ pub enum Phase {
         task: usize,
         cause: RevisionCause,
     },
+    Replanning {
+        task: usize,
+        cause: RevisionCause,
+        feedback: Option<String>,
+    },
+    ReplanCheckpoint {
+        task: usize,
+        cause: RevisionCause,
+        replan: Replan,
+    },
+    ResettingTask {
+        task: usize,
+    },
     CheckingMarkers,
     MarkerCheckpoint {
         remaining: Vec<LeftoverMarker>,
@@ -149,6 +178,10 @@ pub enum ApplyError {
         expected: WorkUnitId,
         got: WorkUnitId,
     },
+    /// The Task already came from a Replan; each Task gets one, then only the Human Operator.
+    ReplanUsed {
+        task: usize,
+    },
     /// A Budget Cap at or below what the Session has already spent, which would pause at once.
     BudgetCapReached {
         cap: Usd,
@@ -182,6 +215,9 @@ impl fmt::Display for ApplyError {
             }
             Self::WrongWorkUnit { expected, got } => {
                 write!(f, "event for {got} while {expected} is in progress")
+            }
+            Self::ReplanUsed { task } => {
+                write!(f, "Task {} has already been replanned once", task + 1)
             }
             Self::BudgetCapReached { cap, spent } => write!(
                 f,
@@ -219,6 +255,8 @@ pub struct Session {
     /// The Work Units whose Writer has sent its one Missing Response.
     missing_responses: BTreeSet<WorkUnitId>,
     revision_checkpoints: bool,
+    /// Per approved Task: whether it came from a Replan, which uses up the Replan it would get.
+    replanned: Vec<bool>,
     usage: UsageTotals,
     budget_cap: Option<Usd>,
 }
@@ -266,6 +304,11 @@ impl Session {
     /// The current Task's Revisions so far, oldest first.
     pub fn revisions(&self) -> &[RevisionRound] {
         &self.revisions
+    }
+
+    /// Each Task gets one Replan; the Tasks a Replan produces get none.
+    pub fn may_replan(&self, task: usize) -> bool {
+        !self.replanned.get(task).copied().unwrap_or(true)
     }
 
     /// A Writer may send one Missing Response per Work Unit; a later one costs a retry.
@@ -340,6 +383,7 @@ impl Session {
                     });
                 }
                 plan.tasks = task_order.iter().map(|&i| plan.tasks[i].clone()).collect();
+                self.replanned = vec![false; task_order.len()];
                 Phase::Scaffolding {
                     task: 0,
                     feedback: None,
@@ -460,6 +504,44 @@ impl Session {
                     None => Phase::TaskChecking { task },
                 }
             }
+            (Phase::EscalationCheckpoint { task, cause }, Event::ReplanRequested) => {
+                let task = *task;
+                if !self.may_replan(task) {
+                    return Err(ApplyError::ReplanUsed { task });
+                }
+                Phase::Replanning {
+                    task,
+                    cause: cause.clone(),
+                    feedback: None,
+                }
+            }
+            (Phase::Replanning { task, cause, .. }, Event::ReplanSubmitted { replan }) => {
+                Phase::ReplanCheckpoint {
+                    task: *task,
+                    cause: cause.clone(),
+                    replan: replan.clone(),
+                }
+            }
+            (
+                Phase::ReplanCheckpoint { task, cause, .. },
+                Event::CheckpointRejected { feedback },
+            ) => Phase::Replanning {
+                task: *task,
+                cause: cause.clone(),
+                feedback: Some(feedback.clone()),
+            },
+            (Phase::ReplanCheckpoint { task, replan, .. }, Event::PlanApproved { task_order }) => {
+                let (task, replan) = (*task, replan.clone());
+                self.approve_replan(task, &replan, task_order)?;
+                Phase::ResettingTask { task }
+            }
+            (&Phase::ResettingTask { task }, Event::TaskReset) => {
+                self.reset_task();
+                Phase::Scaffolding {
+                    task,
+                    feedback: None,
+                }
+            }
             (Phase::CheckingMarkers, Event::MarkersChecked { remaining }) => {
                 if remaining.is_empty() {
                     Phase::Done
@@ -535,6 +617,20 @@ impl Session {
                 task: *task,
                 cause: cause.clone(),
             },
+            Phase::Replanning {
+                task,
+                cause,
+                feedback,
+            } => Effect::RunReplan {
+                task: *task,
+                cause: cause.clone(),
+                feedback: feedback.clone(),
+            },
+            Phase::ReplanCheckpoint { task, replan, .. } => Effect::ShowReplanCheckpoint {
+                task: *task,
+                replan: replan.clone(),
+            },
+            &Phase::ResettingTask { task } => Effect::ResetTask { task },
             Phase::CheckingMarkers => Effect::CheckMarkers,
             Phase::MarkerCheckpoint { remaining } => Effect::ShowMarkerCheckpoint {
                 remaining: remaining.clone(),
@@ -555,6 +651,38 @@ impl Session {
         } else {
             Phase::TaskChecking { task }
         }
+    }
+
+    /// Puts the chosen Tasks of the Replan in place of the failed Task.
+    fn approve_replan(
+        &mut self,
+        task: usize,
+        replan: &Replan,
+        task_order: &[usize],
+    ) -> Result<(), ApplyError> {
+        if !is_valid_order(task_order, replan.tasks.len()) {
+            return Err(ApplyError::InvalidTaskOrder {
+                task_order: task_order.to_vec(),
+            });
+        }
+        let plan = self
+            .plan
+            .as_mut()
+            .expect("a Task runs only once a Plan is approved");
+        let replacements = task_order.iter().map(|&i| replan.tasks[i].clone());
+        plan.tasks.splice(task..=task, replacements);
+        self.replanned
+            .splice(task..=task, std::iter::repeat_n(true, task_order.len()));
+        Ok(())
+    }
+
+    /// Forgets the Task's work once its worktree is back where the Task started. Work Unit IDs
+    /// stay used, so the event log never names two Work Units the same.
+    fn reset_task(&mut self) {
+        self.commits.truncate(self.task_commits_start);
+        self.work_units.clear();
+        self.write_queue.clear();
+        self.revisions.clear();
     }
 
     /// The Human Operator's Checkpoint comes before anything goes to the Planner.

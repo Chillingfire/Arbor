@@ -50,6 +50,16 @@ pub struct Task {
     pub description: String,
 }
 
+/// The Planner's rework of a failed Task, submitted with `submit_replan`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Replan {
+    /// Why the Task failed, judging by its failure chain, and what the revised Tasks do
+    /// differently.
+    pub diagnosis: String,
+    /// The Tasks that replace the failed one, in the order they will run. One or more.
+    pub tasks: Vec<Task>,
+}
+
 /// Identifies a Work Unit within a Session. Shown and used in Markers as `WU-<n>`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,

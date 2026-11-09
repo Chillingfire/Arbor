@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cost::{Usage, Usd};
 use crate::revision::{Revision, WorkUnitFailure};
-use crate::types::{LeftoverMarker, Plan, Request, Tier, WorkUnit, WorkUnitId};
+use crate::types::{LeftoverMarker, Plan, Replan, Request, Tier, WorkUnit, WorkUnitId};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +15,8 @@ pub enum Event {
         plan: Plan,
     },
     /// The Human Operator approved the Plan. `task_order` lists the Plan's Task indices to run,
-    /// in order, so Tasks can be dropped or reordered.
+    /// in order, so Tasks can be dropped or reordered. At the Replan's Checkpoint it indexes the
+    /// Replan's Tasks instead.
     PlanApproved {
         task_order: Vec<usize>,
     },
@@ -61,6 +62,13 @@ pub enum Event {
         enabled: bool,
     },
     RevisionApproved,
+    /// At the escalation Checkpoint, the Human Operator sends the failed Task to the Planner.
+    ReplanRequested,
+    ReplanSubmitted {
+        replan: Replan,
+    },
+    /// The worktree was reset to where the Task started, after its Replan was approved.
+    TaskReset,
     /// The Human Operator fixed the problem at the open Checkpoint by hand, so Arbor checks again.
     /// `commit` is the fix Arbor committed, or `None` when there was nothing to commit.
     OperatorFixed {
