@@ -7,6 +7,7 @@ pub mod markers;
 mod planner;
 pub mod reply;
 mod revision;
+mod revision_review;
 mod scaffold_check;
 mod scaffolder;
 mod task_completion;
@@ -25,6 +26,9 @@ pub use init::{
 };
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
 pub use revision::{RevisionRun, SUBMIT_REVISION};
+pub use revision_review::{
+    REWORDING_ONLY, changes_outside_regions, changes_work_units, review_revision,
+};
 pub use scaffold_check::{
     NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, field_problems, marker_problems,
     revision_field_problems, writer_cap_report, writer_input_tokens,

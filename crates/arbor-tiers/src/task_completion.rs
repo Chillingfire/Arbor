@@ -98,14 +98,14 @@ pub fn leftover_markers(diff: &str) -> Vec<LeftoverMarker> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Hunk {
-    old_lines: usize,
-    new_start: usize,
-    new_lines: usize,
+pub(crate) struct Hunk {
+    pub(crate) old_lines: usize,
+    pub(crate) new_start: usize,
+    pub(crate) new_lines: usize,
 }
 
 /// Parses the rest of `@@ -1,3 +1,4 @@`, where a missing count means 1.
-fn parse_hunk(header: &str) -> Option<Hunk> {
+pub(crate) fn parse_hunk(header: &str) -> Option<Hunk> {
     let mut ranges = header.split_whitespace();
     let (_, old_lines) = parse_range(ranges.next()?.strip_prefix('-')?)?;
     let (new_start, new_lines) = parse_range(ranges.next()?.strip_prefix('+')?)?;
@@ -153,7 +153,7 @@ fn hunk_added_lines<'a>(
 }
 
 /// `b/src/lib.rs` gives `src/lib.rs`; a deleted file (`/dev/null`) gives `None`.
-fn new_file_path(header: &str) -> Option<String> {
+pub(crate) fn new_file_path(header: &str) -> Option<String> {
     let path = header.trim_end().trim_matches('"');
     path.strip_prefix("b/").map(str::to_owned)
 }

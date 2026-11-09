@@ -121,6 +121,16 @@ fn id_taken(id: WorkUnitId, first_id: WorkUnitId, revisable: &[WorkUnitId]) -> S
 
 /// A Region for a Work Unit not in `ids` is a problem too.
 pub fn marker_problems(file: &str, text: &str, ids: &[WorkUnitId]) -> Vec<String> {
+    marker_problems_keeping(file, text, ids, &[])
+}
+
+/// `kept` Regions belong to Work Units still waiting for their Writer, outside the Revision.
+fn marker_problems_keeping(
+    file: &str,
+    text: &str,
+    ids: &[WorkUnitId],
+    kept: &[WorkUnitId],
+) -> Vec<String> {
     let markers = Markers::parse(text);
     let mut problems: Vec<String> = markers
         .check(ids)
@@ -131,7 +141,7 @@ pub fn marker_problems(file: &str, text: &str, ids: &[WorkUnitId]) -> Vec<String
         .regions()
         .iter()
         .map(|region| region.id)
-        .filter(|id| !ids.contains(id))
+        .filter(|id| !ids.contains(id) && !kept.contains(id))
         .collect();
     strays.sort_unstable();
     strays.dedup();
@@ -148,6 +158,7 @@ pub struct ScaffoldCheck {
     cap_tokens: u32,
     first_id: WorkUnitId,
     revisable: Vec<WorkUnitId>,
+    kept_regions: Vec<WorkUnitId>,
 }
 
 impl ScaffoldCheck {
@@ -166,12 +177,20 @@ impl ScaffoldCheck {
             cap_tokens,
             first_id,
             revisable: Vec::new(),
+            kept_regions: Vec::new(),
         }
     }
 
     /// Checks a Revision, whose Work Units may also keep the IDs of the Task's own.
     pub fn revising(mut self, revisable: Vec<WorkUnitId>) -> Self {
         self.revisable = revisable;
+        self
+    }
+
+    /// Lets these Work Units keep their Regions without being submitted, e.g. the ones still
+    /// waiting for a Writer when a single Work Unit is revised.
+    pub fn keeping_regions(mut self, kept_regions: Vec<WorkUnitId>) -> Self {
+        self.kept_regions = kept_regions;
         self
     }
 
@@ -186,7 +205,12 @@ impl ScaffoldCheck {
                 continue;
             };
             match std::fs::read_to_string(self.worktree.join(path)) {
-                Ok(text) => problems.extend(marker_problems(file, &text, &ids)),
+                Ok(text) => problems.extend(marker_problems_keeping(
+                    file,
+                    &text,
+                    &ids,
+                    &self.kept_regions,
+                )),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => problems.push(format!(
                     "{file} doesn't exist; write the Skeleton there before submitting"
                 )),
