@@ -36,11 +36,21 @@ pub fn task_check_warning(checks: &Checks) -> Option<&'static str> {
 /// Everything the Task changed: from the parent of its first commit, or from `HEAD` before it
 /// has any, to the files in the worktree. Takes `Session::task_commits`.
 pub fn task_diff(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<String, GitError> {
-    let base = match task_commits.first() {
-        Some(first) => worktree.parent_of(&CommitId::from(first.hash.clone()))?,
-        None => worktree.head()?,
-    };
-    worktree.diff_from(&base)
+    worktree.diff_from(&task_start(worktree, task_commits)?)
+}
+
+/// Resets the worktree to where the Task started, after its Replan is approved, and returns
+/// `TaskReset`. Takes `Session::task_commits`.
+pub fn reset_task(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<Event, GitError> {
+    worktree.reset_to(&task_start(worktree, task_commits)?)?;
+    Ok(Event::TaskReset)
+}
+
+fn task_start(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<CommitId, GitError> {
+    match task_commits.first() {
+        Some(first) => worktree.parent_of(&CommitId::from(first.hash.clone())),
+        None => worktree.head(),
+    }
 }
 
 /// Default subjects for [`commit_operator_fix`]. Like every commit, they don't mention Arbor
