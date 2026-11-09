@@ -30,6 +30,7 @@ fn prompt(dir: &TempDir, mode: ClarificationMode) -> Prompt {
     let inputs = PlannerInputs {
         request: &request,
         clarification_mode: mode,
+        replan: None,
     };
     Prompts::builtin().planner(&conventions, &inputs).unwrap()
 }

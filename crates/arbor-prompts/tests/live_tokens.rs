@@ -43,6 +43,7 @@ async fn the_estimate_never_undercounts_real_token_counts() {
             &PlannerInputs {
                 request: &request,
                 clarification_mode: ClarificationMode::Ask,
+                replan: None,
             },
         )
         .unwrap();
