@@ -13,9 +13,9 @@ use arbor_prompts::{
 };
 use tempfile::tempdir;
 
-fn request(text: &str) -> Request {
+fn request(request_text: &str) -> Request {
     Request {
-        text: text.to_owned(),
+        text: request_text.to_owned(),
         issue: None,
     }
 }
@@ -55,12 +55,12 @@ fn conventions(dir: &Path) -> Conventions {
     Conventions::load(dir, &[]).unwrap()
 }
 
-fn planner(prompts: &Prompts, conventions: &Conventions, text: &str) -> Prompt {
+fn planner(prompts: &Prompts, conventions: &Conventions, request_text: &str) -> Prompt {
     prompts
         .planner(
             conventions,
             &PlannerInputs {
-                request: &request(text),
+                request: &request(request_text),
                 clarification_mode: ClarificationMode::Ask,
                 replan: None,
             },
@@ -104,10 +104,10 @@ fn check_proposal(prompts: &Prompts, conventions: &Conventions, tried: &[TriedCh
         .unwrap()
 }
 
-fn override_template(root: &Path, template: &str, text: &str) {
+fn override_template(root: &Path, template: &str, template_text: &str) {
     let dir = root.join(".arbor").join("prompts");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(format!("{template}.md")), text).unwrap();
+    fs::write(dir.join(format!("{template}.md")), template_text).unwrap();
 }
 
 #[test]
@@ -398,17 +398,17 @@ fn text_joins_the_parts_in_prompt_order_and_is_saved_per_tier() {
         &conventions(dir.path()),
         "Greet people",
     );
-    let text = prompt.text();
-    let instructions = text.find("# Role").unwrap();
-    let conventions = text.find("British spelling").unwrap();
-    let inputs = text.find("Greet people").unwrap();
+    let prompt_text = prompt.text();
+    let instructions = prompt_text.find("# Role").unwrap();
+    let conventions = prompt_text.find("British spelling").unwrap();
+    let inputs = prompt_text.find("Greet people").unwrap();
     assert!(instructions < conventions && conventions < inputs);
-    assert!(!text.contains('\r'));
+    assert!(!prompt_text.contains('\r'));
 
     let session = dir.path().join(".arbor").join("sessions").join("s1");
     let path = prompt.save(&session).unwrap();
     assert_eq!(path, session.join("prompts").join("planner.md"));
-    assert_eq!(fs::read_to_string(path).unwrap(), text);
+    assert_eq!(fs::read_to_string(path).unwrap(), prompt_text);
 }
 
 #[test]
@@ -482,14 +482,14 @@ fn session_inputs_in_the_instructions_fail_at_load() {
 
 #[test]
 fn broken_templates_fail_at_load() {
-    for text in [
+    for prompt_text in [
         "{% block instructions %}unclosed",
         "{% block instructions %}Only instructions{% endblock %}",
         "{% block instructions %}{{ request.text | nosuchfilter }}{% endblock %}\
          {% block inputs %}{% endblock %}",
     ] {
         let dir = tempdir().unwrap();
-        override_template(dir.path(), "planner", text);
+        override_template(dir.path(), "planner", prompt_text);
         let err = Prompts::load(dir.path()).unwrap_err();
         assert!(
             matches!(
@@ -499,7 +499,7 @@ fn broken_templates_fail_at_load() {
                     ..
                 }
             ),
-            "{text}: {err:?}"
+            "{prompt_text}: {err:?}"
         );
         assert!(err.to_string().contains("planner.md"), "{err}");
     }

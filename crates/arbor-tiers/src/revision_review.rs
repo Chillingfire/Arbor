@@ -73,7 +73,7 @@ pub fn changes_outside_regions(diff: &str, read_current: impl Fn(&str) -> Option
         if let Some(path) = line.strip_prefix("+++ ") {
             regions = new_file_path(path)
                 .and_then(|file| read_current(&file))
-                .map(|text| region_spans(&text));
+                .map(|file_text| region_spans(&file_text));
             continue;
         }
         let Some(hunk) = line.strip_prefix("@@ ").and_then(parse_hunk) else {
@@ -118,8 +118,8 @@ pub fn changes_outside_regions(diff: &str, read_current: impl Fn(&str) -> Option
 }
 
 /// 0-based line indices of each Region's BEGIN and END Markers.
-fn region_spans(text: &str) -> Vec<(usize, usize)> {
-    Markers::parse(text)
+fn region_spans(source: &str) -> Vec<(usize, usize)> {
+    Markers::parse(source)
         .regions()
         .iter()
         .map(|region| (region.begin, region.end))

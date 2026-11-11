@@ -212,25 +212,26 @@ struct ContextFile {
 }
 
 pub(crate) fn parse<T: for<'de> Deserialize<'de> + Default>(
-    text: Option<&str>,
+    toml_text: Option<&str>,
     file: ConfigFile,
 ) -> Result<T, ConfigError> {
-    text.map_or_else(
+    toml_text.map_or_else(
         || Ok(T::default()),
-        |text| {
-            toml::from_str(text).map_err(|err| ConfigError::Parse {
+        |toml_text| {
+            toml::from_str(toml_text).map_err(|err| ConfigError::Parse {
                 file,
                 line: err
                     .span()
-                    .map(|span| text[..span.start].matches('\n').count() + 1),
+                    .map(|span| toml_text[..span.start].matches('\n').count() + 1),
                 message: err.message().trim_end().to_owned(),
             })
         },
     )
 }
 
-fn has_api_key(text: &str) -> bool {
-    text.parse::<toml::Table>()
+fn has_api_key(toml_text: &str) -> bool {
+    toml_text
+        .parse::<toml::Table>()
         .is_ok_and(|table| table.contains_key("api_key"))
 }
 

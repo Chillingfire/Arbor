@@ -53,9 +53,9 @@ fn bring_in(repo_dir: &Path) -> (TempDir, Result<Worktree, arbor_git::GitError>)
     let mainline = repo.mainline(Some("main")).unwrap();
     let place = tempdir().unwrap();
     let branch = SessionBranch::for_feature("work").unwrap();
-    let result =
+    let worktree_result =
         repo.create_worktree_with_changes(&mainline, &branch, &place.path().join("session"));
-    (place, result)
+    (place, worktree_result)
 }
 
 fn read(dir: &Path, path: &str) -> String {
@@ -197,9 +197,9 @@ fn changes_that_conflict_with_the_mainline_are_refused_and_create_nothing() {
     write(&cloned.clone, "README.md", "changed locally\n");
     let before = snapshot(&cloned.clone);
 
-    let (place, result) = bring_in(&cloned.clone);
+    let (place, worktree_result) = bring_in(&cloned.clone);
 
-    let err = result.unwrap_err().to_string();
+    let err = worktree_result.unwrap_err().to_string();
     assert!(err.contains("README.md"), "{err}");
     assert!(err.contains("Leave them out"), "{err}");
     assert!(!place.path().join("session").exists());

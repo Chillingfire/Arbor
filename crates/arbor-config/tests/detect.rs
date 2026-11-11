@@ -52,8 +52,11 @@ fn every_project_type_has_checks_arbor_toml_accepts() {
         assert!(checks.scaffold.is_some() && checks.unit.is_some());
         if let Some(template) = &checks.unit_filtered {
             assert!(template.contains(FILTER_PLACEHOLDER), "{template}");
-            let text = format!("[checks]\nunit_filtered = {template:?}\n");
-            assert!(Config::from_toml(None, Some(&text)).is_ok(), "{text}");
+            let config_toml = format!("[checks]\nunit_filtered = {template:?}\n");
+            assert!(
+                Config::from_toml(None, Some(&config_toml)).is_ok(),
+                "{config_toml}"
+            );
         }
     }
     assert_eq!(

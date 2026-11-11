@@ -24,10 +24,10 @@ fn markers_are_found_in_any_comment_syntax() {
         "/* ARBOR:BEGIN WU-7 */\r\nreturn 0;\r\n/* ARBOR:END WU-7 */\r\n",
         "-- ARBOR:BEGIN\tWU-7\nselect 1;\n-- ARBOR:END   WU-7-->\n",
     ];
-    for text in cases {
-        let markers = Markers::parse(text);
-        assert_eq!(markers.regions(), [region(7, 0, 2)], "{text:?}");
-        assert_eq!(markers.errors(), [], "{text:?}");
+    for source in cases {
+        let markers = Markers::parse(source);
+        assert_eq!(markers.regions(), [region(7, 0, 2)], "{source:?}");
+        assert_eq!(markers.errors(), [], "{source:?}");
         assert_eq!(markers.region(wu(7)), Some(&region(7, 0, 2)));
         assert_eq!(markers.region(wu(7)).unwrap().body(), 1..2);
     }
@@ -35,15 +35,15 @@ fn markers_are_found_in_any_comment_syntax() {
 
 #[test]
 fn text_that_only_looks_like_a_marker_is_ignored() {
-    let text = "ARBOR:BEGINNING WU-1\nlet arbor = \"ARBOR:END\";\nARBOR:ENDS\n";
-    assert_eq!(Markers::parse(text), Markers::default());
+    let source = "ARBOR:BEGINNING WU-1\nlet arbor = \"ARBOR:END\";\nARBOR:ENDS\n";
+    assert_eq!(Markers::parse(source), Markers::default());
 }
 
 #[test]
 fn several_regions_in_one_file_are_found_in_order() {
-    let text = "fn a() {\n  // ARBOR:BEGIN WU-1\n  todo!()\n  // ARBOR:END WU-1\n}\n\
+    let source = "fn a() {\n  // ARBOR:BEGIN WU-1\n  todo!()\n  // ARBOR:END WU-1\n}\n\
                 fn b() {\n  // ARBOR:BEGIN WU-2\n  todo!()\n  // ARBOR:END WU-2\n}\n";
-    let markers = Markers::parse(text);
+    let markers = Markers::parse(source);
     assert_eq!(markers.regions(), [region(1, 1, 3), region(2, 6, 8)]);
     assert_eq!(markers.check(&[wu(1), wu(2)]), []);
     assert_eq!(markers.region(wu(3)), None);
@@ -100,22 +100,22 @@ fn every_kind_of_broken_pair_is_reported() {
             vec![MarkerError::Malformed { line: 0 }],
         ),
     ];
-    for (text, expected) in cases {
-        assert_eq!(Markers::parse(text).errors(), expected, "{text:?}");
+    for (source, expected) in cases {
+        assert_eq!(Markers::parse(source).errors(), expected, "{source:?}");
     }
 }
 
 #[test]
 fn a_duplicated_region_cannot_be_located() {
-    let text = "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n";
-    assert_eq!(Markers::parse(text).region(wu(1)), None);
+    let source = "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n";
+    assert_eq!(Markers::parse(source).region(wu(1)), None);
 }
 
 #[test]
 fn check_adds_a_missing_error_only_for_work_units_never_mentioned() {
-    let text = "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-2\n";
+    let source = "// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n// ARBOR:BEGIN WU-2\n";
     assert_eq!(
-        Markers::parse(text).check(&[wu(1), wu(2), wu(3)]),
+        Markers::parse(source).check(&[wu(1), wu(2), wu(3)]),
         [
             MarkerError::Unclosed { id: wu(2), line: 2 },
             MarkerError::Missing { id: wu(3) },
@@ -198,9 +198,9 @@ fn context_is_the_two_lines_just_outside_the_markers() {
 
 #[test]
 fn context_is_shorter_at_the_edges_of_the_file() {
-    let text = "fn f() {\n// ARBOR:BEGIN WU-1\ntodo!()\n// ARBOR:END WU-1\n}";
-    let region = *Markers::parse(text).region(wu(1)).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
+    let source = "fn f() {\n// ARBOR:BEGIN WU-1\ntodo!()\n// ARBOR:END WU-1\n}";
+    let region = *Markers::parse(source).region(wu(1)).unwrap();
+    let lines: Vec<&str> = source.lines().collect();
     assert_eq!(lines[region.context_before()], ["fn f() {"]);
     assert_eq!(lines[region.context_after(lines.len())], ["}"]);
 
@@ -225,29 +225,29 @@ fn splice_replaces_only_the_body() {
 
 #[test]
 fn splice_keeps_crlf_line_endings_and_allows_an_empty_body() {
-    let text = "a\r\n// ARBOR:BEGIN WU-1\r\nold\r\n// ARBOR:END WU-1\r\nb";
-    let region = *Markers::parse(text).region(wu(1)).unwrap();
+    let source = "a\r\n// ARBOR:BEGIN WU-1\r\nold\r\n// ARBOR:END WU-1\r\nb";
+    let region = *Markers::parse(source).region(wu(1)).unwrap();
     assert_eq!(
-        splice(text, &region, &["x", "y"]),
+        splice(source, &region, &["x", "y"]),
         "a\r\n// ARBOR:BEGIN WU-1\r\nx\r\ny\r\n// ARBOR:END WU-1\r\nb"
     );
     assert_eq!(
-        splice(text, &region, &[]),
+        splice(source, &region, &[]),
         "a\r\n// ARBOR:BEGIN WU-1\r\n// ARBOR:END WU-1\r\nb"
     );
 }
 
 #[test]
 fn strip_removes_only_that_work_units_markers() {
-    let text = "\
+    let source = "\
 // ARBOR:BEGIN WU-1
 one
 // ARBOR:END WU-1
 // ARBOR:BEGIN WU-2
 two
 // ARBOR:END WU-2";
-    let first = *Markers::parse(text).region(wu(1)).unwrap();
-    let stripped = strip(text, &first);
+    let first = *Markers::parse(source).region(wu(1)).unwrap();
+    let stripped = strip(source, &first);
     assert_eq!(stripped, "one\n// ARBOR:BEGIN WU-2\ntwo\n// ARBOR:END WU-2");
     let markers = Markers::parse(&stripped);
     assert_eq!(markers.regions(), [region(2, 1, 3)]);

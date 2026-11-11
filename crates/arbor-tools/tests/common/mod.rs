@@ -21,20 +21,20 @@ pub async fn call(tools: &Tools, name: &str, args: Value) -> ToolOutput {
 
 /// Calls a tool that must succeed and returns its text.
 pub async fn ok(tools: &Tools, name: &str, args: Value) -> String {
-    let output = call(tools, name, args).await;
-    assert!(!output.is_error, "{name} failed: {}", output.text);
-    output.text
+    let tool_output = call(tools, name, args).await;
+    assert!(!tool_output.is_error, "{name} failed: {}", tool_output.text);
+    tool_output.text
 }
 
 /// Calls a tool that must fail and returns its message.
 pub async fn err(tools: &Tools, name: &str, args: Value) -> String {
-    let output = call(tools, name, args).await;
+    let tool_output = call(tools, name, args).await;
     assert!(
-        output.is_error,
+        tool_output.is_error,
         "{name} should have failed: {}",
-        output.text
+        tool_output.text
     );
-    output.text
+    tool_output.text
 }
 
 pub fn write(dir: &Path, path: &str, text: &str) {

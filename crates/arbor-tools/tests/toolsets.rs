@@ -53,15 +53,15 @@ fn definitions_carry_object_schemas() {
 async fn planner_is_refused_scaffolder_tools() {
     let dir = tempdir().unwrap();
     let tools = planner(dir.path());
-    let output = call(
+    let tool_output = call(
         &tools,
         "write_file",
         json!({"path": "a.txt", "content": "x"}),
     )
     .await;
-    assert!(output.is_error);
-    assert!(output.text.contains("Planner"), "{}", output.text);
+    assert!(tool_output.is_error);
+    assert!(tool_output.text.contains("Planner"), "{}", tool_output.text);
     assert!(!dir.path().join("a.txt").exists());
-    let args = json!({"path": "a.txt", "old_string": "a", "new_string": "b"});
-    assert!(call(&tools, "edit_file", args).await.is_error);
+    let edit_args = json!({"path": "a.txt", "old_string": "a", "new_string": "b"});
+    assert!(call(&tools, "edit_file", edit_args).await.is_error);
 }

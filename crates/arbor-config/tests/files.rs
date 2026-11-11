@@ -29,8 +29,8 @@ fn saving_the_key_creates_the_user_config() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("arbor").join("config.toml");
     save_api_key(&path, "sk-or-new").unwrap();
-    let text = fs::read_to_string(&path).unwrap();
-    let key = resolve_api_key(None, Some(&text)).unwrap().unwrap();
+    let saved_toml = fs::read_to_string(&path).unwrap();
+    let key = resolve_api_key(None, Some(&saved_toml)).unwrap().unwrap();
     assert_eq!(key.expose(), "sk-or-new");
     assert_eq!(key.source(), KeySource::UserConfig);
 }
@@ -43,8 +43,8 @@ fn saving_the_key_keeps_the_rest_of_the_user_config() {
         "# my settings\napi_key = \"sk-or-old\"\n\n[roles.writer]\nmodel = \"x/writer\" # cheap\n";
     fs::write(&path, original).unwrap();
     save_api_key(&path, "sk-or-new").unwrap();
-    let text = fs::read_to_string(&path).unwrap();
-    assert_eq!(text, original.replace("sk-or-old", "sk-or-new"));
+    let saved_toml = fs::read_to_string(&path).unwrap();
+    assert_eq!(saved_toml, original.replace("sk-or-old", "sk-or-new"));
 }
 
 #[test]
@@ -113,8 +113,11 @@ fn saving_checks_replaces_only_the_checks_table() {
     let config = Config::load(None, dir.path()).unwrap();
     assert_eq!(config.checks, unit_only);
     assert_eq!(config.retention_days, 7);
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(text.starts_with("# project settings\n"), "{text}");
+    let saved_toml = fs::read_to_string(&path).unwrap();
+    assert!(
+        saved_toml.starts_with("# project settings\n"),
+        "{saved_toml}"
+    );
 }
 
 #[test]

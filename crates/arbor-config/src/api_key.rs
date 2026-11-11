@@ -43,18 +43,18 @@ pub fn resolve_api_key(
     env: Option<&str>,
     user: Option<&str>,
 ) -> Result<Option<ApiKey>, ConfigError> {
-    let found = |value: &str, source| {
-        let value = value.trim();
-        (!value.is_empty()).then(|| ApiKey {
-            value: value.to_owned(),
+    let found = |candidate: &str, source| {
+        let trimmed_key = candidate.trim();
+        (!trimmed_key.is_empty()).then(|| ApiKey {
+            value: trimmed_key.to_owned(),
             source,
         })
     };
-    if let Some(key) = env.and_then(|value| found(value, KeySource::Env)) {
+    if let Some(key) = env.and_then(|env_key| found(env_key, KeySource::Env)) {
         return Ok(Some(key));
     }
     let user: UserFile = parse(user, ConfigFile::User)?;
     Ok(user
         .api_key
-        .and_then(|value| found(&value, KeySource::UserConfig)))
+        .and_then(|user_key| found(&user_key, KeySource::UserConfig)))
 }

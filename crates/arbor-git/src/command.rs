@@ -36,16 +36,16 @@ impl std::error::Error for GitError {
 /// One git invocation. It runs `git` with an argv, never through a shell.
 pub(crate) struct Git<'a> {
     dir: &'a Path,
-    args: &'a [&'a str],
+    git_args: &'a [&'a str],
     index: Option<&'a Path>,
     input: Option<&'a [u8]>,
 }
 
 impl<'a> Git<'a> {
-    pub(crate) fn new(dir: &'a Path, args: &'a [&'a str]) -> Self {
+    pub(crate) fn new(dir: &'a Path, git_args: &'a [&'a str]) -> Self {
         Self {
             dir,
-            args,
+            git_args,
             index: None,
             input: None,
         }
@@ -64,15 +64,17 @@ impl<'a> Git<'a> {
 
     /// Runs git and returns its raw stdout, or an error if it failed.
     pub(crate) fn bytes(self) -> Result<Vec<u8>, GitError> {
-        let args = self.args;
-        let output = self.run()?;
-        if !output.status.success() {
+        let git_args = self.git_args;
+        let git_output = self.run()?;
+        if !git_output.status.success() {
             return Err(GitError::Failed {
-                command: format!("git {}", args.join(" ")),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                command: format!("git {}", git_args.join(" ")),
+                stderr: String::from_utf8_lossy(&git_output.stderr)
+                    .trim()
+                    .to_owned(),
             });
         }
-        Ok(output.stdout)
+        Ok(git_output.stdout)
     }
 
     /// Runs git and returns its stdout with trailing whitespace removed.
@@ -89,7 +91,7 @@ impl<'a> Git<'a> {
     fn run(self) -> Result<Output, GitError> {
         let mut command = Command::new("git");
         command
-            .args(self.args)
+            .args(self.git_args)
             .current_dir(self.dir)
             // Arbor runs under a TUI, so git must never wait for a password on the terminal.
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -113,22 +115,22 @@ impl<'a> Git<'a> {
         // Write from another thread so a large input can't deadlock against git's output.
         std::thread::scope(|scope| {
             let writer = scope.spawn(move || stdin.write_all(input));
-            let output = child.wait_with_output().map_err(GitError::Spawn)?;
+            let git_output = child.wait_with_output().map_err(GitError::Spawn)?;
             match writer.join().expect("the stdin writer does not panic") {
                 // git may exit before reading everything, e.g. on an error it reports itself.
                 Err(err) if err.kind() != io::ErrorKind::BrokenPipe => Err(GitError::Spawn(err)),
-                _ => Ok(output),
+                _ => Ok(git_output),
             }
         })
     }
 }
 
 /// Runs git in `dir` and returns its stdout with trailing whitespace removed.
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
-    Git::new(dir, args).text()
+pub(crate) fn git(dir: &Path, git_args: &[&str]) -> Result<String, GitError> {
+    Git::new(dir, git_args).text()
 }
 
 /// Runs git and reports only whether it succeeded, for queries whose failure means "no".
-pub(crate) fn git_succeeds(dir: &Path, args: &[&str]) -> Result<bool, GitError> {
-    Git::new(dir, args).succeeds()
+pub(crate) fn git_succeeds(dir: &Path, git_args: &[&str]) -> Result<bool, GitError> {
+    Git::new(dir, git_args).succeeds()
 }

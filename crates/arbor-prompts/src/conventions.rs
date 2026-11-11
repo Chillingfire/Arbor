@@ -235,12 +235,12 @@ fn read(root: &Path, path: &str, configured: bool) -> Result<Option<String>, Con
     if !canonical.starts_with(&canonical_root) {
         return Err(outside());
     }
-    let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
-    let text = text.trim_end();
-    Ok(Some(if text.is_empty() {
+    let file_text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+    let trimmed = file_text.trim_end();
+    Ok(Some(if trimmed.is_empty() {
         String::new()
     } else {
-        format!("{text}\n")
+        format!("{trimmed}\n")
     }))
 }
 

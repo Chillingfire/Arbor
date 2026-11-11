@@ -23,7 +23,7 @@ pub fn user_config_path(
     platform: Platform,
     env: impl Fn(&str) -> Option<String>,
 ) -> Option<PathBuf> {
-    let set = |name: &str| env(name).filter(|value| !value.is_empty());
+    let set = |name: &str| env(name).filter(|env_value| !env_value.is_empty());
     let base = match platform {
         Platform::Windows => PathBuf::from(set("APPDATA")?),
         Platform::Unix => set("XDG_CONFIG_HOME")

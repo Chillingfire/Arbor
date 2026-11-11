@@ -148,8 +148,8 @@ impl LlmClient for RecordedResponses {
             .get(*next)
             .expect("the pipeline made more calls than the fixture has responses");
         *next += 1;
-        let response = exchange.response.clone();
-        Box::pin(async move { response })
+        let recorded_response = exchange.response.clone();
+        Box::pin(async move { recorded_response })
     }
 
     fn model<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<ModelInfo, LlmError>> {

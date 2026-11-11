@@ -203,9 +203,9 @@ async fn a_rerun_after_rejection_sees_the_rejected_plan_and_the_feedback() {
 fn a_planner_model_without_tool_calling_is_rejected() {
     let dir = TempDir::new().unwrap();
     let prompt = prompt(&dir, ClarificationMode::Assume);
-    let result = run(&dir, &prompt, model(200_000, false), None).start();
+    let started = run(&dir, &prompt, model(200_000, false), None).start();
     assert_eq!(
-        result.err(),
+        started.err(),
         Some(UnsupportedModel {
             tier: Tier::Planner,
             model: "anthropic/claude-opus-5.5".into(),

@@ -96,13 +96,15 @@ pub fn leftover_markers(diff: &str) -> Vec<LeftoverMarker> {
             continue;
         };
         let added = hunk_added_lines(&mut lines, hunk);
-        leftovers.extend(added.filter(|(_, text)| is_well_formed_marker(text)).map(
-            |(number, text)| LeftoverMarker {
-                file: file.clone(),
-                line: number,
-                text: text.trim().to_owned(),
-            },
-        ));
+        leftovers.extend(
+            added
+                .filter(|(_, added_line)| is_well_formed_marker(added_line))
+                .map(|(number, added_line)| LeftoverMarker {
+                    file: file.clone(),
+                    line: number,
+                    text: added_line.trim().to_owned(),
+                }),
+        );
     }
     leftovers
 }

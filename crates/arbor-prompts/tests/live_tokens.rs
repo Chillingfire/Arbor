@@ -21,8 +21,8 @@ async fn input_tokens(client: &OpenRouterClient, model: &str, text: &str) -> u64
         max_tokens: Some(1),
         ..ChatRequest::default()
     };
-    let response = client.chat(&request).await.unwrap();
-    response.usage.input_tokens
+    let chat_response = client.chat(&request).await.unwrap();
+    chat_response.usage.input_tokens
 }
 
 #[tokio::test]

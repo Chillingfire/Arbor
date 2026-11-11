@@ -16,8 +16,8 @@ async fn write_file_creates_parent_directories() {
         json!({"path": "src/new/mod.rs", "content": "pub fn f() {}\n"}),
     )
     .await;
-    let text = fs::read_to_string(dir.path().join("src/new/mod.rs")).unwrap();
-    assert_eq!(text, "pub fn f() {}\n");
+    let written = fs::read_to_string(dir.path().join("src/new/mod.rs")).unwrap();
+    assert_eq!(written, "pub fn f() {}\n");
 }
 
 #[tokio::test]
@@ -79,10 +79,10 @@ async fn edit_file_replaces_a_unique_snippet() {
     let dir = tempdir().unwrap();
     write(dir.path(), "a.rs", "fn a() { todo!() }\nfn b() { 1 }\n");
     let tools = scaffolder(dir.path());
-    let args = json!({"path": "a.rs", "old_string": "todo!()", "new_string": "42"});
-    ok(&tools, "edit_file", args).await;
-    let text = fs::read_to_string(dir.path().join("a.rs")).unwrap();
-    assert_eq!(text, "fn a() { 42 }\nfn b() { 1 }\n");
+    let edit_args = json!({"path": "a.rs", "old_string": "todo!()", "new_string": "42"});
+    ok(&tools, "edit_file", edit_args).await;
+    let written = fs::read_to_string(dir.path().join("a.rs")).unwrap();
+    assert_eq!(written, "fn a() { 42 }\nfn b() { 1 }\n");
 }
 
 #[tokio::test]
@@ -127,11 +127,11 @@ async fn edit_file_matches_lf_snippets_in_crlf_files() {
     let dir = tempdir().unwrap();
     write(dir.path(), "a.rs", "fn a() {\r\n    todo!()\r\n}\r\n");
     let tools = scaffolder(dir.path());
-    let args =
+    let edit_args =
         json!({"path": "a.rs", "old_string": "{\n    todo!()\n}", "new_string": "{\n    1\n}"});
-    ok(&tools, "edit_file", args).await;
-    let text = fs::read_to_string(dir.path().join("a.rs")).unwrap();
-    assert_eq!(text, "fn a() {\r\n    1\r\n}\r\n");
+    ok(&tools, "edit_file", edit_args).await;
+    let written = fs::read_to_string(dir.path().join("a.rs")).unwrap();
+    assert_eq!(written, "fn a() {\r\n    1\r\n}\r\n");
 }
 
 #[cfg(unix)]
@@ -172,8 +172,8 @@ async fn writes_through_symlinks_outside_are_rejected() {
         json!({"path": "dangling.txt", "content": "x"}),
     )
     .await;
-    let args = json!({"path": "link.txt", "old_string": "original", "new_string": "x"});
-    err(&tools, "edit_file", args).await;
+    let edit_args = json!({"path": "link.txt", "old_string": "original", "new_string": "x"});
+    err(&tools, "edit_file", edit_args).await;
     assert_eq!(
         fs::read_to_string(outer.path().join("target.txt")).unwrap(),
         "original"

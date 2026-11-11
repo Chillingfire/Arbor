@@ -49,12 +49,12 @@ impl Worktree {
             return Ok(None);
         }
         // `whitespace` keeps description lines that start with `#`, which the default would drop.
-        let text = message.text();
+        let message_text = message.text();
         Git::new(
             dir,
             &["commit", "--quiet", "--cleanup=whitespace", "--file=-"],
         )
-        .input(text.as_bytes())
+        .input(message_text.as_bytes())
         .bytes()?;
         self.head().map(Some)
     }
@@ -94,7 +94,7 @@ impl Worktree {
     fn diff(&self, base_hash: &str, to_revision: Option<&str>) -> Result<String, GitError> {
         // Every option the operator's diff config could change is pinned, so the text is the
         // same on every machine.
-        let mut args = vec![
+        let mut diff_args = vec![
             "diff",
             "--no-color",
             "--no-ext-diff",
@@ -106,9 +106,9 @@ impl Worktree {
             "--dst-prefix=b/",
             base_hash,
         ];
-        args.extend(to_revision);
-        args.push("--");
-        let diff = Git::new(&self.path, &args).bytes()?;
+        diff_args.extend(to_revision);
+        diff_args.push("--");
+        let diff = Git::new(&self.path, &diff_args).bytes()?;
         Ok(String::from_utf8_lossy(&diff).into_owned())
     }
 
@@ -116,7 +116,8 @@ impl Worktree {
     /// event log, so it is never passed to git as an option or a range.
     fn verified<'a>(&self, commit: &'a CommitId) -> Result<&'a str, GitError> {
         let hash = commit.as_str();
-        let is_hash = (7..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit());
+        let is_hash =
+            (7..=64).contains(&hash.len()) && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
         let target = format!("{hash}^{{commit}}");
         if !is_hash || !git_succeeds(&self.path, &["rev-parse", "--verify", "--quiet", &target])? {
             return Err(GitError::Refused(format!(

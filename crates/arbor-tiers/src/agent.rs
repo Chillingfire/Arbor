@@ -31,9 +31,9 @@ impl<T: Sync + 'static> Submission<T> {
         description: &'static str,
         validate: impl Fn(&T) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
-        Self::with_async(name, description, move |value| {
-            let result = validate(value);
-            Box::pin(async move { result })
+        Self::with_async(name, description, move |submitted| {
+            let verdict = validate(submitted);
+            Box::pin(async move { verdict })
         })
     }
 
@@ -77,7 +77,11 @@ impl fmt::Display for UnsupportedModel {
 impl std::error::Error for UnsupportedModel {}
 
 pub fn require_tool_calling(tier: Tier, model: &ModelInfo) -> Result<(), UnsupportedModel> {
-    if model.supported_parameters.iter().any(|p| p == "tools") {
+    if model
+        .supported_parameters
+        .iter()
+        .any(|parameter| parameter == "tools")
+    {
         Ok(())
     } else {
         Err(UnsupportedModel {
@@ -207,22 +211,22 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             State::AwaitingAnswers => return Err(TurnError::AwaitingAnswers),
             State::Finished => return Err(TurnError::Finished),
         }
-        let response = client.chat(&self.request()).await?;
+        let chat_response = client.chat(&self.request()).await?;
         self.messages.push(Message::Assistant {
-            content: response.content.clone(),
-            tool_calls: response.tool_calls.clone(),
+            content: chat_response.content.clone(),
+            tool_calls: chat_response.tool_calls.clone(),
         });
-        let outcome = if response.tool_calls.is_empty() {
-            self.on_reply(response.content.as_deref().unwrap_or_default())
+        let outcome = if chat_response.tool_calls.is_empty() {
+            self.on_reply(chat_response.content.as_deref().unwrap_or_default())
         } else {
-            self.on_tool_calls(&response.tool_calls).await
+            self.on_tool_calls(&chat_response.tool_calls).await
         };
         if outcome.is_none() {
-            let used = response.usage.input_tokens + response.usage.output_tokens;
+            let used = chat_response.usage.input_tokens + chat_response.usage.output_tokens;
             self.check_context(used);
         }
         Ok(Turn {
-            usage: core_usage(&response.usage),
+            usage: core_usage(&chat_response.usage),
             outcome,
         })
     }
@@ -255,12 +259,12 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         }
     }
 
-    fn on_reply(&mut self, text: &str) -> Option<Outcome<T>> {
+    fn on_reply(&mut self, reply_text: &str) -> Option<Outcome<T>> {
         let may_ask = self.settings.clarification_mode == ClarificationMode::Ask && !self.asked;
-        if may_ask && !text.trim().is_empty() {
+        if may_ask && !reply_text.trim().is_empty() {
             self.asked = true;
             self.state = State::AwaitingAnswers;
-            return Some(Outcome::Questions(text.to_owned()));
+            return Some(Outcome::Questions(reply_text.to_owned()));
         }
         let name = self.submission.name;
         let reason = if self.asked {
@@ -282,7 +286,7 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         let mut submitted = None;
         let mut failed = false;
         for call in calls {
-            let result = if call.name != self.submission.name && self.budget_used_up() {
+            let tool_result = if call.name != self.submission.name && self.budget_used_up() {
                 format!(
                     "Error: the tool-call budget of {} is used up; call `{}` now.",
                     self.tool_call_budget.unwrap_or_default(),
@@ -290,19 +294,19 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
                 )
             } else if call.name != self.submission.name {
                 self.tool_calls_made += 1;
-                let output = self.tools.call(&call.name, &call.arguments).await;
-                if output.is_error {
-                    format!("Error: {}", output.text)
+                let tool_output = self.tools.call(&call.name, &call.arguments).await;
+                if tool_output.is_error {
+                    format!("Error: {}", tool_output.text)
                 } else {
-                    output.text
+                    tool_output.text
                 }
             } else if submitted.is_some() {
                 "Ignored: a submission was already accepted.".to_owned()
             } else {
                 let parsed = self.parse(&call.arguments).await;
                 match parsed {
-                    Ok(value) => {
-                        submitted = Some(value);
+                    Ok(parsed_submission) => {
+                        submitted = Some(parsed_submission);
                         "Submitted.".to_owned()
                     }
                     Err(message) => {
@@ -314,12 +318,12 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             };
             self.messages.push(Message::Tool {
                 tool_call_id: call.id.clone(),
-                content: result,
+                content: tool_result,
             });
         }
-        if let Some(value) = submitted {
+        if let Some(submission) = submitted {
             self.state = State::Finished;
-            return Some(Outcome::Submitted(value));
+            return Some(Outcome::Submitted(submission));
         }
         if failed && self.failures.len() >= MAX_SUBMIT_FAILURES {
             return Some(self.escalate());
@@ -337,10 +341,10 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
     }
 
     async fn parse(&self, arguments: &str) -> Result<T, String> {
-        let value: T = serde_json::from_str(arguments)
+        let submission: T = serde_json::from_str(arguments)
             .map_err(|err| format!("the arguments don't match the schema: {err}"))?;
-        (self.submission.validate)(&value).await?;
-        Ok(value)
+        (self.submission.validate)(&submission).await?;
+        Ok(submission)
     }
 
     fn fail(&mut self, message: String) -> Option<Outcome<T>> {
@@ -369,9 +373,9 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         ));
     }
 
-    fn user(&mut self, text: String) {
+    fn user(&mut self, instruction: String) {
         self.messages.push(Message::User {
-            content: vec![ContentPart::text(text)],
+            content: vec![ContentPart::text(instruction)],
         });
     }
 }

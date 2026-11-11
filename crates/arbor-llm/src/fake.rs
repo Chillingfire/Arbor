@@ -61,12 +61,12 @@ impl<C: LlmClient> LlmClient for RecordingClient<C> {
         request: &'a ChatRequest,
     ) -> BoxFuture<'a, Result<ChatResponse, LlmError>> {
         Box::pin(async move {
-            let response = self.inner.chat(request).await;
+            let inner_response = self.inner.chat(request).await;
             self.fixture.lock().unwrap().exchanges.push(Exchange {
                 request: request.clone(),
-                response: response.clone(),
+                response: inner_response.clone(),
             });
-            response
+            inner_response
         })
     }
 
@@ -129,8 +129,8 @@ impl LlmClient for ScriptedClient {
         &'a self,
         request: &'a ChatRequest,
     ) -> BoxFuture<'a, Result<ChatResponse, LlmError>> {
-        let response = self.replay(request);
-        Box::pin(async move { response })
+        let replayed = self.replay(request);
+        Box::pin(async move { replayed })
     }
 
     fn model<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<ModelInfo, LlmError>> {

@@ -29,10 +29,10 @@ fn init_writes_the_detected_checks_when_they_pass() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src").join("lib.rs"), "pub fn one() {}\n").unwrap();
 
-    let output = arbor_init(dir.path(), config_home.path());
+    let init_run = arbor_init(dir.path(), config_home.path());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&init_run.stdout);
+    assert!(init_run.status.success(), "{init_run:?}");
     assert!(
         stdout.ends_with("Wrote arbor.toml with the Checks for a Rust project.\n"),
         "{stdout}"
@@ -46,12 +46,12 @@ fn without_detected_checks_or_an_api_key_init_fails_and_writes_nothing() {
     let dir = tempdir().unwrap();
     let config_home = tempdir().unwrap();
 
-    let output = arbor_init(dir.path(), config_home.path());
+    let init_run = arbor_init(dir.path(), config_home.path());
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(init_run.status.code(), Some(1), "{init_run:?}");
+    let stderr = String::from_utf8_lossy(&init_run.stderr);
     assert!(stderr.contains("OPENROUTER_API_KEY"), "{stderr}");
-    assert!(String::from_utf8_lossy(&output.stdout).starts_with("No manifest Arbor recognises"));
+    assert!(String::from_utf8_lossy(&init_run.stdout).starts_with("No manifest Arbor recognises"));
     assert!(!dir.path().join("arbor.toml").exists());
 }
 
@@ -61,10 +61,10 @@ fn init_shows_why_a_detected_command_failed() {
     let config_home = tempdir().unwrap();
     fs::write(dir.path().join("Cargo.toml"), "this is not a manifest").unwrap();
 
-    let output = arbor_init(dir.path(), config_home.path());
+    let init_run = arbor_init(dir.path(), config_home.path());
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(init_run.status.code(), Some(1), "{init_run:?}");
+    let stdout = String::from_utf8_lossy(&init_run.stdout);
     assert!(
         stdout.contains("`cargo check --all-targets` failed:\n    $ cargo check --all-targets"),
         "{stdout}"
@@ -75,10 +75,10 @@ fn init_shows_why_a_detected_command_failed() {
 
 #[test]
 fn init_takes_no_arguments() {
-    let output = Command::new(env!("CARGO_BIN_EXE_arbor"))
+    let init_run = Command::new(env!("CARGO_BIN_EXE_arbor"))
         .args(["init", "now"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: arbor [init"));
+    assert_eq!(init_run.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&init_run.stderr).contains("usage: arbor [init"));
 }

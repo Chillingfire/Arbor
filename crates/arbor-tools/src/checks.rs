@@ -88,23 +88,23 @@ pub(crate) async fn run_check(
         .map_err(|err| format!("could not start {}: {err}", argv[0]))?;
     let shown = shell_words::join(&argv);
     // On timeout the child is dropped, which kills it.
-    let Ok(output) = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await else {
+    let Ok(waited) = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await else {
         return Ok(ToolOutput {
             text: format!("$ {shown}\ntimed out after 10 minutes and was killed"),
             is_error: true,
         });
     };
-    let output = output.map_err(|err| format!("{shown}: {err}"))?;
+    let check_output = waited.map_err(|err| format!("{shown}: {err}"))?;
 
-    let status = match output.status.code() {
+    let status = match check_output.status.code() {
         Some(code) => format!("exit code {code}"),
         None => "killed by a signal".to_owned(),
     };
-    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let mut combined = String::from_utf8_lossy(&check_output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&check_output.stderr));
     Ok(ToolOutput {
         text: format!("$ {shown}\n{status}\n\n{}", trim_output(&combined)),
-        is_error: !output.status.success(),
+        is_error: !check_output.status.success(),
     })
 }
 
@@ -151,8 +151,8 @@ fn resolve_program(program: &str, root: &Path) -> Result<std::path::PathBuf, Str
 }
 
 /// Keeps the start and end of long output, where compilers and test runners put what matters.
-fn trim_output(output: &str) -> String {
-    let lines: Vec<String> = output
+fn trim_output(check_output: &str) -> String {
+    let lines: Vec<String> = check_output
         .trim()
         .lines()
         .map(|line| cut(line, MAX_OUTPUT_LINE_CHARS))

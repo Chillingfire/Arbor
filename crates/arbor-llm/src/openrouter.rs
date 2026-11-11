@@ -42,7 +42,7 @@ impl OpenRouterClient {
     }
 
     async fn send_chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
-        let response = self
+        let http_response = self
             .http
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
@@ -50,18 +50,18 @@ impl OpenRouterClient {
             .send()
             .await
             .map_err(network)?;
-        parse_chat(&checked_body(response).await?)
+        parse_chat(&checked_body(http_response).await?)
     }
 
     async fn fetch_models(&self) -> Result<HashMap<String, ModelInfo>, LlmError> {
-        let response = self
+        let http_response = self
             .http
             .get(format!("{}/models", self.base_url))
             .bearer_auth(&self.api_key)
             .send()
             .await
             .map_err(network)?;
-        parse_models(&checked_body(response).await?)
+        parse_models(&checked_body(http_response).await?)
     }
 
     async fn lookup_model(&self, id: &str) -> Result<ModelInfo, LlmError> {
@@ -99,15 +99,15 @@ fn decode(message: impl Into<String>) -> LlmError {
 }
 
 /// Returns the body of a successful response, or the error an unsuccessful one describes.
-async fn checked_body(response: reqwest::Response) -> Result<String, LlmError> {
-    let status = response.status().as_u16();
-    let retry_after = response
+async fn checked_body(http_response: reqwest::Response) -> Result<String, LlmError> {
+    let status = http_response.status().as_u16();
+    let retry_after = http_response
         .headers()
         .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse().ok())
+        .and_then(|header| header.to_str().ok())
+        .and_then(|seconds| seconds.trim().parse().ok())
         .map(Duration::from_secs);
-    let body = response.text().await.map_err(network)?;
+    let body = http_response.text().await.map_err(network)?;
     if (200..300).contains(&status) {
         return Ok(body);
     }
@@ -211,11 +211,11 @@ fn message_json(message: &Message, cache: bool, breakpoint: bool) -> Value {
             content,
             tool_calls,
         } => {
-            let content = match content {
+            let content_json = match content {
                 Some(text) if breakpoint => cached_text(text),
                 _ => json!(content),
             };
-            let mut message = json!({ "role": "assistant", "content": content });
+            let mut message = json!({ "role": "assistant", "content": content_json });
             if !tool_calls.is_empty() {
                 message["tool_calls"] = tool_calls
                     .iter()
@@ -234,12 +234,12 @@ fn message_json(message: &Message, cache: bool, breakpoint: bool) -> Value {
             tool_call_id,
             content,
         } => {
-            let content = if breakpoint {
+            let content_json = if breakpoint {
                 cached_text(content)
             } else {
                 json!(content)
             };
-            json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
+            json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content_json })
         }
     }
 }
@@ -249,9 +249,9 @@ fn parts_json(parts: &[ContentPart], cache: bool, breakpoint: bool) -> Value {
     parts
         .iter()
         .enumerate()
-        .map(|(i, part)| {
+        .map(|(index, part)| {
             let mut json = json!({ "type": "text", "text": part.text });
-            if (cache && part.cache) || (breakpoint && i == last) {
+            if (cache && part.cache) || (breakpoint && index == last) {
                 json["cache_control"] = json!({ "type": "ephemeral" });
             }
             json
@@ -365,10 +365,13 @@ fn parse_chat(body: &str) -> Result<ChatResponse, LlmError> {
         Usage {
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
-            cache_read_tokens: details.as_ref().and_then(|d| d.cached_tokens).unwrap_or(0),
+            cache_read_tokens: details
+                .as_ref()
+                .and_then(|token_details| token_details.cached_tokens)
+                .unwrap_or(0),
             cache_write_tokens: details
                 .as_ref()
-                .and_then(|d| d.cache_write_tokens)
+                .and_then(|token_details| token_details.cache_write_tokens)
                 .unwrap_or(0),
             cost_usd: usage.cost.unwrap_or(0.0),
         }
@@ -421,10 +424,10 @@ struct WirePricing {
 
 fn parse_models(body: &str) -> Result<HashMap<String, ModelInfo>, LlmError> {
     let wire: WireModels = serde_json::from_str(body).map_err(|err| decode(err.to_string()))?;
-    let price = |id: &str, value: &str| {
-        value
+    let price = |id: &str, price_text: &str| {
+        price_text
             .parse::<f64>()
-            .map_err(|_| decode(format!("model {id} has an invalid price {value:?}")))
+            .map_err(|_| decode(format!("model {id} has an invalid price {price_text:?}")))
     };
     wire.data
         .into_iter()
@@ -436,16 +439,16 @@ fn parse_models(body: &str) -> Result<HashMap<String, ModelInfo>, LlmError> {
                     .pricing
                     .input_cache_read
                     .as_deref()
-                    .map(|value| price(&model.id, value))
+                    .map(|cache_price| price(&model.id, cache_price))
                     .transpose()?,
             };
-            let info = ModelInfo {
+            let model_info = ModelInfo {
                 id: model.id.clone(),
                 context_length: model.context_length.unwrap_or(0),
                 supported_parameters: model.supported_parameters,
                 pricing,
             };
-            Ok((model.id, info))
+            Ok((model.id, model_info))
         })
         .collect()
 }

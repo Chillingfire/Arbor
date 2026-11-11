@@ -8,24 +8,24 @@ use std::io::{self, BufRead, Write};
 use crate::event::Event;
 
 pub struct EventLog<W> {
-    out: W,
+    writer: W,
 }
 
 impl<W: Write> EventLog<W> {
-    pub fn new(out: W) -> Self {
-        Self { out }
+    pub fn new(writer: W) -> Self {
+        Self { writer }
     }
 
     /// Writes the event as one line and flushes it.
     pub fn append(&mut self, event: &Event) -> io::Result<()> {
         let mut line = serde_json::to_vec(event)?;
         line.push(b'\n');
-        self.out.write_all(&line)?;
-        self.out.flush()
+        self.writer.write_all(&line)?;
+        self.writer.flush()
     }
 
     pub fn get_ref(&self) -> &W {
-        &self.out
+        &self.writer
     }
 }
 
@@ -63,13 +63,13 @@ impl std::error::Error for ReadError {
 /// dropped, since its event was never shown.
 pub fn read_events(mut input: impl BufRead) -> Result<Vec<Event>, ReadError> {
     let mut events = Vec::new();
-    let mut buf = String::new();
+    let mut line_text = String::new();
     for line in 1.. {
-        buf.clear();
-        if input.read_line(&mut buf).map_err(ReadError::Io)? == 0 {
+        line_text.clear();
+        if input.read_line(&mut line_text).map_err(ReadError::Io)? == 0 {
             break;
         }
-        let Some(json) = buf.strip_suffix('\n') else {
+        let Some(json) = line_text.strip_suffix('\n') else {
             break;
         };
         let event =
