@@ -342,11 +342,18 @@ impl<'a> Autopilot<'a> {
             })
             .map_err(failed("rendering the Writer prompt"))?;
         let role = self.config.roles.writer.clone();
+        let seed_supported = self
+            .model(&role.model)
+            .await?
+            .supported_parameters
+            .iter()
+            .any(|parameter| parameter == "seed");
         let mut writer = WriterRun {
             prompt: &prompt,
             work_unit: &work_unit,
             model: role.model,
             temperature: role.temperature,
+            seed_supported,
             worktree: self.worktree.path(),
             checks: self.config.checks.clone(),
             cap_tokens: self.config.writer_cap_tokens,

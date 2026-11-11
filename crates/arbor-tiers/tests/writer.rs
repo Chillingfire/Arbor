@@ -126,6 +126,7 @@ fn start_writer(
         work_unit: &unit,
         model: "anthropic/claude-haiku-5.5".into(),
         temperature: 0.0,
+        seed_supported: true,
         worktree: dir.path(),
         checks,
         cap_tokens,
@@ -188,6 +189,34 @@ async fn the_call_is_deterministic_and_sees_only_the_prompt() {
     };
     assert!(content[0].text.contains("# Work Unit WU-1"));
     assert!(content[0].text.contains("raise NotImplementedError"));
+}
+
+#[tokio::test]
+async fn a_model_without_seed_support_gets_no_seed_so_a_provider_can_still_serve_it() {
+    let dir = repo();
+    let client = QueueClient::new([text(GOOD)]);
+    let unit = work_unit();
+    let prompt = Prompts::builtin()
+        .writer(&WriterInputs { work_unit: &unit })
+        .unwrap();
+    let mut writer = WriterRun {
+        prompt: &prompt,
+        work_unit: &unit,
+        model: "anthropic/claude-haiku-5.5".into(),
+        temperature: 0.0,
+        seed_supported: false,
+        worktree: dir.path(),
+        checks: checks(),
+        cap_tokens: CAP_TOKENS,
+        missing_response_allowed: true,
+    }
+    .start();
+    writer.attempt(&client).await.unwrap();
+
+    let request = client.last_request();
+    assert_eq!(request.seed, None);
+    assert_eq!(request.temperature, Some(0.0));
+    assert!(request.require_parameters);
 }
 
 #[tokio::test]
