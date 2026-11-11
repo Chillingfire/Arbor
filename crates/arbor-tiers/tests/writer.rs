@@ -126,7 +126,7 @@ fn start_writer(
         work_unit: &unit,
         model: "anthropic/claude-haiku-5.5".into(),
         temperature: 0.0,
-        seed_supported: true,
+        supported_parameters: vec!["temperature".into(), "seed".into()],
         worktree: dir.path(),
         checks,
         cap_tokens,
@@ -192,7 +192,7 @@ async fn the_call_is_deterministic_and_sees_only_the_prompt() {
 }
 
 #[tokio::test]
-async fn a_model_without_seed_support_gets_no_seed_so_a_provider_can_still_serve_it() {
+async fn a_model_without_temperature_or_seed_gets_neither_so_a_provider_can_still_serve_it() {
     let dir = repo();
     let client = QueueClient::new([text(GOOD)]);
     let unit = work_unit();
@@ -204,7 +204,7 @@ async fn a_model_without_seed_support_gets_no_seed_so_a_provider_can_still_serve
         work_unit: &unit,
         model: "anthropic/claude-haiku-5.5".into(),
         temperature: 0.0,
-        seed_supported: false,
+        supported_parameters: vec!["tools".into()],
         worktree: dir.path(),
         checks: checks(),
         cap_tokens: CAP_TOKENS,
@@ -215,7 +215,7 @@ async fn a_model_without_seed_support_gets_no_seed_so_a_provider_can_still_serve
 
     let request = client.last_request();
     assert_eq!(request.seed, None);
-    assert_eq!(request.temperature, Some(0.0));
+    assert_eq!(request.temperature, None);
     assert!(request.require_parameters);
 }
 
