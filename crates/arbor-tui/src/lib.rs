@@ -7,6 +7,6 @@ mod view;
 pub use input::KeyOutcome;
 pub use ui::{DetailTab, Focus, StatusInfo, TreeNode, UiState, draw, tree_nodes};
 pub use view::{
-    LogEntry, SessionView, Status, TaskView, Tone, WorkUnitView, describe, event_tier, event_tone,
-    phase_task, tokens,
+    LogEntry, ReplyOutcome, SessionView, Status, TaskView, Tone, WorkUnitView, WriterReplyRecord,
+    describe, event_tier, event_tone, phase_task, tokens,
 };

@@ -7,7 +7,10 @@ use arbor_config::ClarificationMode;
 use arbor_core::{
     Event, Plan, Priority, Request, Snippet, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId,
 };
-use arbor_tui::{DetailTab, Focus, KeyOutcome, SessionView, StatusInfo, UiState, draw};
+use arbor_tui::{
+    DetailTab, Focus, KeyOutcome, ReplyOutcome, SessionView, StatusInfo, UiState,
+    WriterReplyRecord, draw,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{self, Event as TerminalEvent, KeyEventKind};
@@ -158,6 +161,63 @@ fn demo_events() -> Vec<Event> {
     ]
 }
 
+/// What a live run records beside the events: WU-1's replies and its committed diff.
+fn add_writer_details(view: &mut SessionView) {
+    let first_unit = WorkUnitId(1);
+    view.record_writer_reply(
+        first_unit,
+        WriterReplyRecord {
+            reply: "```rust
+    text.split_whitespace().max_by_key(|word| word.len())
+```"
+            .to_owned(),
+            outcome: ReplyOutcome::Failed(
+                "test longest_word_tests::keeps_the_first_of_tied_words ... FAILED
+  left: Some(\"dog\")
+ right: Some(\"cat\")"
+                    .to_owned(),
+            ),
+        },
+    );
+    view.record_writer_reply(
+        first_unit,
+        WriterReplyRecord {
+            reply: "```rust
+    let mut longest: Option<&str> = None;
+    for word in text.split_whitespace() {
+        if longest.is_none_or(|current| word.len() > current.len()) {
+            longest = Some(word);
+        }
+    }
+    longest
+```"
+            .to_owned(),
+            outcome: ReplyOutcome::Passed,
+        },
+    );
+    view.set_diff(
+        first_unit,
+        "diff --git a/src/lib.rs b/src/lib.rs
+index 3f9c2a1..a71be04 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -8,5 +8,11 @@ pub fn word_count(text: &str) -> usize {
+ pub fn longest_word(text: &str) -> Option<&str> {
+-    // ARBOR:BEGIN WU-1
+-    todo!()
+-    // ARBOR:END WU-1
++    let mut longest: Option<&str> = None;
++    for word in text.split_whitespace() {
++        if longest.is_none_or(|current| word.len() > current.len()) {
++            longest = Some(word);
++        }
++    }
++    longest
+ }"
+        .to_owned(),
+    );
+}
+
 fn status_info() -> StatusInfo {
     StatusInfo {
         models: [
@@ -171,7 +231,8 @@ fn status_info() -> StatusInfo {
 }
 
 fn main() -> std::io::Result<()> {
-    let view = SessionView::from_events(&demo_events()).expect("the demo events fit a Session");
+    let mut view = SessionView::from_events(&demo_events()).expect("the demo events fit a Session");
+    add_writer_details(&mut view);
     let status = status_info();
     let preview_args: Vec<String> = std::env::args().skip(1).collect();
     if let [flag, size] = preview_args.as_slice()
@@ -196,8 +257,13 @@ fn main() -> std::io::Result<()> {
                 Ok("prompt") => Focus::Prompt,
                 _ => Focus::Tree,
             },
-            detail_tab: DetailTab::Spec,
+            detail_tab: match std::env::var("PREVIEW_TAB").as_deref() {
+                Ok("transcript") => DetailTab::Transcript,
+                Ok("diff") => DetailTab::Diff,
+                _ => DetailTab::Spec,
+            },
             prompt: std::env::var("PREVIEW_PROMPT").unwrap_or_default(),
+            ..UiState::default()
         };
         let Ok(mut terminal) = Terminal::new(TestBackend::new(width, height));
         let Ok(_) = terminal.draw(|frame| draw(frame, &view, &ui_state, &status));

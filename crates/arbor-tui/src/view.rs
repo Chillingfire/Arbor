@@ -1,7 +1,9 @@
 //! What the TUI shows, folded from the Session's event log (ADR-0004). The Session state machine
 //! keeps only the current Task's Work Units, so the tree's history is built here.
 
-use arbor_core::{ApplyError, Event, Phase, Plan, Session, Task, Tier, WorkUnit, WorkUnitId};
+use arbor_core::{
+    ApplyError, Event, Phase, Plan, Session, Task, Tier, WorkUnit, WorkUnitFailure, WorkUnitId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -15,6 +17,28 @@ pub enum Status {
 pub struct WorkUnitView {
     pub work_unit: WorkUnit,
     pub status: Status,
+    /// The Writer's replies to this Work Unit, oldest first, across Revisions.
+    pub transcript: Vec<WriterReplyRecord>,
+    /// The commit of the Work Unit's accepted code.
+    pub commit: Option<String>,
+    /// The committed code as a unified diff, once the program running the TUI has read it.
+    pub diff: Option<String>,
+}
+
+/// One Writer reply and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterReplyRecord {
+    pub reply: String,
+    pub outcome: ReplyOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyOutcome {
+    Passed,
+    /// Why the reply was rejected, or the Checks' output.
+    Failed(String),
+    /// What the Writer said its Context Pack lacked.
+    Missing(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,11 +102,16 @@ impl SessionView {
             Event::WorkUnitsSubmitted { .. } | Event::RevisionSubmitted { .. } => {
                 self.sync_work_units();
             }
-            Event::WorkUnitPassed { id } | Event::WorkUnitCommitted { id, .. } => {
+            Event::WorkUnitPassed { id } => self.set_work_unit_status(*id, Status::Done),
+            Event::WorkUnitCommitted { id, commit } => {
                 self.set_work_unit_status(*id, Status::Done);
+                if let Some(work_unit_view) = self.work_unit_mut(*id) {
+                    work_unit_view.commit = Some(commit.clone());
+                }
             }
             Event::WorkUnitFailed { failure } => {
                 self.set_work_unit_status(failure.id, Status::Failed);
+                self.take_failed_replies(failure);
             }
             _ => {}
         }
@@ -140,36 +169,90 @@ impl SessionView {
         let Some(task_view) = self.tasks.get_mut(task_index) else {
             return;
         };
-        let previous = std::mem::take(&mut task_view.work_units);
+        let mut previous = std::mem::take(&mut task_view.work_units);
         task_view.work_units = self
             .session
             .work_units()
             .iter()
             .map(|work_unit| {
-                let earlier_status = previous
+                let earlier = previous
                     .iter()
-                    .find(|earlier| earlier.work_unit.id == work_unit.id)
-                    .map(|earlier| earlier.status);
-                let status = match earlier_status {
-                    Some(status) if !rewritten.contains(&work_unit.id) => status,
-                    _ => Status::Pending,
-                };
-                WorkUnitView {
-                    work_unit: work_unit.clone(),
-                    status,
+                    .position(|earlier| earlier.work_unit.id == work_unit.id)
+                    .map(|index| previous.swap_remove(index));
+                match earlier {
+                    Some(earlier) if !rewritten.contains(&work_unit.id) => WorkUnitView {
+                        work_unit: work_unit.clone(),
+                        ..earlier
+                    },
+                    // A rewritten unit starts over but keeps the replies that led to its Revision.
+                    Some(earlier) => WorkUnitView {
+                        work_unit: work_unit.clone(),
+                        status: Status::Pending,
+                        transcript: earlier.transcript,
+                        commit: None,
+                        diff: None,
+                    },
+                    None => WorkUnitView {
+                        work_unit: work_unit.clone(),
+                        status: Status::Pending,
+                        transcript: Vec::new(),
+                        commit: None,
+                        diff: None,
+                    },
                 }
             })
             .collect();
     }
 
     fn set_work_unit_status(&mut self, id: WorkUnitId, status: Status) {
-        let work_unit_view = self
-            .tasks
-            .iter_mut()
-            .flat_map(|task_view| &mut task_view.work_units)
-            .find(|work_unit_view| work_unit_view.work_unit.id == id);
-        if let Some(work_unit_view) = work_unit_view {
+        if let Some(work_unit_view) = self.work_unit_mut(id) {
             work_unit_view.status = status;
+        }
+    }
+
+    fn work_unit_mut(&mut self, id: WorkUnitId) -> Option<&mut WorkUnitView> {
+        self.tasks
+            .iter_mut()
+            .rev()
+            .flat_map(|task_view| &mut task_view.work_units)
+            .find(|work_unit_view| work_unit_view.work_unit.id == id)
+    }
+
+    /// The program running the TUI records each Writer reply as it comes; replaying a log only has
+    /// the failed ones, so they are filled in from the failure when none were recorded.
+    fn take_failed_replies(&mut self, failure: &WorkUnitFailure) {
+        let Some(work_unit_view) = self.work_unit_mut(failure.id) else {
+            return;
+        };
+        let recorded = work_unit_view.transcript.len();
+        let failed_replies = failure.attempts.iter().map(|attempt| WriterReplyRecord {
+            reply: attempt.reply.clone(),
+            outcome: ReplyOutcome::Failed(attempt.error.clone()),
+        });
+        let missing = failure
+            .missing_response
+            .clone()
+            .map(|items| WriterReplyRecord {
+                reply: String::new(),
+                outcome: ReplyOutcome::Missing(items),
+            });
+        let replies: Vec<WriterReplyRecord> = failed_replies.chain(missing).collect();
+        if recorded == 0 {
+            work_unit_view.transcript = replies;
+        }
+    }
+
+    /// Adds a Writer reply as it comes, before its outcome event.
+    pub fn record_writer_reply(&mut self, id: WorkUnitId, record: WriterReplyRecord) {
+        if let Some(work_unit_view) = self.work_unit_mut(id) {
+            work_unit_view.transcript.push(record);
+        }
+    }
+
+    /// Sets the diff of a committed Work Unit, read from git by the program running the TUI.
+    pub fn set_diff(&mut self, id: WorkUnitId, diff: String) {
+        if let Some(work_unit_view) = self.work_unit_mut(id) {
+            work_unit_view.diff = Some(diff);
         }
     }
 

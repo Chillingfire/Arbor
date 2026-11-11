@@ -98,7 +98,7 @@ fn the_tree_keeps_finished_tasks_and_marks_the_unit_being_written() {
         [(1, Status::Done), (2, Status::Done), (3, Status::Pending)]
     );
     assert_eq!(
-        tree_nodes(&view),
+        tree_nodes(&view, &Default::default()),
         [
             TreeNode::Plan,
             TreeNode::Task(0),
@@ -217,4 +217,82 @@ fn typing_in_the_prompt_submits_on_enter() {
 
     assert_eq!(outcome, KeyOutcome::Submitted("Add x".to_owned()));
     assert_eq!(ui_state.prompt, "");
+}
+
+#[test]
+fn collapsing_a_task_hides_its_units_and_selects_the_task() {
+    let view = SessionView::from_events(&events()).unwrap();
+    let mut ui_state = UiState {
+        selected: 4,
+        ..UiState::default()
+    };
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    ui_state.handle_key(key(KeyCode::Left), &view);
+
+    assert_eq!(ui_state.selected, 3);
+    assert_eq!(
+        tree_nodes(&view, &ui_state.collapsed),
+        [
+            TreeNode::Plan,
+            TreeNode::Task(0),
+            TreeNode::WorkUnit { task: 0, unit: 0 },
+            TreeNode::Task(1),
+        ]
+    );
+    assert!(rendered_with(&view, &ui_state).contains("2. Second  ▸ 2 hidden"));
+
+    ui_state.handle_key(key(KeyCode::Right), &view);
+    assert_eq!(tree_nodes(&view, &ui_state.collapsed).len(), 6);
+}
+
+#[test]
+fn the_transcript_tab_shows_failed_replies_from_the_log_and_the_diff_tab_the_commit() {
+    let mut failing = events();
+    failing.truncate(failing.len() - 1);
+    failing.push(Event::WorkUnitFailed {
+        failure: arbor_core::WorkUnitFailure {
+            id: WorkUnitId(2),
+            attempts: vec![arbor_core::FailedAttempt {
+                reply: "```rust\nreturn 1;\n```".to_owned(),
+                error: "expected 2".to_owned(),
+            }],
+            missing_response: None,
+        },
+    });
+    let view = SessionView::from_events(&failing).unwrap();
+    let mut ui_state = UiState {
+        selected: 4,
+        focus: Focus::Detail,
+        ..UiState::default()
+    };
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    ui_state.handle_key(key(KeyCode::Right), &view);
+    let transcript = rendered_with(&view, &ui_state);
+    assert!(transcript.contains("✘ Attempt 1 failed"), "{transcript}");
+    assert!(transcript.contains("│ return 1;"), "{transcript}");
+    assert!(!transcript.contains("```"), "{transcript}");
+    assert!(transcript.contains("expected 2"), "{transcript}");
+
+    let mut committed = SessionView::from_events(&events()).unwrap();
+    committed.set_diff(WorkUnitId(1), "+    added line".to_owned());
+    ui_state.selected = 2;
+    ui_state.handle_key(key(KeyCode::Right), &committed);
+    let diff = rendered_with(&committed, &ui_state);
+    assert!(diff.contains("Commit 0123456"), "{diff}");
+    assert!(diff.contains("+    added line"), "{diff}");
+}
+
+fn rendered_with(view: &SessionView, ui_state: &UiState) -> String {
+    let status = StatusInfo {
+        models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
+        clarification_mode: ClarificationMode::Ask,
+        branch: None,
+    };
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, view, ui_state, &status))
+        .unwrap();
+    terminal.backend().to_string()
 }
