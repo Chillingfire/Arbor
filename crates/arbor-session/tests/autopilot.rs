@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::Command;
 
@@ -8,7 +9,7 @@ use arbor_llm::{
     BoxFuture, ChatRequest, ChatResponse, FinishReason, LlmClient, LlmError, ModelInfo, Pricing,
     Usage,
 };
-use arbor_session::{Autopilot, SessionEnd};
+use arbor_session::{Autopilot, AutopilotUpdate, SessionEnd};
 use tempfile::tempdir;
 
 /// A model that answers every call with the same clarifying question and no tool call.
@@ -84,7 +85,10 @@ async fn a_tier_that_asks_questions_ends_the_run_for_the_operator() {
         .create_worktree(&mainline, &branch, &dir.path().join("session"))
         .unwrap();
     let config = Config::load(None, worktree.path()).unwrap();
-    let mut autopilot = Autopilot::new(&worktree, &mainline, &AskingModel, config).unwrap();
+    let updates = RefCell::new(Vec::new());
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &AskingModel, config)
+        .unwrap()
+        .on_update(|update| updates.borrow_mut().push(update));
 
     let end = autopilot
         .run(Request {
@@ -109,6 +113,21 @@ async fn a_tier_that_asks_questions_ends_the_run_for_the_operator() {
             }
         ]
     ));
+    let working: Vec<String> = updates
+        .borrow()
+        .iter()
+        .filter_map(|update| match update {
+            AutopilotUpdate::Working(activity) => Some(activity.label.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(working, ["Planning, turn 1"]);
+    let streamed_events = updates
+        .borrow()
+        .iter()
+        .filter(|update| matches!(update, AutopilotUpdate::Event(_)))
+        .count();
+    assert_eq!(streamed_events, autopilot.events().len());
     let planner_cost = autopilot.session().usage().tier(Tier::Planner).cost;
     assert_eq!(planner_cost.dollars(), 0.0055);
 }

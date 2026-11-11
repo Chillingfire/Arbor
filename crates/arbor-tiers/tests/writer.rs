@@ -152,7 +152,7 @@ async fn a_passing_reply_is_spliced_stripped_and_committed() {
 
     let attempt = writer.attempt(&client).await.unwrap();
 
-    let AttemptOutcome::Passed { commit } = attempt.outcome else {
+    let AttemptOutcome::Passed { commit, .. } = attempt.outcome else {
         panic!("expected a commit, got {:?}", attempt.outcome);
     };
     assert_eq!(attempt.usage.input_tokens, 100);

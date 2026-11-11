@@ -108,6 +108,8 @@ pub struct Attempt {
 pub enum AttemptOutcome {
     Passed {
         commit: CommitId,
+        /// The reply whose code passed.
+        reply: String,
     },
     Failed(Failure),
     /// Goes to a Revision rather than a retry.
@@ -369,7 +371,10 @@ impl Writer {
             return Ok(Err(FailureReason::ChecksFailed { output }));
         }
         let commit = restoring(&path, &original, self.commit(&path, &spliced))?;
-        Ok(Ok(AttemptOutcome::Passed { commit }))
+        Ok(Ok(AttemptOutcome::Passed {
+            commit,
+            reply: reply.to_owned(),
+        }))
     }
 
     fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {
