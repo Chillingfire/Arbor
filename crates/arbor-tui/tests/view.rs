@@ -1,8 +1,12 @@
 use arbor_config::ClarificationMode;
 use arbor_core::{Event, Plan, Request, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId};
-use arbor_tui::{SessionView, Status, StatusInfo, TreeNode, draw, tree_nodes};
+use arbor_tui::{
+    Focus, KeyOutcome, LogEntry, SessionView, Status, StatusInfo, Tone, TreeNode, UiState, draw,
+    tree_nodes,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn work_unit(id: u32) -> WorkUnit {
     WorkUnit {
@@ -107,14 +111,21 @@ fn the_tree_keeps_finished_tasks_and_marks_the_unit_being_written() {
 }
 
 #[test]
-fn the_log_describes_each_event_in_one_line() {
+fn the_log_describes_each_event_in_one_line_with_its_tier_and_tone() {
     let view = SessionView::from_events(&events()).unwrap();
 
     assert_eq!(view.log().len(), events().len());
-    assert!(view.log().contains(&"WU-1 committed 0123456".to_owned()));
+    assert!(view.log().contains(&LogEntry {
+        text: "WU-1 committed 0123456".to_owned(),
+        tier: None,
+        tone: Tone::Success,
+    }));
     assert!(
-        view.log()
-            .contains(&"Writer call: 1.5k in / 300 out tokens, $0.0020".to_owned()),
+        view.log().contains(&LogEntry {
+            text: "Writer call: 1.5k in / 300 out tokens, $0.0020".to_owned(),
+            tier: Some(Tier::Writer),
+            tone: Tone::ModelCall,
+        }),
         "{:?}",
         view.log()
     );
@@ -124,10 +135,15 @@ fn rendered(view: &SessionView, selected: usize) -> String {
     let status = StatusInfo {
         models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
         clarification_mode: ClarificationMode::Assume,
+        branch: Some("arbor/two-helpers".to_owned()),
+    };
+    let ui_state = UiState {
+        selected,
+        ..UiState::default()
     };
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal
-        .draw(|frame| draw(frame, view, selected, &status))
+        .draw(|frame| draw(frame, view, &ui_state, &status))
         .unwrap();
     terminal.backend().to_string()
 }
@@ -139,12 +155,12 @@ fn the_layout_shows_tree_detail_log_and_status_bar() {
     let screen = rendered(&view, 5);
 
     assert!(screen.contains("2. Second"), "{screen}");
-    assert!(screen.contains("WU-3: spec"), "{screen}");
+    assert!(screen.contains("WU-3 Spec · Transcript · Diff"), "{screen}");
     assert!(screen.contains("Spec of unit 3"), "{screen}");
     assert!(screen.contains("Event log"), "{screen}");
-    assert!(screen.contains("Writer $0.0020 1.5k↑ 300↓"), "{screen}");
+    assert!(screen.contains(" Writer  $0.0020 1.5k↑ 300↓"), "{screen}");
     assert!(screen.contains("Committing · Task 2"), "{screen}");
-    assert!(screen.contains("Mode Assume"), "{screen}");
+    assert!(screen.contains("Clarification Assume"), "{screen}");
 }
 
 #[test]
@@ -155,4 +171,50 @@ fn before_a_plan_the_tree_says_so_and_the_detail_shows_the_request() {
 
     assert!(screen.contains("No Plan yet."), "{screen}");
     assert!(screen.contains("Add two helpers"), "{screen}");
+}
+
+#[test]
+fn the_event_log_scrolls_back_and_says_how_much_is_below() {
+    let view = SessionView::from_events(&events()).unwrap();
+    let status = StatusInfo {
+        models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
+        clarification_mode: ClarificationMode::Ask,
+        branch: None,
+    };
+    let mut ui_state = UiState {
+        focus: Focus::Log,
+        ..UiState::default()
+    };
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    ui_state.handle_key(key(KeyCode::Home), &view);
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &view, &ui_state, &status))
+        .unwrap();
+    let screen = terminal.backend().to_string();
+
+    assert!(
+        screen.contains("   1 Session    · Session started"),
+        "{screen}"
+    );
+    assert!(screen.contains("newer below"), "{screen}");
+
+    ui_state.handle_key(key(KeyCode::End), &view);
+    assert_eq!(ui_state.log_scrolled_back, 0);
+}
+
+#[test]
+fn typing_in_the_prompt_submits_on_enter() {
+    let view = SessionView::new();
+    let mut ui_state = UiState::default();
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    ui_state.handle_key(key(KeyCode::Char('/')), &view);
+    for typed in "Add x".chars() {
+        ui_state.handle_key(key(KeyCode::Char(typed)), &view);
+    }
+    let outcome = ui_state.handle_key(key(KeyCode::Enter), &view);
+
+    assert_eq!(outcome, KeyOutcome::Submitted("Add x".to_owned()));
+    assert_eq!(ui_state.prompt, "");
 }

@@ -1,7 +1,12 @@
-//! Terminal UI: the Plan tree, detail pane, event log and status bar.
+//! Terminal UI: the Plan tree, detail pane, event log, prompt and status bar.
 
+mod input;
 mod ui;
 mod view;
 
-pub use ui::{StatusInfo, TreeNode, draw, tree_nodes};
-pub use view::{SessionView, Status, TaskView, WorkUnitView, describe, phase_task, tokens};
+pub use input::KeyOutcome;
+pub use ui::{DetailTab, Focus, StatusInfo, TreeNode, UiState, draw, tree_nodes};
+pub use view::{
+    LogEntry, SessionView, Status, TaskView, Tone, WorkUnitView, describe, event_tier, event_tone,
+    phase_task, tokens,
+};

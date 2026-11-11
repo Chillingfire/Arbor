@@ -1,7 +1,7 @@
 //! What the TUI shows, folded from the Session's event log (ADR-0004). The Session state machine
 //! keeps only the current Task's Work Units, so the tree's history is built here.
 
-use arbor_core::{ApplyError, Event, Phase, Plan, Session, Task, WorkUnit, WorkUnitId};
+use arbor_core::{ApplyError, Event, Phase, Plan, Session, Task, Tier, WorkUnit, WorkUnitId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -24,11 +24,29 @@ pub struct TaskView {
     pub work_units: Vec<WorkUnitView>,
 }
 
+/// How an event log line reads: good news, bad news, a model call, or plain progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Progress,
+    Success,
+    Failure,
+    Operator,
+    ModelCall,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogEntry {
+    pub text: String,
+    /// The Tier whose work the event records, if any.
+    pub tier: Option<Tier>,
+    pub tone: Tone,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionView {
     session: Session,
     tasks: Vec<TaskView>,
-    log: Vec<String>,
+    log: Vec<LogEntry>,
 }
 
 impl SessionView {
@@ -50,7 +68,11 @@ impl SessionView {
     pub fn apply(&mut self, event: &Event) -> Result<(), ApplyError> {
         let task_before = phase_task(self.session.phase());
         self.session.apply(event)?;
-        self.log.push(describe(event));
+        self.log.push(LogEntry {
+            text: describe(event),
+            tier: event_tier(event),
+            tone: event_tone(event),
+        });
         match event {
             Event::PlanApproved { .. } => self.take_approved_plan(task_before),
             Event::WorkUnitsSubmitted { .. } | Event::RevisionSubmitted { .. } => {
@@ -81,7 +103,7 @@ impl SessionView {
     }
 
     /// One line per event, oldest first.
-    pub fn log(&self) -> &[String] {
+    pub fn log(&self) -> &[LogEntry] {
         &self.log
     }
 
@@ -321,4 +343,42 @@ fn first_line(text: &str) -> &str {
 
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
+}
+
+/// The Tier whose work the event records.
+pub fn event_tier(event: &Event) -> Option<Tier> {
+    match event {
+        Event::PlanSubmitted { .. } | Event::ReplanSubmitted { .. } => Some(Tier::Planner),
+        Event::WorkUnitsSubmitted { .. }
+        | Event::RevisionSubmitted { .. }
+        | Event::RevisionRejected { .. } => Some(Tier::Scaffolder),
+        Event::WorkUnitPassed { .. } | Event::WorkUnitFailed { .. } => Some(Tier::Writer),
+        Event::UsageRecorded { tier, .. } => Some(*tier),
+        _ => None,
+    }
+}
+
+pub fn event_tone(event: &Event) -> Tone {
+    match event {
+        Event::UsageRecorded { .. } => Tone::ModelCall,
+        Event::ScaffoldChecksPassed
+        | Event::TaskChecksPassed
+        | Event::WorkUnitPassed { .. }
+        | Event::WorkUnitCommitted { .. } => Tone::Success,
+        Event::WorkUnitFailed { .. }
+        | Event::TaskChecksFailed { .. }
+        | Event::RevisionRejected { .. }
+        | Event::SessionStopped => Tone::Failure,
+        Event::MarkersChecked { remaining } if !remaining.is_empty() => Tone::Failure,
+        Event::PlanApproved { .. }
+        | Event::ScaffoldApproved
+        | Event::RevisionApproved
+        | Event::CheckpointRejected { .. }
+        | Event::ReplanRequested
+        | Event::OperatorFixed { .. }
+        | Event::MarkersApproved
+        | Event::BudgetCapSet { .. }
+        | Event::RevisionCheckpointsSet { .. } => Tone::Operator,
+        _ => Tone::Progress,
+    }
 }

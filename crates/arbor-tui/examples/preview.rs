@@ -1,16 +1,16 @@
 //! Shows the TUI layout for a Session partway through its second Task, from a made-up event log.
 //!
-//! `cargo run -p arbor-tui --example preview` opens it in the terminal: ↑/↓ move the selection,
-//! `q` quits. `-- --snapshot 120x36` prints one frame as text instead.
+//! `cargo run -p arbor-tui --example preview` opens it in the terminal: Tab moves focus, ↑/↓ move
+//! or scroll, ←/→ switch tabs, `q` quits. `-- --snapshot 120x36` prints one frame as text instead.
 
 use arbor_config::ClarificationMode;
 use arbor_core::{
     Event, Plan, Priority, Request, Snippet, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId,
 };
-use arbor_tui::{SessionView, StatusInfo, draw, tree_nodes};
+use arbor_tui::{DetailTab, Focus, KeyOutcome, SessionView, StatusInfo, UiState, draw};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{self, Event as TerminalEvent, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event as TerminalEvent, KeyEventKind};
 
 fn work_unit(id: u32, spec: &str, criterion: &str, test_filter: &str) -> WorkUnit {
     WorkUnit {
@@ -166,6 +166,7 @@ fn status_info() -> StatusInfo {
             "claude-haiku-5.5".to_owned(),
         ],
         clarification_mode: ClarificationMode::Ask,
+        branch: Some("arbor/add-word-statistics".to_owned()),
     }
 }
 
@@ -180,29 +181,40 @@ fn main() -> std::io::Result<()> {
             .split_once('x')
             .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
             .expect("the size looks like 120x36");
-        let selected: usize = std::env::var("PREVIEW_SELECTED")
-            .ok()
-            .and_then(|index| index.parse().ok())
-            .unwrap_or(0);
+        let env_number = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .and_then(|number| number.parse::<usize>().ok())
+                .unwrap_or(0)
+        };
+        let ui_state = UiState {
+            selected: env_number("PREVIEW_SELECTED"),
+            log_scrolled_back: env_number("PREVIEW_SCROLLED_BACK"),
+            focus: match std::env::var("PREVIEW_FOCUS").as_deref() {
+                Ok("detail") => Focus::Detail,
+                Ok("log") => Focus::Log,
+                Ok("prompt") => Focus::Prompt,
+                _ => Focus::Tree,
+            },
+            detail_tab: DetailTab::Spec,
+            prompt: std::env::var("PREVIEW_PROMPT").unwrap_or_default(),
+        };
         let Ok(mut terminal) = Terminal::new(TestBackend::new(width, height));
-        let Ok(_) = terminal.draw(|frame| draw(frame, &view, selected, &status));
+        let Ok(_) = terminal.draw(|frame| draw(frame, &view, &ui_state, &status));
         println!("{}", terminal.backend());
         return Ok(());
     }
 
-    let row_count = tree_nodes(&view).len();
-    let mut selected = 0;
+    let mut ui_state = UiState::default();
     ratatui::run(|terminal| -> std::io::Result<()> {
         loop {
-            terminal.draw(|frame| draw(frame, &view, selected, &status))?;
+            terminal.draw(|frame| draw(frame, &view, &ui_state, &status))?;
             if let TerminalEvent::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Down => selected = (selected + 1).min(row_count.saturating_sub(1)),
-                    KeyCode::Up => selected = selected.saturating_sub(1),
-                    _ => {}
+                match ui_state.handle_key(key, &view) {
+                    KeyOutcome::Quit => return Ok(()),
+                    KeyOutcome::Handled | KeyOutcome::Submitted(_) => {}
                 }
             }
         }
