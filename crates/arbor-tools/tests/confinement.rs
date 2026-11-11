@@ -92,12 +92,12 @@ mod symlinks {
         let work = tempdir().unwrap();
         write(work.path(), "real.txt", "hello\n");
         symlink(work.path().join("real.txt"), work.path().join("alias.txt")).unwrap();
-        let text = common::ok(
+        let listing = common::ok(
             &planner(work.path()),
             "read_file",
             json!({"path": "alias.txt"}),
         )
         .await;
-        assert!(text.contains("hello"));
+        assert!(listing.contains("hello"));
     }
 }

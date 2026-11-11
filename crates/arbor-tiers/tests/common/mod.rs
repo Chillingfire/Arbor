@@ -49,13 +49,13 @@ impl LlmClient for QueueClient {
         request: &'a ChatRequest,
     ) -> BoxFuture<'a, Result<ChatResponse, LlmError>> {
         self.requests.lock().unwrap().push(request.clone());
-        let response = self
+        let scripted_response = self
             .responses
             .lock()
             .unwrap()
             .pop_front()
             .expect("the model was called more often than scripted");
-        Box::pin(async move { response })
+        Box::pin(async move { scripted_response })
     }
 
     fn model<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<ModelInfo, LlmError>> {

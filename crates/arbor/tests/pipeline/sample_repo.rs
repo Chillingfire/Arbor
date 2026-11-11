@@ -82,8 +82,8 @@ fn copy_dir(from: &Path, to: &Path) {
         if entry.file_type().unwrap().is_dir() {
             copy_dir(&source, &destination);
         } else {
-            let text = fs::read_to_string(&source).unwrap();
-            fs::write(&destination, text.replace("\r\n", "\n")).unwrap();
+            let source_text = fs::read_to_string(&source).unwrap();
+            fs::write(&destination, source_text.replace("\r\n", "\n")).unwrap();
         }
     }
 }
@@ -108,15 +108,18 @@ fn configure(dir: &Path) {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let git_output = Command::new("git")
         .args(args)
         .current_dir(dir)
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
+        git_output.status.success(),
         "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&git_output.stderr)
     );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    String::from_utf8(git_output.stdout)
+        .unwrap()
+        .trim()
+        .to_owned()
 }

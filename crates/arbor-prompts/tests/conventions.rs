@@ -4,16 +4,16 @@ use std::path::Path;
 use arbor_prompts::{CONVENTIONS_CAP_TOKENS, Conventions, ConventionsError, estimate_tokens};
 use tempfile::tempdir;
 
-fn write(dir: &Path, path: &str, text: &str) {
+fn write(dir: &Path, path: &str, conventions_text: &str) {
     let path = dir.join(path);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, text).unwrap();
+    fs::write(path, conventions_text).unwrap();
 }
 
 /// `count` lines of about 100 bytes each.
 fn long_lines(count: usize) -> String {
     (1..=count)
-        .map(|n| format!("{n:04} {}\n", "x".repeat(95)))
+        .map(|line_number| format!("{line_number:04} {}\n", "x".repeat(95)))
         .collect()
 }
 
@@ -132,26 +132,29 @@ fn files_over_the_cap_are_truncated_at_a_line_and_later_ones_listed() {
     write(dir.path(), "docs/more.md", "more\n");
 
     let conventions = Conventions::load(dir.path(), &extra).unwrap();
-    let text = conventions.text();
+    let conventions_text = conventions.text();
     assert_eq!(conventions.included(), ["AGENTS.md", "CONTEXT.md"]);
     assert_eq!(conventions.truncated(), Some("CONTEXT.md"));
     assert_eq!(conventions.omitted(), ["README.md", "docs/more.md"]);
-    assert!(text.contains("0001 x"));
-    assert!(!text.contains("0400 x"));
-    assert!(!text.contains("readme"));
+    assert!(conventions_text.contains("0001 x"));
+    assert!(!conventions_text.contains("0400 x"));
+    assert!(!conventions_text.contains("readme"));
     // Lines are kept whole.
-    for line in text.lines().filter(|line| line.starts_with('0')) {
+    for line in conventions_text
+        .lines()
+        .filter(|line| line.starts_with('0'))
+    {
         assert_eq!(line.len(), 100, "{line}");
     }
-    assert!(text.contains("[truncated: the Conventions cap was reached]"));
+    assert!(conventions_text.contains("[truncated: the Conventions cap was reached]"));
     assert!(
-        text.ends_with(
+        conventions_text.ends_with(
             "Not shown because of the Conventions cap: README.md, docs/more.md. \
              Read them with read_file if you need them.\n"
         ),
-        "{text}"
+        "{conventions_text}"
     );
-    let shown = text.split("Not shown").next().unwrap();
+    let shown = conventions_text.split("Not shown").next().unwrap();
     assert!(estimate_tokens(shown) <= CONVENTIONS_CAP_TOKENS);
     assert!(estimate_tokens(shown) > CONVENTIONS_CAP_TOKENS - 100);
 }

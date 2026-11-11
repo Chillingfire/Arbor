@@ -22,11 +22,11 @@ async fn a_real_chat_call_returns_text_usage_and_cost() {
         max_tokens: Some(5),
         ..ChatRequest::default()
     };
-    let response = client().chat(&request).await.unwrap();
-    assert!(!response.content.unwrap_or_default().trim().is_empty());
-    assert!(response.usage.input_tokens > 0);
-    assert!(response.usage.output_tokens > 0);
-    assert!(response.usage.cost_usd > 0.0);
+    let chat_response = client().chat(&request).await.unwrap();
+    assert!(!chat_response.content.unwrap_or_default().trim().is_empty());
+    assert!(chat_response.usage.input_tokens > 0);
+    assert!(chat_response.usage.output_tokens > 0);
+    assert!(chat_response.usage.cost_usd > 0.0);
 }
 
 #[tokio::test]

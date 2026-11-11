@@ -40,9 +40,9 @@ fn only_a_session_branch_can_be_pushed() {
     common::commit_file(&cloned.clone, "local.txt", "local\n", "Local change");
     let checkout = Worktree::open(&cloned.clone).unwrap();
 
-    let result = checkout.push(RemoteApproval::granted_by_operator());
+    let push_result = checkout.push(RemoteApproval::granted_by_operator());
 
-    assert!(result.is_err());
+    assert!(push_result.is_err());
     assert_eq!(git(&cloned.origin, &["rev-parse", "main"]), origin_main);
 }
 

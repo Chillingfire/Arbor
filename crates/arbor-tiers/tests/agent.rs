@@ -66,9 +66,17 @@ async fn tool_calls_run_and_their_results_go_back_to_the_model() {
 
     let first = agent.turn(&client).await.unwrap();
     assert_eq!(first.outcome, None);
-    let results = tool_results(agent.messages());
-    assert!(results[0].contains("the answer is 7"), "{}", results[0]);
-    assert!(results[1].starts_with("Error: "), "{}", results[1]);
+    let tool_results = tool_results(agent.messages());
+    assert!(
+        tool_results[0].contains("the answer is 7"),
+        "{}",
+        tool_results[0]
+    );
+    assert!(
+        tool_results[1].starts_with("Error: "),
+        "{}",
+        tool_results[1]
+    );
 
     let second = agent.turn(&client).await.unwrap();
     assert_eq!(
@@ -92,9 +100,9 @@ async fn a_bad_submission_goes_back_as_the_tool_result_and_can_be_fixed() {
 
     assert_eq!(agent.turn(&client).await.unwrap().outcome, None);
     assert_eq!(agent.turn(&client).await.unwrap().outcome, None);
-    let results = tool_results(agent.messages());
-    assert!(results[0].starts_with("Error: the arguments don't match the schema"));
-    assert_eq!(results[1], "Error: answer must be positive");
+    let tool_results = tool_results(agent.messages());
+    assert!(tool_results[0].starts_with("Error: the arguments don't match the schema"));
+    assert_eq!(tool_results[1], "Error: answer must be positive");
 
     let last = agent.turn(&client).await.unwrap();
     assert_eq!(
@@ -134,9 +142,9 @@ async fn the_first_valid_submission_in_a_reply_wins() {
     let turn = agent.turn(&client).await.unwrap();
 
     assert_eq!(turn.outcome, Some(Outcome::Submitted(Answer { answer: 5 })));
-    let results = tool_results(agent.messages());
-    assert_eq!(results.len(), 3, "every tool call gets a result");
-    assert!(results[2].starts_with("Ignored"));
+    let tool_results = tool_results(agent.messages());
+    assert_eq!(tool_results.len(), 3, "every tool call gets a result");
+    assert!(tool_results[2].starts_with("Ignored"));
 }
 
 #[tokio::test]
@@ -223,10 +231,14 @@ async fn a_used_up_tool_call_budget_refuses_more_calls_and_makes_the_model_submi
 
     agent.turn(&client).await.unwrap();
     agent.turn(&client).await.unwrap();
-    let results = tool_results(agent.messages());
-    assert!(results[1].contains("the answer is 7"), "{}", results[1]);
+    let tool_results = tool_results(agent.messages());
+    assert!(
+        tool_results[1].contains("the answer is 7"),
+        "{}",
+        tool_results[1]
+    );
     assert_eq!(
-        results[2],
+        tool_results[2],
         "Error: the tool-call budget of 2 is used up; call `submit_answer` now."
     );
     assert!(
@@ -253,10 +265,10 @@ fn a_model_without_tool_calling_is_rejected() {
     };
     let tools = Tools::new(dir.path(), Toolset::Planner, Checks::default());
 
-    let result = Agent::new(settings, submission(), tools, vec![]);
+    let new_agent = Agent::new(settings, submission(), tools, vec![]);
 
     assert_eq!(
-        result.err(),
+        new_agent.err(),
         Some(UnsupportedModel {
             tier: Tier::Scaffolder,
             model: "anthropic/claude-opus-5.5".into(),

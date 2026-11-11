@@ -15,10 +15,10 @@ fn request() -> ChatRequest {
     }
 }
 
-async fn chat_against(response: ResponseTemplate) -> LlmError {
+async fn chat_against(reply_template: ResponseTemplate) -> LlmError {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(response)
+        .respond_with(reply_template)
         .mount(&server)
         .await;
     let client = OpenRouterClient::with_base_url("sk-or-test", server.uri());
@@ -60,19 +60,23 @@ async fn http_errors_map_to_distinct_kinds() {
         ),
     ];
     for (status, expected) in cases {
-        let response = ResponseTemplate::new(status)
+        let reply_template = ResponseTemplate::new(status)
             .set_body_json(error_body(status, "No auth credentials found"));
-        assert_eq!(chat_against(response).await, expected, "status {status}");
+        assert_eq!(
+            chat_against(reply_template).await,
+            expected,
+            "status {status}"
+        );
     }
 }
 
 #[tokio::test]
 async fn rate_limits_carry_the_retry_delay() {
-    let response = ResponseTemplate::new(429)
+    let reply_template = ResponseTemplate::new(429)
         .insert_header("retry-after", "12")
         .set_body_json(error_body(429, "Slow down"));
     assert_eq!(
-        chat_against(response).await,
+        chat_against(reply_template).await,
         LlmError::RateLimited {
             retry_after: Some(Duration::from_secs(12)),
             message: "Slow down".into(),
@@ -82,9 +86,9 @@ async fn rate_limits_carry_the_retry_delay() {
 
 #[tokio::test]
 async fn an_error_body_that_isnt_json_is_reported_as_text() {
-    let response = ResponseTemplate::new(502).set_body_string("Bad Gateway");
+    let reply_template = ResponseTemplate::new(502).set_body_string("Bad Gateway");
     assert_eq!(
-        chat_against(response).await,
+        chat_against(reply_template).await,
         LlmError::Server {
             status: 502,
             message: "Bad Gateway".into(),
@@ -94,7 +98,7 @@ async fn an_error_body_that_isnt_json_is_reported_as_text() {
 
 #[tokio::test]
 async fn a_provider_error_inside_a_reply_is_a_server_error() {
-    let response = ResponseTemplate::new(200).set_body_json(json!({
+    let reply_template = ResponseTemplate::new(200).set_body_json(json!({
         "id": "gen-3",
         "model": "anthropic/claude-haiku-5.5",
         "choices": [{
@@ -103,7 +107,7 @@ async fn a_provider_error_inside_a_reply_is_a_server_error() {
         }]
     }));
     assert_eq!(
-        chat_against(response).await,
+        chat_against(reply_template).await,
         LlmError::Server {
             status: 502,
             message: "Provider returned error".into(),
@@ -113,9 +117,9 @@ async fn a_provider_error_inside_a_reply_is_a_server_error() {
 
 #[tokio::test]
 async fn a_malformed_reply_is_a_decode_error() {
-    let response = ResponseTemplate::new(200).set_body_string("not json");
+    let reply_template = ResponseTemplate::new(200).set_body_string("not json");
     assert!(matches!(
-        chat_against(response).await,
+        chat_against(reply_template).await,
         LlmError::Decode { .. }
     ));
 }

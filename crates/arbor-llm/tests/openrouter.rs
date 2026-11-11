@@ -51,9 +51,9 @@ async fn a_chat_call_sends_the_request_and_returns_the_reply() {
         .await;
 
     let client = OpenRouterClient::with_base_url("sk-or-test", server.uri());
-    let response = client.chat(&request()).await.unwrap();
-    assert_eq!(response.content.as_deref(), Some("hi"));
-    assert_eq!(response.finish_reason, FinishReason::Stop);
+    let chat_response = client.chat(&request()).await.unwrap();
+    assert_eq!(chat_response.content.as_deref(), Some("hi"));
+    assert_eq!(chat_response.finish_reason, FinishReason::Stop);
 }
 
 #[tokio::test]
@@ -162,11 +162,11 @@ async fn tool_calls_usage_and_cost_are_returned() {
         .await;
 
     let client = OpenRouterClient::with_base_url("sk-or-test", server.uri());
-    let response = client.chat(&request()).await.unwrap();
-    assert_eq!(response.finish_reason, FinishReason::ToolCalls);
-    assert_eq!(response.content, None);
+    let chat_response = client.chat(&request()).await.unwrap();
+    assert_eq!(chat_response.finish_reason, FinishReason::ToolCalls);
+    assert_eq!(chat_response.content, None);
     assert_eq!(
-        response.tool_calls,
+        chat_response.tool_calls,
         [ToolCall {
             id: "call_9".into(),
             name: "submit_plan".into(),
@@ -174,7 +174,7 @@ async fn tool_calls_usage_and_cost_are_returned() {
         }]
     );
     assert_eq!(
-        response.usage,
+        chat_response.usage,
         Usage {
             input_tokens: 5000,
             output_tokens: 400,

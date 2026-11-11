@@ -42,14 +42,14 @@ async fn runs_a_configured_check() {
         unit: Some("cargo --version".into()),
         ..Checks::default()
     };
-    let text = ok(
+    let check_report = ok(
         &tools(dir.path(), checks),
         "run_checks",
         json!({"check": "unit"}),
     )
     .await;
-    assert!(text.contains("exit code 0"), "{text}");
-    assert!(text.contains("cargo "), "{text}");
+    assert!(check_report.contains("exit code 0"), "{check_report}");
+    assert!(check_report.contains("cargo "), "{check_report}");
 }
 
 #[tokio::test]
@@ -59,14 +59,17 @@ async fn a_failing_check_is_an_error_with_its_output() {
         scaffold: Some("cargo no-such-subcommand-for-arbor".into()),
         ..Checks::default()
     };
-    let text = err(
+    let check_report = err(
         &tools(dir.path(), checks),
         "run_checks",
         json!({"check": "scaffold"}),
     )
     .await;
-    assert!(text.contains("exit code"), "{text}");
-    assert!(text.contains("no-such-subcommand-for-arbor"), "{text}");
+    assert!(check_report.contains("exit code"), "{check_report}");
+    assert!(
+        check_report.contains("no-such-subcommand-for-arbor"),
+        "{check_report}"
+    );
 }
 
 #[tokio::test]
@@ -93,10 +96,16 @@ async fn the_filter_is_one_argument_and_never_shell_syntax() {
     };
     let tools = tools(dir.path(), checks);
     let filter = "x --version; echo pwned && touch pwned.txt";
-    let args = json!({"check": "unit_filtered", "filter": filter});
-    let text = ok(&tools, "run_checks", args).await;
-    assert!(text.contains(&format!("ARG<{filter}>")), "{text}");
-    assert!(!text.lines().any(|line| line.trim() == "pwned"), "{text}");
+    let check_args = json!({"check": "unit_filtered", "filter": filter});
+    let check_report = ok(&tools, "run_checks", check_args).await;
+    assert!(
+        check_report.contains(&format!("ARG<{filter}>")),
+        "{check_report}"
+    );
+    assert!(
+        !check_report.lines().any(|line| line.trim() == "pwned"),
+        "{check_report}"
+    );
     assert!(!dir.path().join("pwned.txt").exists());
 }
 
@@ -109,8 +118,8 @@ async fn filters_are_required_and_may_not_be_options() {
     };
     let tools = tools(dir.path(), checks);
     err(&tools, "run_checks", json!({"check": "unit_filtered"})).await;
-    let args = json!({"check": "unit_filtered", "filter": "--config=evil"});
-    let message = err(&tools, "run_checks", args).await;
+    let check_args = json!({"check": "unit_filtered", "filter": "--config=evil"});
+    let message = err(&tools, "run_checks", check_args).await;
     assert!(message.contains('-'), "{message}");
 }
 
@@ -121,17 +130,24 @@ async fn long_output_is_trimmed_in_the_middle() {
         unit: Some(helper("print_many_lines")),
         ..Checks::default()
     };
-    let text = ok(
+    let check_report = ok(
         &tools(dir.path(), checks),
         "run_checks",
         json!({"check": "unit"}),
     )
     .await;
-    assert!(text.contains("output line 1\n"), "the start is kept");
-    assert!(text.contains("output line 1000"), "the end is kept");
-    assert!(!text.contains("output line 500\n"));
-    assert!(text.contains("lines omitted"), "{text}");
-    assert!(text.lines().count() < 220, "{}", text.lines().count());
+    assert!(
+        check_report.contains("output line 1\n"),
+        "the start is kept"
+    );
+    assert!(check_report.contains("output line 1000"), "the end is kept");
+    assert!(!check_report.contains("output line 500\n"));
+    assert!(check_report.contains("lines omitted"), "{check_report}");
+    assert!(
+        check_report.lines().count() < 220,
+        "{}",
+        check_report.lines().count()
+    );
 }
 
 #[tokio::test]
@@ -158,9 +174,9 @@ async fn the_planner_cannot_run_checks() {
         ..Checks::default()
     };
     let tools = Tools::new(dir.path(), Toolset::Planner, checks);
-    let output = call(&tools, "run_checks", json!({"check": "unit"})).await;
-    assert!(output.is_error);
-    assert!(output.text.contains("Planner"), "{}", output.text);
+    let tool_output = call(&tools, "run_checks", json!({"check": "unit"})).await;
+    assert!(tool_output.is_error);
+    assert!(tool_output.text.contains("Planner"), "{}", tool_output.text);
 }
 
 #[test]

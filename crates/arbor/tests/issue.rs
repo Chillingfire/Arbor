@@ -6,21 +6,21 @@ fn arbor() -> Command {
 
 #[test]
 fn without_arguments_arbor_prints_its_version() {
-    let output = arbor().output().unwrap();
+    let arbor_run = arbor().output().unwrap();
 
-    assert!(output.status.success());
+    assert!(arbor_run.status.success());
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(arbor_run.stdout).unwrap(),
         format!("arbor {}\n", env!("CARGO_PKG_VERSION"))
     );
 }
 
 #[test]
 fn a_bad_issue_number_is_a_usage_error() {
-    let output = arbor().args(["--issue", "abc"]).output().unwrap();
+    let arbor_run = arbor().args(["--issue", "abc"]).output().unwrap();
 
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: arbor"));
+    assert_eq!(arbor_run.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&arbor_run.stderr).contains("usage: arbor"));
 }
 
 #[cfg(unix)]
@@ -48,16 +48,16 @@ mod with_a_fake_path {
             r#"echo '{"title":"Fix it","body":"Now.","comments":[{"author":{"login":"ann"},"body":"+1"}]}'"#,
         ));
 
-        let output = arbor()
+        let arbor_run = arbor()
             .args(["--issue", "7"])
             .env("PATH", path.path())
             .current_dir(path.path())
             .output()
             .unwrap();
 
-        assert!(output.status.success(), "{output:?}");
+        assert!(arbor_run.status.success(), "{arbor_run:?}");
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(arbor_run.stdout).unwrap(),
             "# Issue #7: Fix it\n\nNow.\n\n## Comments\n\n### @ann\n\n+1\n"
         );
     }
@@ -66,14 +66,14 @@ mod with_a_fake_path {
     fn a_missing_gh_says_to_install_it() {
         let path = path_with_gh(None);
 
-        let output = arbor()
+        let arbor_run = arbor()
             .args(["--issue", "7"])
             .env("PATH", path.path())
             .output()
             .unwrap();
 
-        assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(arbor_run.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&arbor_run.stderr);
         assert!(stderr.contains("`gh` is not installed"), "{stderr}");
     }
 
@@ -83,14 +83,14 @@ mod with_a_fake_path {
             "echo 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4",
         ));
 
-        let output = arbor()
+        let arbor_run = arbor()
             .args(["--issue", "7"])
             .env("PATH", path.path())
             .output()
             .unwrap();
 
-        assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(arbor_run.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&arbor_run.stderr);
         assert!(stderr.contains("run `gh auth login`"), "{stderr}");
     }
 
@@ -98,14 +98,14 @@ mod with_a_fake_path {
     fn a_repository_without_a_github_remote_points_to_handover_files() {
         let path = path_with_gh(Some("echo 'no git remotes found' >&2\nexit 1"));
 
-        let output = arbor()
+        let arbor_run = arbor()
             .args(["--issue", "7"])
             .env("PATH", path.path())
             .output()
             .unwrap();
 
-        assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(arbor_run.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&arbor_run.stderr);
         assert!(stderr.contains("no GitHub remote"), "{stderr}");
         assert!(stderr.contains("--handover-file <path>"), "{stderr}");
     }
@@ -117,11 +117,11 @@ fn a_handover_file_is_printed_as_the_request() {
     let path = dir.path().join("next.md");
     std::fs::write(&path, "# Add a flag\n\nNo GitHub needed.\n").unwrap();
 
-    let output = arbor().arg("--handover-file").arg(&path).output().unwrap();
+    let arbor_run = arbor().arg("--handover-file").arg(&path).output().unwrap();
 
-    assert!(output.status.success());
+    assert!(arbor_run.status.success());
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(arbor_run.stdout).unwrap(),
         "# Add a flag\n\nNo GitHub needed.\n"
     );
 }
@@ -143,25 +143,25 @@ fn a_handover_can_come_from_stdin() {
         .unwrap()
         .write_all(b"Fix the parser.\n")
         .unwrap();
-    let output = child.wait_with_output().unwrap();
+    let arbor_run = child.wait_with_output().unwrap();
 
-    assert!(output.status.success());
+    assert!(arbor_run.status.success());
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(arbor_run.stdout).unwrap(),
         "Fix the parser.\n"
     );
 }
 
 #[test]
 fn a_missing_handover_file_is_an_error() {
-    let output = arbor()
+    let arbor_run = arbor()
         .args(["--handover-file", "does-not-exist.md"])
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(arbor_run.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&arbor_run.stderr)
             .contains("could not read the handover file does-not-exist.md")
     );
 }

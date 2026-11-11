@@ -228,10 +228,13 @@ fn invalid_task_orders_are_refused_and_change_nothing() {
     for task_order in [vec![], vec![3], vec![0, 0]] {
         let mut session = at_plan_checkpoint(&["A", "B", "C"]);
         let before = session.clone();
-        let result = session.apply(&Event::PlanApproved {
+        let apply_result = session.apply(&Event::PlanApproved {
             task_order: task_order.clone(),
         });
-        assert_eq!(result, Err(ApplyError::InvalidTaskOrder { task_order }),);
+        assert_eq!(
+            apply_result,
+            Err(ApplyError::InvalidTaskOrder { task_order }),
+        );
         assert_eq!(session, before);
     }
 }

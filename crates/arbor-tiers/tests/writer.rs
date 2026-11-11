@@ -44,17 +44,20 @@ const GOOD: &str = "```python\n\ndef add(a, b):\n    return a + b\n\ndef sub(a, 
 const WRONG: &str = "```python\n\ndef add(a, b):\n    return a * b\n\ndef sub(a, b):\n```";
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let git_output = Command::new("git")
         .args(args)
         .current_dir(dir)
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
+        git_output.status.success(),
         "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&git_output.stderr)
     );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    String::from_utf8(git_output.stdout)
+        .unwrap()
+        .trim()
+        .to_owned()
 }
 
 fn repo() -> TempDir {
@@ -199,12 +202,15 @@ async fn failed_checks_restore_the_placeholder_and_the_retry_sees_why() {
         panic!("expected a failure, got {:?}", first.outcome);
     };
     assert_eq!(failure.reply, WRONG);
-    let FailureReason::ChecksFailed { output } = &failure.reason else {
+    let FailureReason::ChecksFailed {
+        output: check_output,
+    } = &failure.reason
+    else {
         panic!("expected failed Checks, got {:?}", failure.reason);
     };
     assert!(
-        output.contains("git grep --quiet -F 'return a + b'"),
-        "{output}"
+        check_output.contains("git grep --quiet -F 'return a + b'"),
+        "{check_output}"
     );
     assert_eq!(file(&dir), SKELETON);
     assert_eq!(head(&dir), before);
