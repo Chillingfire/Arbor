@@ -34,6 +34,9 @@ pub struct WriterRun<'a> {
     pub work_unit: &'a WorkUnit,
     pub model: String,
     pub temperature: f64,
+    /// The model's `supported_parameters`. Temperature and the fixed seed are sent only when listed,
+    /// since `require_parameters` would otherwise leave the call no provider (ADR-0007).
+    pub supported_parameters: Vec<String>,
     pub worktree: &'a Path,
     pub checks: Checks,
     pub cap_tokens: u32,
@@ -51,6 +54,14 @@ impl WriterRun<'_> {
             work_unit: self.work_unit.clone(),
             model: self.model,
             temperature: self.temperature,
+            sends_temperature: self
+                .supported_parameters
+                .iter()
+                .any(|parameter| parameter == "temperature"),
+            sends_seed: self
+                .supported_parameters
+                .iter()
+                .any(|parameter| parameter == "seed"),
             worktree: self.worktree.to_owned(),
             checks: self.checks,
             cap_tokens: self.cap_tokens,
@@ -69,6 +80,8 @@ pub struct Writer {
     work_unit: WorkUnit,
     model: String,
     temperature: f64,
+    sends_temperature: bool,
+    sends_seed: bool,
     worktree: PathBuf,
     checks: Checks,
     cap_tokens: u32,
@@ -261,8 +274,8 @@ impl Writer {
             messages,
             tools: Vec::new(),
             tool_choice: None,
-            temperature: Some(self.temperature),
-            seed: Some(WRITER_SEED),
+            temperature: self.sends_temperature.then_some(self.temperature),
+            seed: self.sends_seed.then_some(WRITER_SEED),
             max_tokens: None,
             require_parameters: true,
             cache_transcript: false,

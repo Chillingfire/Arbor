@@ -20,11 +20,10 @@ dependencies = [
  "arbor-git",
  "arbor-llm",
  "arbor-prompts",
+ "arbor-session",
  "arbor-tiers",
  "arbor-tools",
  "arbor-tui",
- "schemars",
- "serde",
  "tempfile",
  "tokio",
 ]
@@ -78,6 +77,23 @@ dependencies = [
  "arbor-core",
  "arbor-llm",
  "minijinja",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "arbor-session"
+version = "0.1.0"
+dependencies = [
+ "arbor-config",
+ "arbor-core",
+ "arbor-git",
+ "arbor-llm",
+ "arbor-prompts",
+ "arbor-tiers",
+ "arbor-tools",
+ "schemars",
  "serde",
  "tempfile",
  "tokio",
@@ -1833,6 +1849,18 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xtask"
 version = "0.1.0"
+dependencies = [
+ "arbor-config",
+ "arbor-core",
+ "arbor-git",
+ "arbor-llm",
+ "arbor-session",
+ "arbor-tiers",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "yoke"

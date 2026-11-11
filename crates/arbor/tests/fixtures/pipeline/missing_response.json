@@ -614,7 +614,7 @@
         "tools": [],
         "tool_choice": null,
         "temperature": 0.0,
-        "seed": 7,
+        "seed": null,
         "max_tokens": null,
         "require_parameters": true,
         "cache_transcript": false
@@ -1035,7 +1035,7 @@
         "tools": [],
         "tool_choice": null,
         "temperature": 0.0,
-        "seed": 7,
+        "seed": null,
         "max_tokens": null,
         "require_parameters": true,
         "cache_transcript": false
@@ -1085,6 +1085,20 @@
         "prompt": 3e-6,
         "completion": 0.000015,
         "cache_read": 3e-7
+      }
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "context_length": 200000,
+      "supported_parameters": [
+        "temperature",
+        "tools",
+        "tool_choice"
+      ],
+      "pricing": {
+        "prompt": 1e-6,
+        "completion": 5e-6,
+        "cache_read": 1e-7
       }
     }
   ]
