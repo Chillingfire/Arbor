@@ -13,7 +13,6 @@ use arbor_core::{Event, Request, Session, Tier};
 use arbor_git::{Repo, SessionBranch};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{Autopilot, SessionEnd};
-use arbor_tiers::AttemptOutcome;
 use serde::Serialize;
 
 const WORDY: &str = concat!(
@@ -73,16 +72,20 @@ struct TierModels {
 #[derive(Serialize)]
 struct CaseReport {
     name: String,
+    /// The Session finished and the case's held-out acceptance tests passed.
     passed: bool,
     /// How the Session ended: `finished`, or why it stopped.
     end: String,
+    /// The held-out acceptance tests: `passed`, `failed: <output>`, or why they didn't run.
+    acceptance: String,
     escalations: Escalations,
     cost: TierCosts,
 }
 
 #[derive(Serialize, Default, Clone, Copy)]
 struct Escalations {
-    /// Writer attempts after the first for a Work Unit.
+    /// Writer attempts after the first in each Writer run. A run that ends in a failed Work Unit
+    /// or a Missing Response counts only its attempts after the first.
     writer_retries: usize,
     /// Work Units whose Writer gave up, handing them on to a Revision.
     work_units_failed: usize,
@@ -243,9 +246,10 @@ async fn run_cases(options: &EvalOptions) -> Result<PathBuf, String> {
         println!("== {}", case.name);
         let (case_report, config) = run_case(case, user_config.as_deref(), &client).await?;
         println!(
-            "   {} ({}), ${:.4}",
+            "   {} ({}; acceptance tests {}), ${:.4}",
             if case_report.passed { "PASS" } else { "FAIL" },
             case_report.end,
+            case_report.acceptance,
             case_report.cost.total_usd
         );
         models.get_or_insert(TierModels {
@@ -365,12 +369,21 @@ async fn run_case(
     let session_end = autopilot.run(request).await;
     let mut escalations = count_escalations(autopilot.events());
     escalations.writer_retries = autopilot
-        .writer_attempts()
+        .writer_runs()
         .iter()
-        .filter(|attempt| !matches!(attempt.outcome, AttemptOutcome::Passed { .. }))
-        .count();
+        .map(|run| run.attempts.len().saturating_sub(1))
+        .sum();
+    let mut acceptance = "not run: the Session didn't finish".to_owned();
     let (passed, end) = match session_end {
-        Ok(SessionEnd::Finished) => (true, "finished".to_owned()),
+        Ok(SessionEnd::Finished) => {
+            let acceptance_result = run_acceptance_tests(case, worktree.path());
+            let passed = acceptance_result.is_ok();
+            acceptance = match acceptance_result {
+                Ok(()) => "passed".to_owned(),
+                Err(failure) => format!("failed: {failure}"),
+            };
+            (passed, "finished".to_owned())
+        }
         Ok(SessionEnd::NeedsOperator(effect)) => {
             escalations.operator_stops = 1;
             (false, format!("stopped for the operator at {effect:?}"))
@@ -388,11 +401,47 @@ async fn run_case(
         name: case.name.to_owned(),
         passed,
         end,
+        acceptance,
         escalations,
         cost: TierCosts::of(autopilot.session()),
     };
     Ok((case_report, config))
 }
+
+/// The tests that run only after the Session, so a pass needs more than the tests the
+/// Scaffolder wrote (ADR-0003).
+fn acceptance_tests_path(case: &EvalCase) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("eval-acceptance")
+        .join(format!("{}.rs", case.name))
+}
+
+const ACCEPTANCE_TEST_TARGET: &str = "arbor_eval_acceptance";
+
+/// Copies the case's held-out tests into the worktree and runs them. `Err` holds the end of the
+/// test output.
+fn run_acceptance_tests(case: &EvalCase, worktree: &Path) -> Result<(), String> {
+    let tests_dir = worktree.join("tests");
+    fs::create_dir_all(&tests_dir).map_err(|err| format!("{}: {err}", tests_dir.display()))?;
+    let source = acceptance_tests_path(case);
+    let target = tests_dir.join(format!("{ACCEPTANCE_TEST_TARGET}.rs"));
+    fs::copy(&source, &target).map_err(|err| format!("{}: {err}", source.display()))?;
+    let cargo_test = Command::new("cargo")
+        .args(["test", "--test", ACCEPTANCE_TEST_TARGET])
+        .current_dir(worktree)
+        .output()
+        .map_err(|err| format!("cargo: {err}"))?;
+    if cargo_test.status.success() {
+        return Ok(());
+    }
+    let test_output = String::from_utf8_lossy(&cargo_test.stdout).into_owned()
+        + &String::from_utf8_lossy(&cargo_test.stderr);
+    let output_lines: Vec<&str> = test_output.lines().collect();
+    let kept_from = output_lines.len().saturating_sub(ACCEPTANCE_OUTPUT_LINES);
+    Err(output_lines[kept_from..].join("\n"))
+}
+
+const ACCEPTANCE_OUTPUT_LINES: usize = 40;
 
 fn count_escalations(events: &[Event]) -> Escalations {
     let count =
@@ -443,5 +492,18 @@ fn git(dir: &Path, git_args: &[&str]) -> Result<(), String> {
             git_args.join(" "),
             String::from_utf8_lossy(&git_output.stderr).trim()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_case_has_held_out_acceptance_tests() {
+        for case in CASES {
+            let path = acceptance_tests_path(case);
+            assert!(path.is_file(), "{} has no {}", case.name, path.display());
+        }
     }
 }
