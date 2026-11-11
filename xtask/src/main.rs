@@ -29,7 +29,7 @@ fn main() -> ExitCode {
 }
 
 fn check_core_deps() -> ExitCode {
-    let output = Command::new(env!("CARGO"))
+    let cargo_tree = Command::new(env!("CARGO"))
         .args([
             "tree",
             "-p",
@@ -41,11 +41,11 @@ fn check_core_deps() -> ExitCode {
         ])
         .output()
         .expect("failed to run cargo tree");
-    if !output.status.success() {
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    if !cargo_tree.status.success() {
+        eprintln!("{}", String::from_utf8_lossy(&cargo_tree.stderr));
         return ExitCode::FAILURE;
     }
-    let tree = String::from_utf8_lossy(&output.stdout);
+    let tree = String::from_utf8_lossy(&cargo_tree.stdout);
     let found = forbidden_deps(&tree);
     if found.is_empty() {
         println!("arbor-core has no I/O dependencies");

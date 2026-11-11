@@ -26,7 +26,7 @@ impl GhOutput {
 /// A seam so tests can fake `gh` without a network.
 pub trait GhRunner {
     /// An [`io::ErrorKind::NotFound`] error means `gh` isn't installed.
-    fn run(&self, dir: &Path, args: &[&str]) -> io::Result<GhOutput>;
+    fn run(&self, dir: &Path, gh_args: &[&str]) -> io::Result<GhOutput>;
 }
 
 #[derive(Debug, Clone)]
@@ -49,9 +49,9 @@ impl Default for GhCli {
 }
 
 impl GhRunner for GhCli {
-    fn run(&self, dir: &Path, args: &[&str]) -> io::Result<GhOutput> {
-        let output = Command::new(&self.program)
-            .args(args)
+    fn run(&self, dir: &Path, gh_args: &[&str]) -> io::Result<GhOutput> {
+        let gh_output = Command::new(&self.program)
+            .args(gh_args)
             .current_dir(dir)
             // Arbor runs under a TUI, so gh must never stop to ask the terminal anything.
             .env("GH_PROMPT_DISABLED", "1")
@@ -61,9 +61,9 @@ impl GhRunner for GhCli {
             .stderr(Stdio::piped())
             .output()?;
         Ok(GhOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            code: gh_output.status.code(),
+            stdout: String::from_utf8_lossy(&gh_output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&gh_output.stderr).trim().to_owned(),
         })
     }
 }
@@ -163,19 +163,19 @@ pub fn issue_request(
     number: u64,
 ) -> Result<Request, IssueError> {
     let number_arg = number.to_string();
-    let args = [
+    let gh_args = [
         "issue",
         "view",
         &number_arg,
         "--json",
         "title,body,comments",
     ];
-    let output = runner.run(dir, &args).map_err(spawn_error)?;
-    if !output.success() {
-        return Err(classify_failure(runner, dir, number, output));
+    let gh_output = runner.run(dir, &gh_args).map_err(spawn_error)?;
+    if !gh_output.success() {
+        return Err(classify_failure(runner, dir, number, gh_output));
     }
     let issue: IssueJson =
-        serde_json::from_str(&output.stdout).map_err(|err| IssueError::Malformed {
+        serde_json::from_str(&gh_output.stdout).map_err(|err| IssueError::Malformed {
             number,
             reason: err.to_string(),
         })?;
@@ -205,9 +205,9 @@ fn classify_failure(
     runner: &impl GhRunner,
     dir: &Path,
     number: u64,
-    output: GhOutput,
+    gh_output: GhOutput,
 ) -> IssueError {
-    let stderr = output.stderr;
+    let stderr = gh_output.stderr;
     // Checked first: gh's no-remote message also suggests `gh auth login`.
     if NO_REMOTE_MESSAGES
         .iter()
@@ -215,7 +215,7 @@ fn classify_failure(
     {
         return IssueError::NoGitHubRemote { stderr };
     }
-    if output.code == Some(GH_AUTH_EXIT_CODE) || stderr.contains("gh auth login") {
+    if gh_output.code == Some(GH_AUTH_EXIT_CODE) || stderr.contains("gh auth login") {
         return IssueError::NotAuthenticated { stderr };
     }
     if stderr.contains("Could not resolve to an issue")
@@ -231,25 +231,27 @@ fn classify_failure(
 }
 
 fn render_markdown(number: u64, issue: &IssueJson) -> String {
-    let mut text = format!("# Issue #{number}: {}\n\n", issue.title.trim());
-    text.push_str(non_empty(issue.body.as_deref()).unwrap_or("_No description provided._"));
-    text.push('\n');
+    let mut markdown = format!("# Issue #{number}: {}\n\n", issue.title.trim());
+    markdown.push_str(non_empty(issue.body.as_deref()).unwrap_or("_No description provided._"));
+    markdown.push('\n');
     if !issue.comments.is_empty() {
-        text.push_str("\n## Comments\n");
+        markdown.push_str("\n## Comments\n");
         for comment in &issue.comments {
             let author = comment
                 .author
                 .as_ref()
                 .map_or("unknown", |author| author.login.as_str());
             let body = non_empty(comment.body.as_deref()).unwrap_or("_Empty comment._");
-            text.push_str(&format!("\n### @{author}\n\n{body}\n"));
+            markdown.push_str(&format!("\n### @{author}\n\n{body}\n"));
         }
     }
-    text
+    markdown
 }
 
-fn non_empty(text: Option<&str>) -> Option<&str> {
-    text.map(str::trim).filter(|text| !text.is_empty())
+fn non_empty(issue_text: Option<&str>) -> Option<&str> {
+    issue_text
+        .map(str::trim)
+        .filter(|trimmed| !trimmed.is_empty())
 }
 
 #[cfg(test)]
@@ -279,10 +281,11 @@ mod tests {
     }
 
     impl GhRunner for FakeGh {
-        fn run(&self, dir: &Path, args: &[&str]) -> io::Result<GhOutput> {
-            self.calls
-                .borrow_mut()
-                .push((dir.to_owned(), args.iter().map(|a| a.to_string()).collect()));
+        fn run(&self, dir: &Path, gh_args: &[&str]) -> io::Result<GhOutput> {
+            self.calls.borrow_mut().push((
+                dir.to_owned(),
+                gh_args.iter().map(|gh_arg| gh_arg.to_string()).collect(),
+            ));
             self.replies
                 .borrow_mut()
                 .pop_front()

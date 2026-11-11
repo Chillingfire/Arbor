@@ -65,12 +65,12 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
     if plan.tasks.is_empty() {
         problems.push("there are no Tasks; a Plan needs at least one".to_owned());
     }
-    for (i, task) in plan.tasks.iter().enumerate() {
+    for (task_number, task) in (1..).zip(&plan.tasks) {
         if task.title.trim().is_empty() {
-            problems.push(format!("Task {} has no title", i + 1));
+            problems.push(format!("Task {task_number} has no title"));
         }
         if task.description.trim().is_empty() {
-            problems.push(format!("Task {} has no description", i + 1));
+            problems.push(format!("Task {task_number} has no description"));
         }
     }
     if problems.is_empty() {

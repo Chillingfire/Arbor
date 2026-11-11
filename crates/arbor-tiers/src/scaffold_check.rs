@@ -19,7 +19,7 @@ pub fn writer_input_tokens(unit: &WorkUnit) -> u32 {
     let criteria = unit
         .acceptance_criteria
         .iter()
-        .map(|text| estimate_tokens(text));
+        .map(|criterion| estimate_tokens(criterion));
     let snippets = unit
         .context
         .iter()
@@ -120,18 +120,18 @@ fn id_taken(id: WorkUnitId, first_id: WorkUnitId, revisable: &[WorkUnitId]) -> S
 }
 
 /// A Region for a Work Unit not in `ids` is a problem too.
-pub fn marker_problems(file: &str, text: &str, ids: &[WorkUnitId]) -> Vec<String> {
-    marker_problems_keeping(file, text, ids, &[])
+pub fn marker_problems(file: &str, source: &str, ids: &[WorkUnitId]) -> Vec<String> {
+    marker_problems_keeping(file, source, ids, &[])
 }
 
 /// `kept` Regions belong to Work Units still waiting for their Writer, outside the Revision.
 fn marker_problems_keeping(
     file: &str,
-    text: &str,
+    source: &str,
     ids: &[WorkUnitId],
     kept: &[WorkUnitId],
 ) -> Vec<String> {
-    let markers = Markers::parse(text);
+    let markers = Markers::parse(source);
     let mut problems: Vec<String> = markers
         .check(ids)
         .iter()
@@ -205,9 +205,9 @@ impl ScaffoldCheck {
                 continue;
             };
             match std::fs::read_to_string(self.worktree.join(path)) {
-                Ok(text) => problems.extend(marker_problems_keeping(
+                Ok(source) => problems.extend(marker_problems_keeping(
                     file,
-                    &text,
+                    &source,
                     &ids,
                     &self.kept_regions,
                 )),
@@ -238,15 +238,15 @@ impl ScaffoldCheck {
         if self.checks.scaffold.is_none() {
             return Ok(());
         }
-        let output = self
+        let scaffold_check = self
             .tools
             .call("run_checks", r#"{"check":"scaffold"}"#)
             .await;
-        if output.is_error {
+        if scaffold_check.is_error {
             Err(format!(
                 "the Scaffold Check failed, so the Skeleton doesn't build. Fix it, then submit \
                  again.\n\n{}",
-                output.text
+                scaffold_check.text
             ))
         } else {
             Ok(())
@@ -279,14 +279,14 @@ fn bullets(lines: &[String]) -> String {
         .join("\n")
 }
 
-fn thousands(n: u32) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
+fn thousands(number: u32) -> String {
+    let digits = number.to_string();
+    let mut grouped = String::new();
+    for (position, digit) in digits.chars().enumerate() {
+        if position > 0 && (digits.len() - position).is_multiple_of(3) {
+            grouped.push(',');
         }
-        out.push(digit);
+        grouped.push(digit);
     }
-    out
+    grouped
 }

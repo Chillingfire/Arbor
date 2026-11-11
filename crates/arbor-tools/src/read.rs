@@ -32,8 +32,8 @@ pub(crate) fn read_file(worktree: &Worktree, args: ReadFileArgs) -> Result<Strin
     if looks_binary(&bytes) {
         return Err(format!("{}: looks like a binary file", args.path));
     }
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
+    let file_text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = file_text.lines().collect();
     let total = lines.len();
     if total == 0 {
         return Ok(format!("{} is empty.", args.path));
@@ -49,18 +49,18 @@ pub(crate) fn read_file(worktree: &Worktree, args: ReadFileArgs) -> Result<Strin
     let limit = args.limit.unwrap_or(MAX_LINES).clamp(1, MAX_LINES);
     let end = (start - 1 + limit).min(total);
 
-    let mut out = String::new();
+    let mut numbered = String::new();
     for (number, line) in (start..).zip(&lines[start - 1..end]) {
-        let _ = writeln!(out, "{number:>6}\t{}", cut(line, MAX_LINE_CHARS));
+        let _ = writeln!(numbered, "{number:>6}\t{}", cut(line, MAX_LINE_CHARS));
     }
     if end < total {
         let _ = write!(
-            out,
+            numbered,
             "[Lines {start}-{end} of {total}. Call read_file with offset={} to read more.]",
             end + 1
         );
     }
-    Ok(out)
+    Ok(numbered)
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -95,18 +95,21 @@ pub(crate) fn list_dir(worktree: &Worktree, args: ListDirArgs) -> Result<String,
     Ok(capped(entries, MAX_ENTRIES, "entries"))
 }
 
-/// One line per item, with a note on how many were left out past `max`.
-pub(crate) fn capped(items: Vec<String>, max: usize, noun: &str) -> String {
-    let more = items.len().saturating_sub(max);
-    let mut out: String = items
+/// One line per entry, with a note on how many were left out past `max`.
+pub(crate) fn capped(entries: Vec<String>, max: usize, noun: &str) -> String {
+    let more = entries.len().saturating_sub(max);
+    let mut listing: String = entries
         .into_iter()
         .take(max)
-        .map(|item| item + "\n")
+        .map(|entry| entry + "\n")
         .collect();
     if more > 0 {
-        let _ = writeln!(out, "[{more} more {noun} not shown. Narrow the search.]");
+        let _ = writeln!(
+            listing,
+            "[{more} more {noun} not shown. Narrow the search.]"
+        );
     }
-    out
+    listing
 }
 
 /// Cuts a line to `max` characters, marking that it was cut.

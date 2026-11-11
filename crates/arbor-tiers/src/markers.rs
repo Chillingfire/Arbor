@@ -53,15 +53,15 @@ impl Region {
 ///
 /// # Panics
 ///
-/// If `region` doesn't come from [`Markers::parse`] of this `text`.
-pub fn splice(text: &str, region: &Region, code: &[&str]) -> String {
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+/// If `region` doesn't come from [`Markers::parse`] of this `source`.
+pub fn splice(source: &str, region: &Region, code: &[&str]) -> String {
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
     let eol = if lines[region.begin].ends_with("\r\n") {
         "\r\n"
     } else {
         "\n"
     };
-    let mut spliced = String::with_capacity(text.len());
+    let mut spliced = String::with_capacity(source.len());
     spliced.extend(lines[..=region.begin].iter().copied());
     for line in code {
         spliced.push_str(line);
@@ -73,10 +73,11 @@ pub fn splice(text: &str, region: &Region, code: &[&str]) -> String {
 
 /// # Panics
 ///
-/// If `region` doesn't come from [`Markers::parse`] of this `text`.
-pub fn strip(text: &str, region: &Region) -> String {
-    assert!(region.end < text.split_inclusive('\n').count());
-    text.split_inclusive('\n')
+/// If `region` doesn't come from [`Markers::parse`] of this `source`.
+pub fn strip(source: &str, region: &Region) -> String {
+    assert!(region.end < source.split_inclusive('\n').count());
+    source
+        .split_inclusive('\n')
         .enumerate()
         .filter(|&(line, _)| line != region.begin && line != region.end)
         .map(|(_, content)| content)
@@ -205,10 +206,10 @@ pub struct Markers {
 }
 
 impl Markers {
-    pub fn parse(text: &str) -> Self {
+    pub fn parse(source: &str) -> Self {
         let mut markers = Self::default();
         let mut open: Option<Marker> = None;
-        for (line, content) in text.lines().enumerate() {
+        for (line, content) in source.lines().enumerate() {
             let marker = match parse_line(content, line) {
                 None => continue,
                 Some(Err(error)) => {
@@ -357,13 +358,13 @@ fn parse_line(content: &str, line: usize) -> Option<Result<Marker, MarkerError>>
     )
 }
 
-fn parse_id(text: &str) -> Option<WorkUnitId> {
-    let digits = text.strip_prefix("WU-")?;
+fn parse_id(marker_id: &str) -> Option<WorkUnitId> {
+    let digits = marker_id.strip_prefix("WU-")?;
     let end = digits
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(digits.len());
     let after = digits[end..].chars().next();
-    if after.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+    if after.is_some_and(|character| character.is_alphanumeric() || character == '_') {
         return None;
     }
     digits[..end].parse().ok().map(WorkUnitId)

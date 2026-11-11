@@ -95,7 +95,7 @@ impl Worktree {
     ) -> impl Iterator<Item = ignore::DirEntry> {
         let start_depth = start
             .strip_prefix(root)
-            .map_or(0, |p| p.components().count());
+            .map_or(0, |relative| relative.components().count());
         let prune_start = start.to_path_buf();
         let walk: Walk = WalkBuilder::new(root)
             .hidden(false)

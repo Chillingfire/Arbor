@@ -32,42 +32,42 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let mut args = args.into_iter().map(Into::into);
-    let Some(first) = args.next() else {
+    let mut remaining_args = args.into_iter().map(Into::into);
+    let Some(first) = remaining_args.next() else {
         return Ok(Command::Version);
     };
     if first == "init" {
-        return match args.next() {
+        return match remaining_args.next() {
             Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
             None => Ok(Command::Init),
         };
     }
     let (option, inline_value) = match first.split_once('=') {
-        Some((option, value)) => (option.to_owned(), Some(value.to_owned())),
+        Some((option, inline)) => (option.to_owned(), Some(inline.to_owned())),
         None => (first.clone(), None),
     };
     if option != "--issue" && option != "--handover-file" {
         return Err(UsageError(format!("unknown argument `{first}`")));
     }
-    let value = match inline_value {
-        Some(value) => value,
-        None => args
+    let option_value = match inline_value {
+        Some(inline) => inline,
+        None => remaining_args
             .next()
             .ok_or_else(|| UsageError(format!("{option} needs a value")))?,
     };
-    if let Some(extra) = args.next() {
+    if let Some(extra) = remaining_args.next() {
         return Err(UsageError(format!("unexpected argument `{extra}`")));
     }
     if option == "--handover-file" {
-        return match value.is_empty() {
+        return match option_value.is_empty() {
             true => Err(UsageError("--handover-file needs a path".to_owned())),
-            false => Ok(Command::HandoverFile(value)),
+            false => Ok(Command::HandoverFile(option_value)),
         };
     }
-    match value.parse::<u64>() {
+    match option_value.parse::<u64>() {
         Ok(number) if number > 0 => Ok(Command::Issue(number)),
         _ => Err(UsageError(format!(
-            "`{value}` is not an issue number; give a positive whole number such as 21"
+            "`{option_value}` is not an issue number; give a positive whole number such as 21"
         ))),
     }
 }

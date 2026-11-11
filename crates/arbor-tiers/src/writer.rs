@@ -285,13 +285,13 @@ impl Writer {
             }
             .into());
         }
-        let response = client
+        let chat_response = client
             .chat(&self.request())
             .await
             .map_err(WriterError::Llm)?;
-        let usage = core_usage(&response.usage);
-        let reply = response.content.unwrap_or_default();
-        let handled = self.handle(&reply, &response.finish_reason).await;
+        let usage = core_usage(&chat_response.usage);
+        let reply = chat_response.content.unwrap_or_default();
+        let handled = self.handle(&reply, &chat_response.finish_reason).await;
         let handled = handled.map_err(|error| AttemptError {
             error,
             usage: Some(usage),
@@ -310,7 +310,7 @@ impl Writer {
         }
         self.finished = !matches!(outcome, AttemptOutcome::Failed(_));
         Ok(Attempt {
-            model: response.model,
+            model: chat_response.model,
             usage,
             outcome,
         })
@@ -389,11 +389,11 @@ impl Writer {
             if !configured {
                 continue;
             }
-            let output = run_check(&self.worktree, checks, check, filter)
+            let check_output = run_check(&self.worktree, checks, check, filter)
                 .await
                 .map_err(WriterError::Check)?;
-            if output.is_error {
-                return Ok(Some(output.text));
+            if check_output.is_error {
+                return Ok(Some(check_output.text));
             }
         }
         Ok(None)
@@ -468,15 +468,15 @@ fn retry_message(reason: &FailureReason, output_chars: usize, reply_left_out: bo
     message
 }
 
-/// Keeps the start and end of `text`, where compilers and test runners put what matters.
-fn shorten(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
+/// Keeps the start and end of `long_text`, where compilers and test runners put what matters.
+fn shorten(long_text: &str, max_chars: usize) -> String {
+    let count = long_text.chars().count();
     if count <= max_chars {
-        return text.to_owned();
+        return long_text.to_owned();
     }
     let half = max_chars / 2;
-    let head: String = text.chars().take(half).collect();
-    let tail: String = text.chars().skip(count - half).collect();
+    let head: String = long_text.chars().take(half).collect();
+    let tail: String = long_text.chars().skip(count - half).collect();
     format!("{head}\n[{} characters omitted]\n{tail}", count - 2 * half)
 }
 
@@ -491,7 +491,7 @@ pub fn commit_subject(spec: &str, file: &str) -> String {
     let sentence = first_sentence(line).trim_end_matches(['.', ':', ';', ',', ' ']);
     let names_arbor = sentence.contains("WU-")
         || sentence
-            .split(|c: char| !c.is_alphanumeric())
+            .split(|character: char| !character.is_alphanumeric())
             .any(|word| word.eq_ignore_ascii_case("arbor"));
     if sentence.is_empty() || names_arbor {
         return format!("Update {file}");
@@ -518,30 +518,30 @@ pub fn commit_subject(spec: &str, file: &str) -> String {
 }
 
 /// A sentence ends only before a space and a capital letter, so `e.g. x` doesn't end one.
-fn first_sentence(text: &str) -> &str {
-    let bytes = text.as_bytes();
-    for (i, c) in text.char_indices() {
-        if matches!(c, '.' | '?' | '!')
-            && bytes.get(i + 1) == Some(&b' ')
-            && text[i + 2..].starts_with(char::is_uppercase)
+fn first_sentence(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    for (index, character) in line.char_indices() {
+        if matches!(character, '.' | '?' | '!')
+            && bytes.get(index + 1) == Some(&b' ')
+            && line[index + 2..].starts_with(char::is_uppercase)
         {
-            return &text[..=i];
+            return &line[..=index];
         }
     }
-    text
+    line
 }
 
-/// Puts the file back as it was before the splice when `result` is an error, so the Region is
+/// Puts the file back as it was before the splice when `attempt` is an error, so the Region is
 /// still there for the next attempt. The original error wins over a failed restore.
 fn restoring<T>(
     path: &Path,
     original: &str,
-    result: Result<T, WriterError>,
+    attempt: Result<T, WriterError>,
 ) -> Result<T, WriterError> {
-    if result.is_err() {
+    if attempt.is_err() {
         let _ = fs::write(path, original);
     }
-    result
+    attempt
 }
 
 fn read(path: &Path) -> Result<String, WriterError> {
@@ -551,8 +551,8 @@ fn read(path: &Path) -> Result<String, WriterError> {
     })
 }
 
-fn write(path: &Path, text: &str) -> Result<(), WriterError> {
-    fs::write(path, text).map_err(|source| WriterError::Io {
+fn write(path: &Path, contents: &str) -> Result<(), WriterError> {
+    fs::write(path, contents).map_err(|source| WriterError::Io {
         path: path.to_owned(),
         source,
     })

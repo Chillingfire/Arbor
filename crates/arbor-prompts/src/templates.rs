@@ -426,12 +426,12 @@ fn render_blocks(
     })
 }
 
-fn tidy(text: &str) -> String {
-    let text = text.trim();
-    if text.is_empty() {
+fn tidy(section_text: &str) -> String {
+    let trimmed = section_text.trim();
+    if trimmed.is_empty() {
         String::new()
     } else {
-        format!("{text}\n")
+        format!("{trimmed}\n")
     }
 }
 
@@ -458,64 +458,64 @@ fn tried_checks(tried: &[TriedCheck]) -> Value {
 /// Example Session inputs for checking a template. Samples with different `seed`s differ in every
 /// input, so instructions that render the same for both don't depend on the inputs.
 fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
-    let text = |what: &str| format!("sample {what} {seed}");
+    let sample_text = |what: &str| format!("sample {what} {seed}");
     let request = Request {
-        text: text("request"),
+        text: sample_text("request"),
         issue: Some(u64::from(seed)),
     };
     let task = Task {
-        title: text("task title"),
-        description: text("task description"),
+        title: sample_text("task title"),
+        description: sample_text("task description"),
     };
     let plan = Plan {
-        goal: text("goal"),
-        constraints: vec![text("constraint")],
+        goal: sample_text("goal"),
+        constraints: vec![sample_text("constraint")],
         tasks: vec![task.clone()],
     };
     let work_unit = WorkUnit {
         id: WorkUnitId(seed),
-        file: text("file"),
-        spec: text("spec"),
+        file: sample_text("file"),
+        spec: sample_text("spec"),
         context: vec![Snippet {
-            path: text("snippet path"),
-            text: text("snippet"),
+            path: sample_text("snippet path"),
+            text: sample_text("snippet"),
             priority: Priority::Required,
         }],
-        acceptance_criteria: vec![text("criterion")],
-        test_filter: text("filter"),
+        acceptance_criteria: vec![sample_text("criterion")],
+        test_filter: sample_text("filter"),
     };
     let tried = [TriedCheck {
-        check: text("check"),
-        command: text("command"),
-        output: text("output"),
+        check: sample_text("check"),
+        command: sample_text("command"),
+        output: sample_text("output"),
     }];
     // Each seed takes a different kind of failure, so checking a template renders both.
     let cause = if seed % 2 == 1 {
         RevisionCause::TaskChecksFailed {
-            output: text("check output"),
+            output: sample_text("check output"),
         }
     } else {
         RevisionCause::WorkUnitFailed(WorkUnitFailure {
             id: work_unit.id,
             attempts: vec![FailedAttempt {
-                reply: text("reply"),
-                error: text("error"),
+                reply: sample_text("reply"),
+                error: sample_text("error"),
             }],
-            missing_response: Some(vec![text("missing item")]),
+            missing_response: Some(vec![sample_text("missing item")]),
         })
     };
     let earlier = [RevisionRound {
         cause: cause.clone(),
         revision: Revision {
-            diagnosis: text("diagnosis"),
+            diagnosis: sample_text("diagnosis"),
             work_units: vec![work_unit.clone()],
-            shared_change: Some(text("shared change")),
+            shared_change: Some(sample_text("shared change")),
         },
-        rejection: Some(text("rejection")),
+        rejection: Some(sample_text("rejection")),
     }];
     let revision = RevisionInputs {
         cause: &cause,
-        task_diff: &text("task diff"),
+        task_diff: &sample_text("task diff"),
         work_units: std::slice::from_ref(&work_unit),
         earlier: &earlier,
     };
@@ -524,7 +524,7 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         task: 0,
         cause: &cause,
         revisions: &earlier,
-        task_diff: &text("task diff"),
+        task_diff: &sample_text("task diff"),
     };
     let all = [
         ("clarification_mode", mode(ClarificationMode::Ask)),
@@ -533,7 +533,7 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         ("plan", Value::from(Serde(&plan))),
         ("task", Value::from(Serde(&task))),
         ("work_unit", Value::from(Serde(&work_unit))),
-        ("detection", Value::from(text("detection"))),
+        ("detection", Value::from(sample_text("detection"))),
         ("tried_checks", tried_checks(&tried)),
         ("revision", Value::from(Serde(revision))),
         ("replan", Value::from(Serde(replan))),

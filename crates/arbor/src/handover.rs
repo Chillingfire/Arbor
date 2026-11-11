@@ -23,9 +23,11 @@ impl fmt::Display for HandoverError {
 
 /// Reads a Request from a file, or from stdin when `path` is `-`.
 pub fn read(path: &str) -> Result<Request, HandoverError> {
-    let text = if path == "-" {
-        let mut text = String::new();
-        io::stdin().read_to_string(&mut text).map(|_| text)
+    let request_text = if path == "-" {
+        let mut stdin_text = String::new();
+        io::stdin()
+            .read_to_string(&mut stdin_text)
+            .map(|_| stdin_text)
     } else {
         fs::read_to_string(path)
     }
@@ -33,16 +35,19 @@ pub fn read(path: &str) -> Result<Request, HandoverError> {
         path: path.to_owned(),
         source,
     })?;
-    request(path, text)
+    request(path, request_text)
 }
 
-fn request(path: &str, text: String) -> Result<Request, HandoverError> {
-    if text.trim().is_empty() {
+fn request(path: &str, request_text: String) -> Result<Request, HandoverError> {
+    if request_text.trim().is_empty() {
         return Err(HandoverError::Empty {
             path: path.to_owned(),
         });
     }
-    Ok(Request { text, issue: None })
+    Ok(Request {
+        text: request_text,
+        issue: None,
+    })
 }
 
 #[cfg(test)]

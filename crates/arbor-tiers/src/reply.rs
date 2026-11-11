@@ -113,27 +113,27 @@ impl std::error::Error for ReplyError {}
 
 /// A fence closes with at least as many backticks as opened it, so a longer fence can hold code
 /// that itself contains ```` ``` ````.
-pub fn parse_reply(text: &str) -> Result<WriterReply, ReplyError> {
-    if text.trim().is_empty() {
+pub fn parse_reply(reply_text: &str) -> Result<WriterReply, ReplyError> {
+    if reply_text.trim().is_empty() {
         return Err(ReplyError::Empty);
     }
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = reply_text.lines().collect();
     let mut blocks = Vec::new();
     let mut outside = false;
-    let mut i = 0;
-    while i < lines.len() {
-        let Some((ticks, info)) = opening_fence(lines[i]) else {
-            outside |= !lines[i].trim().is_empty();
-            i += 1;
+    let mut line_index = 0;
+    while line_index < lines.len() {
+        let Some((ticks, info_string)) = opening_fence(lines[line_index]) else {
+            outside |= !lines[line_index].trim().is_empty();
+            line_index += 1;
             continue;
         };
-        let close = (i + 1..lines.len())
-            .find(|&j| closes(lines[j], ticks))
+        let close = (line_index + 1..lines.len())
+            .find(|&close_index| closes(lines[close_index], ticks))
             .ok_or(ReplyError::Unclosed)?;
-        blocks.push((info, &lines[i + 1..close]));
-        i = close + 1;
+        blocks.push((info_string, &lines[line_index + 1..close]));
+        line_index = close + 1;
     }
-    let (info, body) = match blocks.as_slice() {
+    let (info_string, body) = match blocks.as_slice() {
         [] => return Err(ReplyError::NoBlock),
         [block] => *block,
         _ => return Err(ReplyError::SeveralBlocks(blocks.len())),
@@ -141,9 +141,9 @@ pub fn parse_reply(text: &str) -> Result<WriterReply, ReplyError> {
     if outside {
         return Err(ReplyError::TextOutside);
     }
-    let language = info.split_whitespace().next().unwrap_or_default();
+    let language = info_string.split_whitespace().next().unwrap_or_default();
     if language.eq_ignore_ascii_case(MISSING) {
-        let items: Vec<String> = body
+        let missing_items: Vec<String> = body
             .iter()
             .map(|line| {
                 let line = line.trim();
@@ -153,12 +153,12 @@ pub fn parse_reply(text: &str) -> Result<WriterReply, ReplyError> {
                     .trim()
                     .to_owned()
             })
-            .filter(|item| !item.is_empty())
+            .filter(|missing_item| !missing_item.is_empty())
             .collect();
-        if items.is_empty() {
+        if missing_items.is_empty() {
             return Err(ReplyError::EmptyMissing);
         }
-        return Ok(WriterReply::Missing(items));
+        return Ok(WriterReply::Missing(missing_items));
     }
     Ok(WriterReply::Code(CodeReply {
         language: language.to_owned(),
@@ -203,8 +203,8 @@ impl CodeReply {
 fn opening_fence(line: &str) -> Option<(usize, &str)> {
     let line = unindent(line)?;
     let ticks = line.len() - line.trim_start_matches('`').len();
-    let info = &line[ticks..];
-    (ticks >= 3 && !info.contains('`')).then_some((ticks, info.trim()))
+    let info_string = &line[ticks..];
+    (ticks >= 3 && !info_string.contains('`')).then_some((ticks, info_string.trim()))
 }
 
 fn closes(line: &str, ticks: usize) -> bool {
@@ -212,7 +212,7 @@ fn closes(line: &str, ticks: usize) -> bool {
         return false;
     };
     let line = line.trim_end();
-    line.len() >= ticks && line.bytes().all(|b| b == b'`')
+    line.len() >= ticks && line.bytes().all(|byte| byte == b'`')
 }
 
 /// As in Markdown, a fence may be indented by at most 3 spaces, so an indented ```` ``` ````
@@ -225,11 +225,11 @@ fn unindent(line: &str) -> Option<&str> {
 
 /// Fenced so blank lines and indentation stay visible.
 fn quoted(lines: &[String]) -> String {
-    let mut text = String::from("```\n");
+    let mut fenced = String::from("```\n");
     for line in lines {
-        text.push_str(line);
-        text.push('\n');
+        fenced.push_str(line);
+        fenced.push('\n');
     }
-    text.push_str("```");
-    text
+    fenced.push_str("```");
+    fenced
 }

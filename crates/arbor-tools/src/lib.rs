@@ -125,7 +125,7 @@ impl Tools {
     /// including refusals, come back as error output for the model rather than as `Err`.
     pub async fn call(&self, name: &str, arguments: &str) -> ToolOutput {
         let worktree = &self.worktree;
-        let text = match name {
+        let tool_result = match name {
             "read_file" => parse(name, arguments).and_then(|args| read::read_file(worktree, args)),
             "list_dir" => parse(name, arguments).and_then(|args| read::list_dir(worktree, args)),
             "glob" => parse(name, arguments).and_then(|args| search::glob(worktree, args)),
@@ -138,29 +138,29 @@ impl Tools {
             }
             "edit_file" => parse(name, arguments).and_then(|args| write::edit_file(worktree, args)),
             "run_checks" => {
-                let output = match parse(name, arguments) {
+                let check_result = match parse(name, arguments) {
                     Ok(args) => checks::run_checks(worktree, &self.checks, args).await,
                     Err(message) => Err(message),
                 };
-                return output.unwrap_or_else(ToolOutput::error);
+                return check_result.unwrap_or_else(ToolOutput::error);
             }
             _ => Err(format!("unknown tool {name}")),
         };
-        text.map_or_else(ToolOutput::error, ToolOutput::success)
+        tool_result.map_or_else(ToolOutput::error, ToolOutput::success)
     }
 }
 
 impl ToolOutput {
-    fn success(text: String) -> Self {
+    fn success(output_text: String) -> Self {
         Self {
-            text,
+            text: output_text,
             is_error: false,
         }
     }
 
-    fn error(text: String) -> Self {
+    fn error(output_text: String) -> Self {
         Self {
-            text,
+            text: output_text,
             is_error: true,
         }
     }

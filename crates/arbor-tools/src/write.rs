@@ -44,22 +44,22 @@ pub(crate) fn edit_file(worktree: &Worktree, args: EditFileArgs) -> Result<Strin
         return Err("old_string must not be empty; use write_file to create a file".to_owned());
     }
     let path = worktree.resolve(&args.path)?;
-    let text = fs::read_to_string(&path).map_err(|err| format!("{}: {err}", args.path))?;
+    let file_text = fs::read_to_string(&path).map_err(|err| format!("{}: {err}", args.path))?;
 
-    let (old, new) = match text.matches(&args.old_string).count() {
+    let (old, new) = match file_text.matches(&args.old_string).count() {
         // Models write `\n`; let their snippet match a file with Windows line endings.
-        0 if text.contains("\r\n") && args.old_string.contains('\n') => {
+        0 if file_text.contains("\r\n") && args.old_string.contains('\n') => {
             (crlf(&args.old_string), crlf(&args.new_string))
         }
         _ => (args.old_string.clone(), args.new_string.clone()),
     };
-    match text.matches(&old).count() {
+    match file_text.matches(&old).count() {
         0 => Err(format!(
             "old_string was not found in {}. Read the file and copy the text exactly.",
             args.path
         )),
         1 => {
-            fs::write(&path, text.replacen(&old, &new, 1))
+            fs::write(&path, file_text.replacen(&old, &new, 1))
                 .map_err(|err| format!("{}: {err}", args.path))?;
             Ok(format!("Edited {}.", args.path))
         }
@@ -71,6 +71,6 @@ pub(crate) fn edit_file(worktree: &Worktree, args: EditFileArgs) -> Result<Strin
 }
 
 /// Converts `\n` line endings to `\r\n`, leaving existing `\r\n` alone.
-fn crlf(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\n', "\r\n")
+fn crlf(snippet: &str) -> String {
+    snippet.replace("\r\n", "\n").replace('\n', "\r\n")
 }

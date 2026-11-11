@@ -23,10 +23,12 @@ impl Config {
 /// else in the file as it was, and returns the file's path.
 pub fn save_project_checks(project_root: &Path, checks: &Checks) -> Result<PathBuf, ConfigError> {
     let path = project_root.join(PROJECT_CONFIG_FILE);
-    let text = read_optional(&path)?.unwrap_or_default();
+    let existing_toml = read_optional(&path)?.unwrap_or_default();
     // Refuse to rewrite a file we can't read, so a typo never costs the operator their settings.
-    Config::from_toml(None, Some(&text))?;
-    let mut doc: DocumentMut = text.parse().expect("valid TOML parses as a document");
+    Config::from_toml(None, Some(&existing_toml))?;
+    let mut doc: DocumentMut = existing_toml
+        .parse()
+        .expect("valid TOML parses as a document");
     doc["checks"] = Item::Table(checks_table(checks));
     let updated = doc.to_string();
     Config::from_toml(None, Some(&updated))?;
@@ -60,10 +62,12 @@ pub fn save_api_key(path: &Path, key: &str) -> Result<(), ConfigError> {
         path: path.to_owned(),
         source,
     };
-    let text = read_optional(path)?.unwrap_or_default();
+    let existing_toml = read_optional(path)?.unwrap_or_default();
     // Refuse to rewrite a file we can't read, so a typo never costs the operator their settings.
-    parse::<UserFile>(Some(&text), ConfigFile::User)?;
-    let mut doc: DocumentMut = text.parse().expect("valid TOML parses as a document");
+    parse::<UserFile>(Some(&existing_toml), ConfigFile::User)?;
+    let mut doc: DocumentMut = existing_toml
+        .parse()
+        .expect("valid TOML parses as a document");
     doc["api_key"] = value(key);
 
     if let Some(dir) = path.parent() {
