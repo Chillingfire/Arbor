@@ -62,6 +62,13 @@ enum Step {
     End(SessionEnd),
 }
 
+/// The attempts of one Writer run on a Work Unit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriterRunAttempts {
+    pub work_unit: WorkUnitId,
+    pub attempts: Vec<Attempt>,
+}
+
 pub struct Autopilot<'a> {
     worktree: &'a Worktree,
     mainline: &'a Mainline,
@@ -69,7 +76,7 @@ pub struct Autopilot<'a> {
     session: Session,
     /// The event log, oldest first (ADR-0004).
     events: Vec<Event>,
-    writer_attempts: Vec<Attempt>,
+    writer_runs: Vec<WriterRunAttempts>,
     config: Config,
     conventions: Conventions,
     prompts: Prompts,
@@ -94,7 +101,7 @@ impl<'a> Autopilot<'a> {
             client,
             session: Session::new(),
             events: Vec::new(),
-            writer_attempts: Vec::new(),
+            writer_runs: Vec::new(),
             config,
             conventions,
             prompts,
@@ -112,8 +119,17 @@ impl<'a> Autopilot<'a> {
     }
 
     /// Every Writer attempt, oldest first.
-    pub fn writer_attempts(&self) -> &[Attempt] {
-        &self.writer_attempts
+    pub fn writer_attempts(&self) -> Vec<&Attempt> {
+        self.writer_runs
+            .iter()
+            .flat_map(|run| &run.attempts)
+            .collect()
+    }
+
+    /// Each Writer run, oldest first. A Work Unit written again after a Revision has a run of
+    /// its own.
+    pub fn writer_runs(&self) -> &[WriterRunAttempts] {
+        &self.writer_runs
     }
 
     /// Starts a Session for `request` and carries out its effects until it ends.
@@ -355,12 +371,18 @@ impl<'a> Autopilot<'a> {
             missing_response_allowed: self.session.may_send_missing_response(id),
         }
         .start();
+        self.writer_runs.push(WriterRunAttempts {
+            work_unit: id,
+            attempts: Vec::new(),
+        });
         loop {
             let attempt = writer
                 .attempt(self.client)
                 .await
                 .map_err(failed("running the Writer"))?;
-            self.writer_attempts.push(attempt.clone());
+            if let Some(run) = self.writer_runs.last_mut() {
+                run.attempts.push(attempt.clone());
+            }
             let usage = Event::UsageRecorded {
                 tier: Tier::Writer,
                 usage: attempt.usage,

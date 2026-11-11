@@ -157,11 +157,9 @@ async fn writer_retry_after_failing_checks_passes_on_the_second_attempt() {
     client.finish();
     assert!(pipeline.session().is_done());
     assert_replays(&pipeline);
-    let [first_attempt, second_attempt] = pipeline.writer_attempts() else {
-        panic!(
-            "expected two Writer attempts: {:?}",
-            pipeline.writer_attempts()
-        );
+    let writer_attempts = pipeline.writer_attempts();
+    let [first_attempt, second_attempt] = writer_attempts.as_slice() else {
+        panic!("expected two Writer attempts: {:?}", writer_attempts);
     };
     let AttemptOutcome::Failed(failure) = &first_attempt.outcome else {
         panic!("the first attempt should fail: {first_attempt:?}");
