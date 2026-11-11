@@ -37,6 +37,8 @@ pub enum ReplyError {
     SeveralBlocks(usize),
     TextOutside,
     EmptyMissing,
+    /// A Missing Response is allowed once per Work Unit, and this one's was already sent.
+    MissingResponseUsed,
     TooShort {
         needed: usize,
         found: usize,
@@ -69,6 +71,10 @@ impl fmt::Display for ReplyError {
             ),
             Self::EmptyMissing => f.write_str(
                 "the `missing` block lists nothing; name each missing item on its own line",
+            ),
+            Self::MissingResponseUsed => f.write_str(
+                "this Work Unit already sent its one `missing` block, and its Context Pack was \
+                 revised since; reply with code this time",
             ),
             Self::TooShort { needed, found } => write!(
                 f,

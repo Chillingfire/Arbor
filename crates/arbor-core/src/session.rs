@@ -1,10 +1,13 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::cost::{UsageTotals, Usd};
 use crate::event::Event;
-use crate::revision::{MAX_REVISIONS, Revision, RevisionCause, RevisionRound};
+use crate::revision::{
+    MAX_REVISIONS, Revision, RevisionCause, RevisionRound, WorkUnitFailure, revisions_for,
+};
 use crate::types::{
-    CommitOrigin, LeftoverMarker, Plan, Request, SessionCommit, WorkUnit, WorkUnitId,
+    CommitOrigin, LeftoverMarker, Plan, Replan, Request, SessionCommit, WorkUnit, WorkUnitId,
 };
 
 /// What the outer crates should do next.
@@ -24,6 +27,11 @@ pub enum Effect {
     ShowScaffoldCheckpoint {
         task: usize,
     },
+    /// Commit the approved Skeleton, so a rejected Revision can be discarded by resetting to
+    /// `HEAD`.
+    CommitSkeleton {
+        task: usize,
+    },
     /// Call the Writer, splice its code, and run the Work Unit's Checks.
     RunWriter {
         id: WorkUnitId,
@@ -40,11 +48,40 @@ pub enum Effect {
         task: usize,
         cause: RevisionCause,
     },
-    /// The Revisions are used up, so the Human Operator decides before anything goes to the
-    /// Planner.
+    /// Only with Revision Checkpoints turned on (`RevisionCheckpointsSet`).
+    ShowRevisionCheckpoint {
+        task: usize,
+        revision: Revision,
+    },
+    /// Commit the accepted Revision's edits, so a later rejected one is discarded back to them.
+    CommitRevision {
+        task: usize,
+    },
+    /// Put the worktree back to `HEAD`, undoing the edits of a Revision that wasn't accepted.
+    DiscardRevision {
+        task: usize,
+    },
+    /// The Revisions are used up, or a Revision needs a shared signature changed, so the Human
+    /// Operator decides before anything goes to the Planner.
     ShowEscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
+    },
+    /// Run the Planner on the failed Task with its failure chain: `cause` and the Task's
+    /// [`Session::revisions`].
+    RunReplan {
+        task: usize,
+        cause: RevisionCause,
+        feedback: Option<String>,
+    },
+    /// The plan Checkpoint for the Tasks that would replace the failed one.
+    ShowReplanCheckpoint {
+        task: usize,
+        replan: Replan,
+    },
+    /// Reset the worktree to the Task's start, discarding its commits and uncommitted changes.
+    ResetTask {
+        task: usize,
     },
     /// Every Task is done: look for Markers left in the branch diff before finishing.
     CheckMarkers,
@@ -81,6 +118,9 @@ pub enum Phase {
     ScaffoldCheckpoint {
         task: usize,
     },
+    CommittingSkeleton {
+        task: usize,
+    },
     Writing {
         task: usize,
         unit: usize,
@@ -96,9 +136,34 @@ pub enum Phase {
         task: usize,
         cause: RevisionCause,
     },
+    RevisionCheckpoint {
+        task: usize,
+        cause: RevisionCause,
+        revision: Revision,
+    },
+    CommittingRevision {
+        task: usize,
+    },
+    DiscardingRevision {
+        task: usize,
+        cause: RevisionCause,
+    },
     EscalationCheckpoint {
         task: usize,
         cause: RevisionCause,
+    },
+    Replanning {
+        task: usize,
+        cause: RevisionCause,
+        feedback: Option<String>,
+    },
+    ReplanCheckpoint {
+        task: usize,
+        cause: RevisionCause,
+        replan: Replan,
+    },
+    ResettingTask {
+        task: usize,
     },
     CheckingMarkers,
     MarkerCheckpoint {
@@ -113,7 +178,7 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyError {
     Unexpected {
-        phase: Phase,
+        phase: Box<Phase>,
         event: Box<Event>,
     },
     /// Empty, out of range, or naming a Task twice.
@@ -127,10 +192,18 @@ pub enum ApplyError {
     WorkUnitIdTaken {
         id: WorkUnitId,
     },
+    /// A Revision of one failed Work Unit may revise only that Work Unit and add new ones.
+    OutsideRevisionScope {
+        id: WorkUnitId,
+    },
     /// The event names a Work Unit other than the one in progress.
     WrongWorkUnit {
         expected: WorkUnitId,
         got: WorkUnitId,
+    },
+    /// The Task already came from a Replan; each Task gets one, then only the Human Operator.
+    ReplanUsed {
+        task: usize,
     },
     /// A Budget Cap at or below what the Session has already spent, which would pause at once.
     BudgetCapReached {
@@ -157,8 +230,17 @@ impl fmt::Display for ApplyError {
             Self::WorkUnitIdTaken { id } => {
                 write!(f, "{id} was already used by an earlier work unit")
             }
+            Self::OutsideRevisionScope { id } => {
+                write!(
+                    f,
+                    "{id} is outside the Revision's scope of one failed Work Unit"
+                )
+            }
             Self::WrongWorkUnit { expected, got } => {
                 write!(f, "event for {got} while {expected} is in progress")
+            }
+            Self::ReplanUsed { task } => {
+                write!(f, "Task {} has already been replanned once", task + 1)
             }
             Self::BudgetCapReached { cap, spent } => write!(
                 f,
@@ -193,6 +275,11 @@ pub struct Session {
     task_commits_start: usize,
     /// The current Task's Revisions.
     revisions: Vec<RevisionRound>,
+    /// The Work Units whose Writer has sent its one Missing Response.
+    missing_responses: BTreeSet<WorkUnitId>,
+    revision_checkpoints: bool,
+    /// Per approved Task: whether it came from a Replan, which uses up the Replan it would get.
+    replanned: Vec<bool>,
     usage: UsageTotals,
     budget_cap: Option<Usd>,
 }
@@ -242,6 +329,16 @@ impl Session {
         &self.revisions
     }
 
+    /// Each Task gets one Replan; the Tasks a Replan produces get none.
+    pub fn may_replan(&self, task: usize) -> bool {
+        !self.replanned.get(task).copied().unwrap_or(true)
+    }
+
+    /// A Writer may send one Missing Response per Work Unit; a later one costs a retry.
+    pub fn may_send_missing_response(&self, id: WorkUnitId) -> bool {
+        !self.missing_responses.contains(&id)
+    }
+
     /// The lowest ID no Work Unit in the Session has used.
     pub fn next_work_unit_id(&self) -> WorkUnitId {
         self.highest_id
@@ -280,7 +377,7 @@ impl Session {
     /// Applies one event and returns the effects that should follow it.
     pub fn apply(&mut self, event: &Event) -> Result<Vec<Effect>, ApplyError> {
         let unexpected = || ApplyError::Unexpected {
-            phase: self.phase.clone(),
+            phase: Box::new(self.phase.clone()),
             event: Box::new(event.clone()),
         };
         let resolves_or_records = matches!(
@@ -309,6 +406,7 @@ impl Session {
                     });
                 }
                 plan.tasks = task_order.iter().map(|&i| plan.tasks[i].clone()).collect();
+                self.replanned = vec![false; task_order.len()];
                 Phase::Scaffolding {
                     task: 0,
                     feedback: None,
@@ -336,11 +434,20 @@ impl Session {
             }
             (&Phase::ScaffoldCheckpoint { task }, Event::ScaffoldApproved) => {
                 self.write_queue = self.work_units.iter().map(|unit| unit.id).collect();
+                Phase::CommittingSkeleton { task }
+            }
+            (&Phase::CommittingSkeleton { task }, Event::SkeletonCommitted { commit }) => {
+                self.record_optional_commit(commit, CommitOrigin::Skeleton);
                 self.write_from(task, 0)
             }
             (&Phase::Writing { task, unit }, Event::WorkUnitPassed { id }) => {
                 self.expect_work_unit(unit, *id)?;
                 Phase::Committing { task, unit }
+            }
+            (&Phase::Writing { task, unit }, Event::WorkUnitFailed { failure }) => {
+                self.expect_work_unit(unit, failure.id)?;
+                self.note_missing_response(failure);
+                self.revise_or_escalate(task, RevisionCause::WorkUnitFailed(failure.clone()))
             }
             (&Phase::Committing { task, unit }, Event::WorkUnitCommitted { id, commit }) => {
                 self.expect_work_unit(unit, *id)?;
@@ -363,21 +470,116 @@ impl Session {
                 let cause = RevisionCause::TaskChecksFailed {
                     output: output.clone(),
                 };
-                if self.revisions.len() < MAX_REVISIONS {
-                    Phase::Revising { task, cause }
-                } else {
-                    Phase::EscalationCheckpoint { task, cause }
-                }
+                self.revise_or_escalate(task, cause)
             }
             (Phase::Revising { task, cause }, Event::RevisionSubmitted { revision }) => {
                 let (task, cause) = (*task, cause.clone());
-                self.check_revision_ids(revision)?;
-                self.apply_revision(cause, revision);
+                if revision.shared_change.is_some() {
+                    self.record_round(&cause, revision, None);
+                    Phase::DiscardingRevision { task, cause }
+                } else {
+                    self.check_revision_ids(&cause, revision)?;
+                    if self.revision_checkpoints {
+                        Phase::RevisionCheckpoint {
+                            task,
+                            cause,
+                            revision: revision.clone(),
+                        }
+                    } else {
+                        self.apply_revision(&cause, revision);
+                        Phase::CommittingRevision { task }
+                    }
+                }
+            }
+            (Phase::Revising { task, cause }, Event::RevisionRejected { revision, reason }) => {
+                let (task, cause) = (*task, cause.clone());
+                self.record_round(&cause, revision, Some(reason));
+                Phase::DiscardingRevision { task, cause }
+            }
+            (
+                Phase::RevisionCheckpoint {
+                    task,
+                    cause,
+                    revision,
+                },
+                Event::RevisionApproved,
+            ) => {
+                let (task, cause, revision) = (*task, cause.clone(), revision.clone());
+                self.apply_revision(&cause, &revision);
+                Phase::CommittingRevision { task }
+            }
+            (
+                Phase::RevisionCheckpoint {
+                    task,
+                    cause,
+                    revision,
+                },
+                Event::CheckpointRejected { feedback },
+            ) => {
+                let (task, cause, revision) = (*task, cause.clone(), revision.clone());
+                self.record_round(&cause, &revision, Some(feedback));
+                Phase::DiscardingRevision { task, cause }
+            }
+            (&Phase::CommittingRevision { task }, Event::RevisionCommitted { commit }) => {
+                self.record_optional_commit(commit, CommitOrigin::Revision);
                 self.write_from(task, 0)
             }
-            (&Phase::EscalationCheckpoint { task, .. }, Event::OperatorFixed { commit }) => {
+            (Phase::DiscardingRevision { task, cause }, Event::RevisionDiscarded) => {
+                let (task, cause) = (*task, cause.clone());
+                if self.last_round_needs_shared_change() {
+                    Phase::EscalationCheckpoint { task, cause }
+                } else {
+                    self.revise_or_escalate(task, cause)
+                }
+            }
+            (Phase::EscalationCheckpoint { task, cause }, Event::OperatorFixed { commit }) => {
+                let (task, failed_unit) = (*task, cause.work_unit());
                 self.record_operator_fix(commit);
-                Phase::TaskChecking { task }
+                match failed_unit {
+                    Some(fixed) => {
+                        self.write_queue = self.queue_after(fixed, &[]);
+                        self.write_from(task, 0)
+                    }
+                    None => Phase::TaskChecking { task },
+                }
+            }
+            (Phase::EscalationCheckpoint { task, cause }, Event::ReplanRequested) => {
+                let task = *task;
+                if !self.may_replan(task) {
+                    return Err(ApplyError::ReplanUsed { task });
+                }
+                Phase::Replanning {
+                    task,
+                    cause: cause.clone(),
+                    feedback: None,
+                }
+            }
+            (Phase::Replanning { task, cause, .. }, Event::ReplanSubmitted { replan }) => {
+                Phase::ReplanCheckpoint {
+                    task: *task,
+                    cause: cause.clone(),
+                    replan: replan.clone(),
+                }
+            }
+            (
+                Phase::ReplanCheckpoint { task, cause, .. },
+                Event::CheckpointRejected { feedback },
+            ) => Phase::Replanning {
+                task: *task,
+                cause: cause.clone(),
+                feedback: Some(feedback.clone()),
+            },
+            (Phase::ReplanCheckpoint { task, replan, .. }, Event::PlanApproved { task_order }) => {
+                let (task, replan) = (*task, replan.clone());
+                self.approve_replan(task, &replan, task_order)?;
+                Phase::ResettingTask { task }
+            }
+            (&Phase::ResettingTask { task }, Event::TaskReset) => {
+                self.reset_task();
+                Phase::Scaffolding {
+                    task,
+                    feedback: None,
+                }
             }
             (Phase::CheckingMarkers, Event::MarkersChecked { remaining }) => {
                 if remaining.is_empty() {
@@ -407,6 +609,10 @@ impl Session {
                 self.budget_cap = cap;
                 phase.clone()
             }
+            (phase, &Event::RevisionCheckpointsSet { enabled }) if is_live(phase) => {
+                self.revision_checkpoints = enabled;
+                phase.clone()
+            }
             (_, Event::SessionStopped) if self.is_at_budget_checkpoint() => Phase::Stopped,
             _ => return Err(unexpected()),
         };
@@ -431,6 +637,7 @@ impl Session {
             },
             &Phase::ScaffoldChecking { task } => Effect::RunScaffoldChecks { task },
             &Phase::ScaffoldCheckpoint { task } => Effect::ShowScaffoldCheckpoint { task },
+            &Phase::CommittingSkeleton { task } => Effect::CommitSkeleton { task },
             &Phase::Writing { unit, .. } => Effect::RunWriter {
                 id: self.write_queue[unit],
             },
@@ -442,10 +649,30 @@ impl Session {
                 task: *task,
                 cause: cause.clone(),
             },
+            Phase::RevisionCheckpoint { task, revision, .. } => Effect::ShowRevisionCheckpoint {
+                task: *task,
+                revision: revision.clone(),
+            },
+            &Phase::CommittingRevision { task } => Effect::CommitRevision { task },
+            &Phase::DiscardingRevision { task, .. } => Effect::DiscardRevision { task },
             Phase::EscalationCheckpoint { task, cause } => Effect::ShowEscalationCheckpoint {
                 task: *task,
                 cause: cause.clone(),
             },
+            Phase::Replanning {
+                task,
+                cause,
+                feedback,
+            } => Effect::RunReplan {
+                task: *task,
+                cause: cause.clone(),
+                feedback: feedback.clone(),
+            },
+            Phase::ReplanCheckpoint { task, replan, .. } => Effect::ShowReplanCheckpoint {
+                task: *task,
+                replan: replan.clone(),
+            },
+            &Phase::ResettingTask { task } => Effect::ResetTask { task },
             Phase::CheckingMarkers => Effect::CheckMarkers,
             Phase::MarkerCheckpoint { remaining } => Effect::ShowMarkerCheckpoint {
                 remaining: remaining.clone(),
@@ -468,6 +695,66 @@ impl Session {
         }
     }
 
+    /// Puts the chosen Tasks of the Replan in place of the failed Task.
+    fn approve_replan(
+        &mut self,
+        task: usize,
+        replan: &Replan,
+        task_order: &[usize],
+    ) -> Result<(), ApplyError> {
+        if !is_valid_order(task_order, replan.tasks.len()) {
+            return Err(ApplyError::InvalidTaskOrder {
+                task_order: task_order.to_vec(),
+            });
+        }
+        let plan = self
+            .plan
+            .as_mut()
+            .expect("a Task runs only once a Plan is approved");
+        let replacements = task_order.iter().map(|&i| replan.tasks[i].clone());
+        plan.tasks.splice(task..=task, replacements);
+        self.replanned
+            .splice(task..=task, std::iter::repeat_n(true, task_order.len()));
+        Ok(())
+    }
+
+    /// Forgets the Task's work once its worktree is back where the Task started. Work Unit IDs
+    /// stay used, so the event log never names two Work Units the same.
+    fn reset_task(&mut self) {
+        self.commits.truncate(self.task_commits_start);
+        self.work_units.clear();
+        self.write_queue.clear();
+        self.revisions.clear();
+    }
+
+    /// The Human Operator's Checkpoint comes before anything goes to the Planner.
+    fn revise_or_escalate(&self, task: usize, cause: RevisionCause) -> Phase {
+        if revisions_for(&self.revisions, &cause) < MAX_REVISIONS {
+            Phase::Revising { task, cause }
+        } else {
+            Phase::EscalationCheckpoint { task, cause }
+        }
+    }
+
+    fn last_round_needs_shared_change(&self) -> bool {
+        self.revisions
+            .last()
+            .is_some_and(|round| round.revision.shared_change.is_some())
+    }
+
+    fn note_missing_response(&mut self, failure: &WorkUnitFailure) {
+        if failure.missing_response.is_some() {
+            self.missing_responses.insert(failure.id);
+        }
+    }
+
+    /// The Work Units before `failed` in the queue have passed, so they are dropped.
+    fn queue_after(&self, failed: WorkUnitId, replacements: &[WorkUnitId]) -> Vec<WorkUnitId> {
+        let position = self.write_queue.iter().position(|&id| id == failed);
+        let rest = position.map_or(&[][..], |position| &self.write_queue[position + 1..]);
+        replacements.iter().chain(rest).copied().collect()
+    }
+
     fn record_commit(&mut self, hash: &str, origin: CommitOrigin) {
         self.commits.push(SessionCommit {
             hash: hash.to_owned(),
@@ -476,8 +763,12 @@ impl Session {
     }
 
     fn record_operator_fix(&mut self, commit: &Option<String>) {
+        self.record_optional_commit(commit, CommitOrigin::OperatorFix);
+    }
+
+    fn record_optional_commit(&mut self, commit: &Option<String>, origin: CommitOrigin) {
         if let Some(hash) = commit {
-            self.record_commit(hash, CommitOrigin::OperatorFix);
+            self.record_commit(hash, origin);
         }
     }
 
@@ -486,12 +777,26 @@ impl Session {
         self.highest_id = self.highest_id.max(highest);
     }
 
-    /// A revised Work Unit keeps an ID from the current Task; a new one takes an unused ID.
-    fn check_revision_ids(&self, revision: &Revision) -> Result<(), ApplyError> {
+    /// A revised Work Unit keeps an ID from the current Task, only the failed one's when one Work
+    /// Unit failed; a new one takes an unused ID.
+    fn check_revision_ids(
+        &self,
+        cause: &RevisionCause,
+        revision: &Revision,
+    ) -> Result<(), ApplyError> {
         if let Some(id) = first_duplicate(&revision.work_units) {
             return Err(ApplyError::DuplicateWorkUnit { id });
         }
         let in_task = |id| self.work_units.iter().any(|unit| unit.id == id);
+        if let Some(failed) = cause.work_unit()
+            && let Some(id) = revision
+                .work_units
+                .iter()
+                .map(|unit| unit.id)
+                .find(|&id| id != failed && in_task(id))
+        {
+            return Err(ApplyError::OutsideRevisionScope { id });
+        }
         let taken = revision
             .work_units
             .iter()
@@ -503,7 +808,7 @@ impl Session {
         }
     }
 
-    fn apply_revision(&mut self, cause: RevisionCause, revision: &Revision) {
+    fn apply_revision(&mut self, cause: &RevisionCause, revision: &Revision) {
         for revised in &revision.work_units {
             match self
                 .work_units
@@ -515,10 +820,24 @@ impl Session {
             }
         }
         self.note_ids(&revision.work_units);
-        self.write_queue = revision.work_units.iter().map(|unit| unit.id).collect();
+        let revised: Vec<WorkUnitId> = revision.work_units.iter().map(|unit| unit.id).collect();
+        self.write_queue = match cause.work_unit() {
+            Some(failed) => self.queue_after(failed, &revised),
+            None => revised,
+        };
+        self.record_round(cause, revision, None);
+    }
+
+    fn record_round(
+        &mut self,
+        cause: &RevisionCause,
+        revision: &Revision,
+        rejection: Option<&String>,
+    ) {
         self.revisions.push(RevisionRound {
-            cause,
+            cause: cause.clone(),
             revision: revision.clone(),
+            rejection: rejection.cloned(),
         });
     }
 

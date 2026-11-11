@@ -18,7 +18,7 @@ fn replay_rebuilds_the_live_state() {
 fn resuming_mid_session_redoes_the_in_flight_work() {
     let events = full_session_events();
     // The log ends right after WU-1 was committed, while the Writer for WU-2 was running.
-    let resumed = Session::replay(&events[..10]).unwrap();
+    let resumed = Session::replay(&events[..11]).unwrap();
     assert_eq!(resumed.pending(), [Effect::RunWriter { id: WorkUnitId(2) }]);
 }
 

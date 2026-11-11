@@ -22,4 +22,7 @@ arbor-tui.workspace = true
 tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
+schemars.workspace = true
+serde.workspace = true
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }

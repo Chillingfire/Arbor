@@ -3,13 +3,13 @@ use std::path::Path;
 
 use arbor_config::ClarificationMode;
 use arbor_core::{
-    Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task, WorkUnit,
-    WorkUnitId,
+    FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task,
+    WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use arbor_llm::{ContentPart, Message};
 use arbor_prompts::{
-    CheckProposalInputs, Conventions, PlannerInputs, Prompt, PromptError, Prompts, RevisionInputs,
-    ScaffolderInputs, Template, TriedCheck, WriterInputs,
+    CheckProposalInputs, Conventions, PlannerInputs, Prompt, PromptError, Prompts, ReplanInputs,
+    RevisionInputs, ScaffolderInputs, Template, TriedCheck, WriterInputs,
 };
 use tempfile::tempdir;
 
@@ -62,6 +62,7 @@ fn planner(prompts: &Prompts, conventions: &Conventions, text: &str) -> Prompt {
             &PlannerInputs {
                 request: &request(text),
                 clarification_mode: ClarificationMode::Ask,
+                replan: None,
             },
         )
         .unwrap()
@@ -231,7 +232,9 @@ fn a_revision_sees_the_failure_the_task_diff_its_work_units_and_earlier_revision
         revision: Revision {
             diagnosis: "greet() dropped the comma".to_owned(),
             work_units: vec![work_unit()],
+            shared_change: None,
         },
+        rejection: None,
     }];
     let units = [work_unit()];
     let revision = RevisionInputs {
@@ -274,6 +277,117 @@ fn a_revision_sees_the_failure_the_task_diff_its_work_units_and_earlier_revision
         );
     }
     assert!(!scaffolding.inputs.contains("# Revision"));
+}
+
+fn writer_failed_on_wu_7() -> RevisionCause {
+    RevisionCause::WorkUnitFailed(WorkUnitFailure {
+        id: WorkUnitId(7),
+        attempts: vec![FailedAttempt {
+            reply: "```rust\nformat!(\"Hi {name}\")\n```".to_owned(),
+            error: "the Checks failed:\ntest greets ... FAILED".to_owned(),
+        }],
+        missing_response: Some(vec!["the Greeting type".to_owned()]),
+    })
+}
+
+fn rejected_round(cause: &RevisionCause) -> RevisionRound {
+    RevisionRound {
+        cause: cause.clone(),
+        revision: Revision {
+            diagnosis: "greet() needs a clearer spec".to_owned(),
+            work_units: vec![work_unit()],
+            shared_change: None,
+        },
+        rejection: Some("it only rewords the spec".to_owned()),
+    }
+}
+
+#[test]
+fn a_work_unit_revision_sees_every_failed_attempt_and_the_missing_response() {
+    let dir = tempdir().unwrap();
+    let cause = writer_failed_on_wu_7();
+    let earlier = [rejected_round(&cause)];
+    let units = [work_unit()];
+    let inputs = ScaffolderInputs {
+        request: &request("Greet people"),
+        plan: &plan(),
+        task: &task(),
+        clarification_mode: ClarificationMode::Assume,
+        cap_tokens: 8000,
+        revision: Some(RevisionInputs {
+            cause: &cause,
+            task_diff: "",
+            work_units: &units,
+            earlier: &earlier,
+        }),
+    };
+    let revising = Prompts::builtin()
+        .scaffolder(&conventions(dir.path()), &inputs)
+        .unwrap();
+    for expected in [
+        "The Writer failed WU-7.",
+        "- the Greeting type",
+        "### Attempt 1",
+        "format!(\"Hi {name}\")",
+        "test greets ... FAILED",
+        "Rejected: it only rewords the spec",
+    ] {
+        assert!(
+            revising.inputs.contains(expected),
+            "{expected}\n\n{}",
+            revising.inputs
+        );
+    }
+    assert!(revising.instructions.contains("`shared_change`"));
+}
+
+#[test]
+fn a_replan_sees_the_failed_task_and_its_whole_failure_chain() {
+    let dir = tempdir().unwrap();
+    let prompts = Prompts::builtin();
+    let conventions = conventions(dir.path());
+    let cause = writer_failed_on_wu_7();
+    let mut shared = rejected_round(&cause);
+    shared.rejection = None;
+    shared.revision.work_units.clear();
+    shared.revision.shared_change = Some("greet() must take a Greeting".to_owned());
+    let revisions = [rejected_round(&cause), shared];
+    let replanning = prompts
+        .planner(
+            &conventions,
+            &PlannerInputs {
+                request: &request("Greet people"),
+                clarification_mode: ClarificationMode::Ask,
+                replan: Some(ReplanInputs {
+                    plan: &plan(),
+                    task: 0,
+                    cause: &cause,
+                    revisions: &revisions,
+                    task_diff: "+pub fn greet(name: &str) -> String {",
+                }),
+            },
+        )
+        .unwrap();
+    let planning = planner(&prompts, &conventions, "Greet people");
+
+    assert_eq!(replanning.instructions, planning.instructions);
+    assert!(planning.instructions.contains("`submit_replan`"));
+    for expected in [
+        "# Replan of Task 1: Add greet()",
+        "The Writer failed WU-7.",
+        "test greets ... FAILED",
+        "- the Greeting type",
+        "1. greet() needs a clearer spec (rejected: it only rewords the spec)",
+        "2. greet() needs a clearer spec (needs a shared change: greet() must take a Greeting)",
+        "+pub fn greet(name: &str) -> String {",
+    ] {
+        assert!(
+            replanning.inputs.contains(expected),
+            "{expected}\n\n{}",
+            replanning.inputs
+        );
+    }
+    assert!(!planning.inputs.contains("# Replan"));
 }
 
 #[test]

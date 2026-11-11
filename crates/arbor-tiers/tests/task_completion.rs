@@ -9,7 +9,7 @@ use arbor_core::{CommitOrigin, Event, LeftoverMarker, SessionCommit, WorkUnitId}
 use arbor_git::{CommitMessage, Mainline, Repo, SessionBranch, Worktree};
 use arbor_tiers::{
     MARKER_FIX_SUBJECT, NO_UNIT_CHECK, check_markers, commit_operator_fix, leftover_markers,
-    run_task_check, task_check_warning, task_diff,
+    reset_task, run_task_check, task_check_warning, task_diff,
 };
 use tempfile::{TempDir, tempdir};
 
@@ -154,6 +154,40 @@ fn the_task_diff_starts_where_the_tasks_first_commit_did() {
     let diff = task_diff(&session.worktree, &task_commits).unwrap();
     assert!(diff.contains("+    return a * b"), "{diff}");
     assert!(!diff.contains("before.txt"), "{diff}");
+}
+
+#[test]
+fn a_replanned_task_resets_the_worktree_to_where_it_started() {
+    let session = Session::new();
+    let task_start = session.commit("before.txt", "an earlier Task\n");
+    let first = session.commit("calc.py", "def add(a, b):\n    return a - b\n");
+    session.write("calc.py", "def add(a, b):\n    return a * b\n");
+    session.write(
+        "skeleton.py",
+        "def sub(a, b):\n    raise NotImplementedError\n",
+    );
+
+    let reset = reset_task(&session.worktree, &[work_unit_commit(1, first)]).unwrap();
+
+    assert_eq!(reset, Event::TaskReset);
+    assert_eq!(session.worktree.head().unwrap().as_str(), task_start);
+    let root = session.worktree.path();
+    assert!(root.join("before.txt").exists());
+    assert!(!root.join("calc.py").exists());
+    assert!(!root.join("skeleton.py").exists());
+}
+
+#[test]
+fn a_task_with_no_commits_resets_to_head_and_drops_its_skeleton() {
+    let session = Session::new();
+    let task_start = session.commit("before.txt", "an earlier Task\n");
+    session.write("before.txt", "the Skeleton's edit\n");
+
+    reset_task(&session.worktree, &[]).unwrap();
+
+    assert_eq!(session.worktree.head().unwrap().as_str(), task_start);
+    let before = fs::read_to_string(session.worktree.path().join("before.txt")).unwrap();
+    assert_eq!(before, "an earlier Task\n");
 }
 
 #[test]

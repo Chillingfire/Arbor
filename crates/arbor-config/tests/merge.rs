@@ -28,6 +28,8 @@ fn defaults_apply_when_neither_file_exists() {
     assert_eq!(config.writer_cap_tokens, 8000);
     assert_eq!(config.failure_brief_tokens, 2000);
     assert_eq!(config.retention_days, 30);
+    assert_eq!(config.revision_tool_call_budget, 15);
+    assert!(!config.revision_checkpoints);
     assert_eq!(config.checks.scaffold, None);
     assert_eq!(config.checks.unit, None);
     assert_eq!(config.checks.unit_filtered, None);
@@ -92,6 +94,10 @@ unit_filtered = "cargo test {filter}"
 
 [context]
 files = ["docs/style.md"]
+
+[revisions]
+tool_call_budget = 25
+checkpoints = true
 "#;
     let config = Config::from_toml(None, Some(project)).unwrap();
     assert_eq!(config.mainline.as_deref(), Some("develop"));
@@ -105,4 +111,6 @@ files = ["docs/style.md"]
         Some("cargo test {filter}")
     );
     assert_eq!(config.context_files, ["docs/style.md"]);
+    assert_eq!(config.revision_tool_call_budget, 25);
+    assert!(config.revision_checkpoints);
 }

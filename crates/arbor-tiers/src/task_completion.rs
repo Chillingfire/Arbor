@@ -36,11 +36,21 @@ pub fn task_check_warning(checks: &Checks) -> Option<&'static str> {
 /// Everything the Task changed: from the parent of its first commit, or from `HEAD` before it
 /// has any, to the files in the worktree. Takes `Session::task_commits`.
 pub fn task_diff(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<String, GitError> {
-    let base = match task_commits.first() {
-        Some(first) => worktree.parent_of(&CommitId::from(first.hash.clone()))?,
-        None => worktree.head()?,
-    };
-    worktree.diff_from(&base)
+    worktree.diff_from(&task_start(worktree, task_commits)?)
+}
+
+/// Resets the worktree to where the Task started, after its Replan is approved, and returns
+/// `TaskReset`. Takes `Session::task_commits`.
+pub fn reset_task(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<Event, GitError> {
+    worktree.reset_to(&task_start(worktree, task_commits)?)?;
+    Ok(Event::TaskReset)
+}
+
+fn task_start(worktree: &Worktree, task_commits: &[SessionCommit]) -> Result<CommitId, GitError> {
+    match task_commits.first() {
+        Some(first) => worktree.parent_of(&CommitId::from(first.hash.clone())),
+        None => worktree.head(),
+    }
 }
 
 /// Default subjects for [`commit_operator_fix`]. Like every commit, they don't mention Arbor
@@ -98,14 +108,14 @@ pub fn leftover_markers(diff: &str) -> Vec<LeftoverMarker> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Hunk {
-    old_lines: usize,
-    new_start: usize,
-    new_lines: usize,
+pub(crate) struct Hunk {
+    pub(crate) old_lines: usize,
+    pub(crate) new_start: usize,
+    pub(crate) new_lines: usize,
 }
 
 /// Parses the rest of `@@ -1,3 +1,4 @@`, where a missing count means 1.
-fn parse_hunk(header: &str) -> Option<Hunk> {
+pub(crate) fn parse_hunk(header: &str) -> Option<Hunk> {
     let mut ranges = header.split_whitespace();
     let (_, old_lines) = parse_range(ranges.next()?.strip_prefix('-')?)?;
     let (new_start, new_lines) = parse_range(ranges.next()?.strip_prefix('+')?)?;
@@ -153,7 +163,7 @@ fn hunk_added_lines<'a>(
 }
 
 /// `b/src/lib.rs` gives `src/lib.rs`; a deleted file (`/dev/null`) gives `None`.
-fn new_file_path(header: &str) -> Option<String> {
+pub(crate) fn new_file_path(header: &str) -> Option<String> {
     let path = header.trim_end().trim_matches('"');
     path.strip_prefix("b/").map(str::to_owned)
 }

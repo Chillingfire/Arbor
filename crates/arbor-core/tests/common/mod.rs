@@ -60,6 +60,7 @@ pub fn full_session_events() -> Vec<arbor_core::Event> {
         },
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
+        Event::SkeletonCommitted { commit: None },
         Event::WorkUnitPassed { id: WorkUnitId(1) },
         Event::WorkUnitCommitted {
             id: WorkUnitId(1),

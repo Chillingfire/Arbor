@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use arbor_config::ClarificationMode;
 use arbor_core::{
-    Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task, WorkUnit,
-    WorkUnitId,
+    FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task,
+    WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use minijinja::syntax::SyntaxConfig;
 use minijinja::value::Serde;
@@ -75,7 +75,7 @@ impl Template {
     /// Variables only the inputs may use. They change from call to call.
     fn input_variables(self) -> &'static [&'static str] {
         match self {
-            Self::Planner => &["request"],
+            Self::Planner => &["request", "replan"],
             Self::Scaffolder => &["request", "plan", "task", "revision"],
             Self::Writer => &["work_unit"],
             Self::CheckProposal => &["detection", "tried_checks"],
@@ -94,6 +94,21 @@ impl fmt::Display for Template {
 pub struct PlannerInputs<'a> {
     pub request: &'a Request,
     pub clarification_mode: ClarificationMode,
+    /// Set when the run is a Replan of a failed Task rather than the first Plan.
+    pub replan: Option<ReplanInputs<'a>>,
+}
+
+/// What a Planner Replan sees: the approved Plan, the failed Task and its full failure chain.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ReplanInputs<'a> {
+    pub plan: &'a Plan,
+    /// The failed Task's index in `plan.tasks`.
+    pub task: usize,
+    /// The failure that used up the Revisions or needed a shared change.
+    pub cause: &'a RevisionCause,
+    /// `Session::revisions`: what the Scaffolder tried.
+    pub revisions: &'a [RevisionRound],
+    pub task_diff: &'a str,
 }
 
 /// What the Scaffolder is rendered with. `cap_tokens` is the Writer Cap.
@@ -273,6 +288,7 @@ impl Prompts {
         let context = BTreeMap::from([
             ("clarification_mode", mode(inputs.clarification_mode)),
             ("request", Value::from(Serde(inputs.request))),
+            ("replan", Value::from(Serde(inputs.replan))),
         ]);
         self.render(Template::Planner, Some(conventions), context)
     }
@@ -473,21 +489,42 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         command: text("command"),
         output: text("output"),
     }];
-    let cause = RevisionCause::TaskChecksFailed {
-        output: text("check output"),
+    // Each seed takes a different kind of failure, so checking a template renders both.
+    let cause = if seed % 2 == 1 {
+        RevisionCause::TaskChecksFailed {
+            output: text("check output"),
+        }
+    } else {
+        RevisionCause::WorkUnitFailed(WorkUnitFailure {
+            id: work_unit.id,
+            attempts: vec![FailedAttempt {
+                reply: text("reply"),
+                error: text("error"),
+            }],
+            missing_response: Some(vec![text("missing item")]),
+        })
     };
     let earlier = [RevisionRound {
         cause: cause.clone(),
         revision: Revision {
             diagnosis: text("diagnosis"),
             work_units: vec![work_unit.clone()],
+            shared_change: Some(text("shared change")),
         },
+        rejection: Some(text("rejection")),
     }];
     let revision = RevisionInputs {
         cause: &cause,
         task_diff: &text("task diff"),
         work_units: std::slice::from_ref(&work_unit),
         earlier: &earlier,
+    };
+    let replan = ReplanInputs {
+        plan: &plan,
+        task: 0,
+        cause: &cause,
+        revisions: &earlier,
+        task_diff: &text("task diff"),
     };
     let all = [
         ("clarification_mode", mode(ClarificationMode::Ask)),
@@ -499,6 +536,7 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         ("detection", Value::from(text("detection"))),
         ("tried_checks", tried_checks(&tried)),
         ("revision", Value::from(Serde(revision))),
+        ("replan", Value::from(Serde(replan))),
     ];
     let known = [template.static_variables(), template.input_variables()].concat();
     all.into_iter()

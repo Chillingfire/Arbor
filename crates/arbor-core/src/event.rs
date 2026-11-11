@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cost::{Usage, Usd};
-use crate::revision::Revision;
-use crate::types::{LeftoverMarker, Plan, Request, Tier, WorkUnit, WorkUnitId};
+use crate::revision::{Revision, WorkUnitFailure};
+use crate::types::{LeftoverMarker, Plan, Replan, Request, Tier, WorkUnit, WorkUnitId};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +15,8 @@ pub enum Event {
         plan: Plan,
     },
     /// The Human Operator approved the Plan. `task_order` lists the Plan's Task indices to run,
-    /// in order, so Tasks can be dropped or reordered.
+    /// in order, so Tasks can be dropped or reordered. At the Replan's Checkpoint it indexes the
+    /// Replan's Tasks instead.
     PlanApproved {
         task_order: Vec<usize>,
     },
@@ -28,9 +29,17 @@ pub enum Event {
     },
     ScaffoldChecksPassed,
     ScaffoldApproved,
+    /// The approved Skeleton was committed, or `None` when the Scaffolder changed nothing.
+    SkeletonCommitted {
+        commit: Option<String>,
+    },
     /// The Writer's code was spliced and its Work Unit's Checks passed.
     WorkUnitPassed {
         id: WorkUnitId,
+    },
+    /// The Writer failed its Work Unit: it used up its retries, or sent a Missing Response.
+    WorkUnitFailed {
+        failure: WorkUnitFailure,
     },
     WorkUnitCommitted {
         id: WorkUnitId,
@@ -46,6 +55,30 @@ pub enum Event {
     RevisionSubmitted {
         revision: Revision,
     },
+    /// Arbor rejected the Revision, e.g. because it only reworded the spec. It counts toward the
+    /// Revision limit.
+    RevisionRejected {
+        revision: Revision,
+        reason: String,
+    },
+    /// Turns the Checkpoint after each Revision on or off. Off by default.
+    RevisionCheckpointsSet {
+        enabled: bool,
+    },
+    RevisionApproved,
+    /// The accepted Revision's edits were committed, or `None` when it changed no file.
+    RevisionCommitted {
+        commit: Option<String>,
+    },
+    /// The worktree is back at `HEAD`, without the edits of the Revision that wasn't accepted.
+    RevisionDiscarded,
+    /// At the escalation Checkpoint, the Human Operator sends the failed Task to the Planner.
+    ReplanRequested,
+    ReplanSubmitted {
+        replan: Replan,
+    },
+    /// The worktree was reset to where the Task started, after its Replan was approved.
+    TaskReset,
     /// The Human Operator fixed the problem at the open Checkpoint by hand, so Arbor checks again.
     /// `commit` is the fix Arbor committed, or `None` when there was nothing to commit.
     OperatorFixed {

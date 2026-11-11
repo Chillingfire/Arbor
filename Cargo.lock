@@ -23,6 +23,8 @@ dependencies = [
  "arbor-tiers",
  "arbor-tools",
  "arbor-tui",
+ "schemars",
+ "serde",
  "tempfile",
  "tokio",
 ]

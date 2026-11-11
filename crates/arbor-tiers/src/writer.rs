@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use arbor_config::Checks;
-use arbor_core::{Usage, WorkUnit, WorkUnitId};
+use arbor_core::{FailedAttempt, Usage, WorkUnit, WorkUnitFailure, WorkUnitId};
 use arbor_git::{CommitId, CommitMessage, GitError, Worktree};
 use arbor_llm::{ChatRequest, ContentPart, FinishReason, LlmClient, LlmError, Message};
 use arbor_prompts::{Prompt, estimate_tokens};
@@ -37,6 +37,8 @@ pub struct WriterRun<'a> {
     pub worktree: &'a Path,
     pub checks: Checks,
     pub cap_tokens: u32,
+    /// `Session::may_send_missing_response`.
+    pub missing_response_allowed: bool,
 }
 
 impl WriterRun<'_> {
@@ -57,6 +59,8 @@ impl WriterRun<'_> {
             retry_tokens: 0,
             failures: Vec::new(),
             finished: false,
+            missing_response_allowed: self.missing_response_allowed,
+            missing_response: None,
         }
     }
 }
@@ -75,6 +79,8 @@ pub struct Writer {
     retry_tokens: u32,
     failures: Vec<Failure>,
     finished: bool,
+    missing_response_allowed: bool,
+    missing_response: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,6 +230,24 @@ impl Writer {
         self.finished
     }
 
+    /// Once the Writer has given up, by using up its retries or sending a Missing Response, the
+    /// failure to record as `WorkUnitFailed` and hand to a Revision.
+    pub fn work_unit_failure(&self) -> Option<WorkUnitFailure> {
+        let gave_up = self.missing_response.is_some() || self.attempts_left() == 0;
+        gave_up.then(|| WorkUnitFailure {
+            id: self.work_unit.id,
+            attempts: self
+                .failures
+                .iter()
+                .map(|failure| FailedAttempt {
+                    reply: failure.reply.clone(),
+                    error: failure.reason.to_string(),
+                })
+                .collect(),
+            missing_response: self.missing_response.clone(),
+        })
+    }
+
     /// Estimated the same way as the Writer Cap check on the Work Units.
     pub fn input_tokens(&self) -> u32 {
         writer_input_tokens(&self.work_unit).saturating_add(self.retry_tokens)
@@ -281,6 +305,9 @@ impl Writer {
                 AttemptOutcome::Failed(failure)
             }
         };
+        if let AttemptOutcome::Missing { items } = &outcome {
+            self.missing_response = Some(items.clone());
+        }
         self.finished = !matches!(outcome, AttemptOutcome::Failed(_));
         Ok(Attempt {
             model: response.model,
@@ -299,6 +326,11 @@ impl Writer {
         }
         let code = match parse_reply(reply) {
             Err(error) => return Ok(Err(FailureReason::Rejected(error))),
+            Ok(WriterReply::Missing(_)) if !self.missing_response_allowed => {
+                return Ok(Err(FailureReason::Rejected(
+                    ReplyError::MissingResponseUsed,
+                )));
+            }
             Ok(WriterReply::Missing(items)) => return Ok(Ok(AttemptOutcome::Missing { items })),
             Ok(WriterReply::Code(code)) => code,
         };

@@ -13,6 +13,8 @@ You are the Planner, the highest of Arbor's three Tiers (Planner, Scaffolder, Wr
 
 Finish by calling `submit_plan` exactly once with the Plan. If its arguments don't parse or the Plan is invalid, the error comes back to you as the tool result; fix them and call it again. After 3 failed attempts the run is handed to the Human Operator.
 
+When the inputs end with a Replan section, a Task of the approved Plan failed even after the Scaffolder's Revisions, and the Human Operator sent it back to you; this run is a Replan instead. Read its failure chain and the code, then call `submit_replan` exactly once with your diagnosis and the Task, or several, that replace the failed one. The worktree is reset to where the failed Task started, so the new Tasks start from there. The other Tasks of the Plan stay as they are. A Task gets only one Replan; if the new Tasks fail too, the Human Operator takes over.
+
 # Rules
 
 - Each Task must leave the build green and its tests passing when it is finished.
@@ -29,4 +31,60 @@ Finish by calling `submit_plan` exactly once with the Plan. If its arguments don
 # Request
 
 {{ request.text }}
+{% if replan %}
+{% set failed_task = replan.plan.tasks[replan.task] %}
+
+# Plan
+
+Goal: {{ replan.plan.goal }}
+
+Tasks:
+{% for item in replan.plan.tasks %}
+{{ loop.index }}. {{ item.title }}
+{% endfor %}
+
+# Replan of Task {{ replan.task + 1 }}: {{ failed_task.title }}
+
+{{ failed_task.description }}
+
+## How it failed
+
+{% if replan.cause.kind == "task_checks_failed" %}
+The Task's full Unit Check failed. Its output:
+
+````text
+{{ replan.cause.output }}
+````
+{% elif replan.cause.kind == "work_unit_failed" %}
+The Writer failed WU-{{ replan.cause.id }}.
+{% if replan.cause.missing_response is defined %}
+It sent a Missing Response: its Context Pack lacked
+{% for item in replan.cause.missing_response %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if replan.cause.attempts %}
+Its last attempt's error:
+
+````text
+{{ (replan.cause.attempts | last).error }}
+````
+{% endif %}
+{% endif %}
+{% if replan.revisions %}
+
+## The Scaffolder's Revisions
+{% for round in replan.revisions %}
+
+{{ loop.index }}. {{ round.revision.diagnosis }}{% if round.rejection is defined %} (rejected: {{ round.rejection }}){% endif %}{% if round.revision.shared_change is defined %} (needs a shared change: {{ round.revision.shared_change }}){% endif %}
+
+{% endfor %}
+{% endif %}
+
+## Task diff
+
+````diff
+{{ replan.task_diff }}
+````
+{% endif %}
 {% endblock %}
