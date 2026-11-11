@@ -20,11 +20,10 @@ dependencies = [
  "arbor-git",
  "arbor-llm",
  "arbor-prompts",
+ "arbor-session",
  "arbor-tiers",
  "arbor-tools",
  "arbor-tui",
- "schemars",
- "serde",
  "tempfile",
  "tokio",
 ]
@@ -78,6 +77,23 @@ dependencies = [
  "arbor-core",
  "arbor-llm",
  "minijinja",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "arbor-session"
+version = "0.1.0"
+dependencies = [
+ "arbor-config",
+ "arbor-core",
+ "arbor-git",
+ "arbor-llm",
+ "arbor-prompts",
+ "arbor-tiers",
+ "arbor-tools",
+ "schemars",
  "serde",
  "tempfile",
  "tokio",

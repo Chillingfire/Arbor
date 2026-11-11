@@ -3,16 +3,15 @@
 //! `cargo test`). Each scenario's model replies are in `tests/fixtures/pipeline/<scenario>.json`;
 //! `fixture_client.rs` says how to record them again.
 
-mod driver;
 mod fixture_client;
 mod sample_repo;
 
 use arbor_config::Config;
-use arbor_core::{Event, Session, Tier, Usd, WorkUnitId};
+use arbor_core::{Event, Request, Session, Tier, Usd, WorkUnitId};
 use arbor_llm::{ChatRequest, Message};
+use arbor_session::{Autopilot, SessionEnd};
 use arbor_tiers::{AttemptOutcome, FailureReason};
 use arbor_tools::{CheckName, run_check};
-use driver::Pipeline;
 use fixture_client::FixtureClient;
 use sample_repo::SampleRepo;
 
@@ -57,8 +56,11 @@ const MISSING_ITEM: &str =
 const TIE_TEST: &str = "keeps_the_first_of_tied_words";
 
 /// The event log alone rebuilds the Session (ADR-0004).
-fn assert_replays(pipeline: &Pipeline) {
-    assert_eq!(Session::replay(&pipeline.events).unwrap(), pipeline.session);
+fn assert_replays(pipeline: &Autopilot) {
+    assert_eq!(
+        &Session::replay(pipeline.events()).unwrap(),
+        pipeline.session()
+    );
 }
 
 fn assert_cost(session: &Session, tier: Tier, dollars: f64) {
@@ -67,6 +69,18 @@ fn assert_cost(session: &Session, tier: Tier, dollars: f64) {
         Usd::from_dollars(dollars),
         "{tier:?}"
     );
+}
+
+/// Runs the Session for the Request to its end, approving every Checkpoint as it is.
+async fn run_session<'a>(sample: &'a SampleRepo, client: &'a FixtureClient) -> Autopilot<'a> {
+    let config = Config::load(None, sample.path()).unwrap();
+    let mut pipeline = Autopilot::new(&sample.worktree, &sample.mainline, client, config).unwrap();
+    let request = Request {
+        text: REQUEST.to_owned(),
+        issue: None,
+    };
+    assert_eq!(pipeline.run(request).await.unwrap(), SessionEnd::Finished);
+    pipeline
 }
 
 fn last_user_text(request: &ChatRequest) -> &str {
@@ -105,12 +119,10 @@ async fn a_fresh_session_worktree_of_the_sample_repo_is_clean_and_passes_its_che
 async fn happy_path_plans_scaffolds_writes_and_commits_the_request() {
     let sample = SampleRepo::new(FEATURE);
     let client = FixtureClient::new("happy_path");
-    let mut pipeline = Pipeline::new(&sample, &client);
-
-    pipeline.run(REQUEST).await;
+    let pipeline = run_session(&sample, &client).await;
 
     client.finish();
-    assert!(pipeline.session.is_done());
+    assert!(pipeline.session().is_done());
     assert_replays(&pipeline);
     let tier_models: Vec<String> = client.sent().into_iter().map(|sent| sent.model).collect();
     assert_eq!(
@@ -130,27 +142,25 @@ async fn happy_path_plans_scaffolds_writes_and_commits_the_request() {
         [SKELETON_COMMIT, WRITER_COMMIT]
     );
     assert_eq!(sample.uncommitted_changes(), "");
-    assert_eq!(pipeline.writer_attempts.len(), 1);
-    assert_cost(&pipeline.session, Tier::Planner, 0.025);
-    assert_cost(&pipeline.session, Tier::Scaffolder, 0.04);
-    assert_cost(&pipeline.session, Tier::Writer, 0.0012);
+    assert_eq!(pipeline.writer_attempts().len(), 1);
+    assert_cost(pipeline.session(), Tier::Planner, 0.025);
+    assert_cost(pipeline.session(), Tier::Scaffolder, 0.04);
+    assert_cost(pipeline.session(), Tier::Writer, 0.0012);
 }
 
 #[tokio::test]
 async fn writer_retry_after_failing_checks_passes_on_the_second_attempt() {
     let sample = SampleRepo::new(FEATURE);
     let client = FixtureClient::new("writer_retry");
-    let mut pipeline = Pipeline::new(&sample, &client);
-
-    pipeline.run(REQUEST).await;
+    let pipeline = run_session(&sample, &client).await;
 
     client.finish();
-    assert!(pipeline.session.is_done());
+    assert!(pipeline.session().is_done());
     assert_replays(&pipeline);
-    let [first_attempt, second_attempt] = pipeline.writer_attempts.as_slice() else {
+    let [first_attempt, second_attempt] = pipeline.writer_attempts() else {
         panic!(
             "expected two Writer attempts: {:?}",
-            pipeline.writer_attempts
+            pipeline.writer_attempts()
         );
     };
     let AttemptOutcome::Failed(failure) = &first_attempt.outcome else {
@@ -177,22 +187,20 @@ async fn writer_retry_after_failing_checks_passes_on_the_second_attempt() {
         sample.session_commit_subjects(),
         [SKELETON_COMMIT, WRITER_COMMIT]
     );
-    assert_cost(&pipeline.session, Tier::Writer, 2.0 * 0.0012);
+    assert_cost(pipeline.session(), Tier::Writer, 2.0 * 0.0012);
 }
 
 #[tokio::test]
 async fn missing_response_goes_to_a_revision_that_gives_the_writer_what_it_lacked() {
     let sample = SampleRepo::new(FEATURE);
     let client = FixtureClient::new("missing_response");
-    let mut pipeline = Pipeline::new(&sample, &client);
-
-    pipeline.run(REQUEST).await;
+    let pipeline = run_session(&sample, &client).await;
 
     client.finish();
-    assert!(pipeline.session.is_done());
+    assert!(pipeline.session().is_done());
     assert_replays(&pipeline);
     let failure = pipeline
-        .events
+        .events()
         .iter()
         .find_map(|event| match event {
             Event::WorkUnitFailed { failure } => Some(failure),
@@ -208,7 +216,7 @@ async fn missing_response_goes_to_a_revision_that_gives_the_writer_what_it_lacke
     let revision_request = &client.sent()[3];
     let revision_inputs = last_user_text(revision_request);
     assert!(revision_inputs.contains(MISSING_ITEM), "{revision_inputs}");
-    let revised = &pipeline.session.work_units()[0];
+    let revised = &pipeline.session().work_units()[0];
     assert_eq!(revised.context[0].path, "src/lib.rs");
     let library = sample.read("src/lib.rs");
     assert!(library.contains(IMPLEMENTATION), "{library}");
@@ -218,23 +226,21 @@ async fn missing_response_goes_to_a_revision_that_gives_the_writer_what_it_lacke
         sample.session_commit_subjects(),
         [SKELETON_COMMIT, WRITER_COMMIT]
     );
-    assert_cost(&pipeline.session, Tier::Scaffolder, 0.04 + 0.04);
-    assert_cost(&pipeline.session, Tier::Writer, 2.0 * 0.0012);
+    assert_cost(pipeline.session(), Tier::Scaffolder, 0.04 + 0.04);
+    assert_cost(pipeline.session(), Tier::Writer, 2.0 * 0.0012);
 }
 
 #[tokio::test]
 async fn revision_rewrites_a_work_unit_after_the_task_checks_fail() {
     let sample = SampleRepo::new(FEATURE);
     let client = FixtureClient::new("revision");
-    let mut pipeline = Pipeline::new(&sample, &client);
-
-    pipeline.run(REQUEST).await;
+    let pipeline = run_session(&sample, &client).await;
 
     client.finish();
-    assert!(pipeline.session.is_done());
+    assert!(pipeline.session().is_done());
     assert_replays(&pipeline);
     let task_check_output = pipeline
-        .events
+        .events()
         .iter()
         .find_map(|event| match event {
             Event::TaskChecksFailed { output } => Some(output),
@@ -243,7 +249,7 @@ async fn revision_rewrites_a_work_unit_after_the_task_checks_fail() {
         .expect("the Task's Unit Check fails once");
     assert!(task_check_output.contains(TIE_TEST), "{task_check_output}");
     let revision = pipeline
-        .events
+        .events()
         .iter()
         .find_map(|event| match event {
             Event::RevisionSubmitted { revision } => Some(revision),
@@ -259,7 +265,7 @@ async fn revision_rewrites_a_work_unit_after_the_task_checks_fail() {
     );
     assert!(revision_inputs.contains(TIE_TEST), "{revision_inputs}");
     assert!(revision_inputs.contains("max_by_key"), "{revision_inputs}");
-    assert_eq!(pipeline.writer_attempts.len(), 2);
+    assert_eq!(pipeline.writer_attempts().len(), 2);
     let library = sample.read("src/lib.rs");
     assert!(library.contains(IMPLEMENTATION), "{library}");
     assert!(!library.contains("ARBOR:"), "{library}");
@@ -272,5 +278,5 @@ async fn revision_rewrites_a_work_unit_after_the_task_checks_fail() {
             WRITER_COMMIT
         ]
     );
-    assert_cost(&pipeline.session, Tier::Scaffolder, 0.04 + 0.04);
+    assert_cost(pipeline.session(), Tier::Scaffolder, 0.04 + 0.04);
 }
