@@ -1,5 +1,7 @@
 # Arbor
-Multi-LLM coding harness for minimzing token usage and wasted compute
+Multi-LLM coding harness for minimizing token usage and wasted compute
+
+Goal of project: To implement an efficient LLM harness for coding, as well as to practice/refine skills in spec-driven AI development
 
 ## Install
 
