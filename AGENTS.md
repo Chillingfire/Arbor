@@ -25,3 +25,7 @@ Keep each commit to at most about 1000 changed lines, not counting generated fil
 ### Comments
 
 Write code that reads without comments: clear names, small functions, and types that say what they hold. Comment only the why a reader can't see in the code, such as a non-obvious constraint, a workaround, or the ADR behind a decision. Don't write comment blocks that restate what a function, field, or type does. A one-line doc comment on a public item is fine when it adds something its name doesn't.
+
+### Naming
+
+Name each variable, parameter, and closure argument for what it holds, not its kind: `chat_response`, `check_output`, `tool_results`, or `file_text`, not `response`, `output`, `results`, or `text`. Avoid single letters outside short numeric ranges, and don't use `value`, `data`, `item`, `result`, `tmp`, `buf`, or `out` as names. Struct fields that mirror an external format, such as a JSON key or a logged event, keep that format's name.
