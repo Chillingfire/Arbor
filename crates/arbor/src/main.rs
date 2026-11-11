@@ -1,7 +1,9 @@
 mod cli;
 mod handover;
 mod init;
+mod live;
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use arbor_core::Request;
@@ -21,6 +23,13 @@ fn main() -> ExitCode {
             println!("arbor {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        Command::Tui if !std::io::stdout().is_terminal() => {
+            eprintln!(
+                "arbor: the TUI needs a terminal; use --version, init, --issue or --handover-file"
+            );
+            ExitCode::from(2)
+        }
+        Command::Tui => live::run(None),
         Command::Init => init::run(),
         Command::Issue(number) => start_from_issue(number),
         Command::HandoverFile(path) => match handover::read(&path) {
@@ -33,10 +42,13 @@ fn main() -> ExitCode {
     }
 }
 
+/// Runs the Session in the TUI. Without a terminal, e.g. when piped, prints the Request instead.
 fn start(request: Request) -> ExitCode {
-    // TODO: start a Session with this Request once Sessions are wired up.
-    print!("{}", request.text);
-    ExitCode::SUCCESS
+    if !std::io::stdout().is_terminal() {
+        print!("{}", request.text);
+        return ExitCode::SUCCESS;
+    }
+    live::run(Some(request))
 }
 
 fn start_from_issue(number: u64) -> ExitCode {

@@ -5,6 +5,8 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// Opens the TUI to type a Request.
+    Tui,
     Version,
     /// Writes the project's Checks to `arbor.toml`.
     Init,
@@ -20,7 +22,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\nusage: arbor [init | --issue <number> | --handover-file <path>]",
+            "{}\nusage: arbor [init | --version | --issue <number> | --handover-file <path>]",
             self.0
         )
     }
@@ -34,8 +36,14 @@ where
 {
     let mut remaining_args = args.into_iter().map(Into::into);
     let Some(first) = remaining_args.next() else {
-        return Ok(Command::Version);
+        return Ok(Command::Tui);
     };
+    if first == "--version" || first == "-V" {
+        return match remaining_args.next() {
+            Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
+            None => Ok(Command::Version),
+        };
+    }
     if first == "init" {
         return match remaining_args.next() {
             Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
@@ -77,8 +85,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_arguments_prints_the_version() {
-        assert_eq!(parse(Vec::<String>::new()), Ok(Command::Version));
+    fn no_arguments_open_the_tui() {
+        assert_eq!(parse(Vec::<String>::new()), Ok(Command::Tui));
+    }
+
+    #[test]
+    fn the_version_flag_prints_the_version() {
+        assert_eq!(parse(["--version"]), Ok(Command::Version));
+        assert_eq!(parse(["-V"]), Ok(Command::Version));
     }
 
     #[test]

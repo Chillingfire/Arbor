@@ -5,8 +5,8 @@ fn arbor() -> Command {
 }
 
 #[test]
-fn without_arguments_arbor_prints_its_version() {
-    let arbor_run = arbor().output().unwrap();
+fn the_version_flag_prints_the_version() {
+    let arbor_run = arbor().arg("--version").output().unwrap();
 
     assert!(arbor_run.status.success());
     assert_eq!(
@@ -164,4 +164,12 @@ fn a_missing_handover_file_is_an_error() {
         String::from_utf8_lossy(&arbor_run.stderr)
             .contains("could not read the handover file does-not-exist.md")
     );
+}
+
+#[test]
+fn without_arguments_and_without_a_terminal_arbor_asks_for_one() {
+    let arbor_run = arbor().output().unwrap();
+
+    assert_eq!(arbor_run.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&arbor_run.stderr).contains("the TUI needs a terminal"));
 }
