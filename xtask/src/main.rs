@@ -1,5 +1,7 @@
 //! Dev tooling. Run with `cargo xtask <command>`.
 
+mod eval;
+
 use std::process::{Command, ExitCode};
 
 /// Crates that would give `arbor-core` I/O. The core must stay pure (ADR-0005).
@@ -19,10 +21,14 @@ const IO_CRATES: &[&str] = &[
 ];
 
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
+    let xtask_args: Vec<String> = std::env::args().skip(1).collect();
+    match xtask_args.first().map(String::as_str) {
         Some("check-core-deps") => check_core_deps(),
+        Some("eval") => eval::eval(&xtask_args[1..]),
         _ => {
-            eprintln!("usage: cargo xtask check-core-deps");
+            eprintln!(
+                "usage: cargo xtask <check-core-deps | eval [--case <name>] [--out <file.json>]>"
+            );
             ExitCode::FAILURE
         }
     }

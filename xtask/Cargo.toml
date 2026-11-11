@@ -9,3 +9,13 @@ publish = false
 workspace = true
 
 [dependencies]
+arbor-config.workspace = true
+arbor-core.workspace = true
+arbor-git.workspace = true
+arbor-llm.workspace = true
+arbor-session.workspace = true
+arbor-tiers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "time", "net"] }
