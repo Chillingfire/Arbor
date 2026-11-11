@@ -20,7 +20,7 @@ End every issue body, PR description, and comment you post on GitHub with the li
 
 ### Commits
 
-Keep each commit to at most about 600 changed lines, not counting generated files such as `Cargo.lock`. Split larger work into several commits that each build and pass the tests.
+Keep each commit to at most about 1000 changed lines, not counting generated files such as `Cargo.lock`. Split larger work into several commits that each build and pass the tests.
 
 ### Comments
 
