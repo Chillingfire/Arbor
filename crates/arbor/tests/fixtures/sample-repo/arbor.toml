@@ -1,0 +1,4 @@
+[checks]
+scaffold = "cargo check --all-targets"
+unit = "cargo test"
+unit_filtered = "cargo test {filter}"
