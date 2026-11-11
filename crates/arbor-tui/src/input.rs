@@ -13,6 +13,8 @@ pub enum KeyOutcome {
     Quit,
     /// The Human Operator pressed Enter in the prompt with this text.
     Submitted(String),
+    /// Esc outside the prompt: stop what is running.
+    Cancel,
 }
 
 const LOG_PAGE: usize = 10;
@@ -38,6 +40,7 @@ impl UiState {
         }
         match key.code {
             KeyCode::Char('q') => return KeyOutcome::Quit,
+            KeyCode::Esc => return KeyOutcome::Cancel,
             KeyCode::Char('/' | 'i') => self.focus = Focus::Prompt,
             KeyCode::Left if self.focus == Focus::Tree => self.collapse_selected(view),
             KeyCode::Right if self.focus == Focus::Tree => self.expand_selected(view),

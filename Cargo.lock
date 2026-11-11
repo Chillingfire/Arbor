@@ -54,6 +54,7 @@ dependencies = [
  "arbor-tiers",
  "arbor-tools",
  "arbor-tui",
+ "ratatui",
  "tempfile",
  "tokio",
 ]
@@ -170,6 +171,8 @@ version = "0.1.0"
 dependencies = [
  "arbor-config",
  "arbor-core",
+ "arbor-session",
+ "arbor-tiers",
  "ratatui",
 ]
 

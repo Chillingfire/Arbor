@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use arbor_config::ClarificationMode;
 use arbor_core::{ASSUMPTION_PREFIX, Phase, Tier};
@@ -102,7 +103,20 @@ pub struct StatusInfo {
     pub clarification_mode: ClarificationMode,
     /// The Session branch, once it exists.
     pub branch: Option<String>,
+    /// The model call or Check running now.
+    pub activity: Option<RunningActivity>,
 }
+
+/// What the spinner in the header shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunningActivity {
+    pub tier: Option<Tier>,
+    pub model: Option<String>,
+    pub label: String,
+    pub elapsed: Duration,
+}
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn draw(frame: &mut Frame, view: &SessionView, ui_state: &UiState, status: &StatusInfo) {
     frame.render_widget(
@@ -214,6 +228,31 @@ fn draw_header(frame: &mut Frame, area: Rect, view: &SessionView, status: &Statu
     }
 
     let mut right = Vec::new();
+    if let Some(activity) = &status.activity {
+        let frame_index = (activity.elapsed.as_millis() / 100) as usize % SPINNER.len();
+        let color = activity.tier.map_or(YELLOW, tier_color);
+        right.push(Span::styled(
+            format!("{} ", SPINNER[frame_index]),
+            Style::new().fg(color).bold(),
+        ));
+        if let Some(tier) = activity.tier {
+            right.push(Span::styled(
+                format!("{} ", tier_name(tier)),
+                Style::new().fg(color).bold(),
+            ));
+        }
+        if let Some(model) = &activity.model {
+            right.push(Span::styled(
+                format!("{} · ", short_model(model)),
+                Style::new().fg(MUTED),
+            ));
+        }
+        right.push(Span::raw(format!("{} ", activity.label)));
+        right.push(Span::styled(
+            format!("{}s   ", activity.elapsed.as_secs()),
+            Style::new().fg(MUTED),
+        ));
+    }
     if !work_unit_statuses.is_empty() {
         let bar_width = 12;
         let filled = done * bar_width / work_unit_statuses.len();

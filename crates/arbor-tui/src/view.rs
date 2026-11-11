@@ -131,6 +131,15 @@ impl SessionView {
         &self.tasks
     }
 
+    /// Adds a line to the event log that no event stands for, e.g. why the run stopped.
+    pub fn push_note(&mut self, text: impl Into<String>, tone: Tone) {
+        self.log.push(LogEntry {
+            text: text.into(),
+            tier: None,
+            tone,
+        });
+    }
+
     /// One line per event, oldest first.
     pub fn log(&self) -> &[LogEntry] {
         &self.log

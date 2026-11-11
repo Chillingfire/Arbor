@@ -227,6 +227,7 @@ fn status_info() -> StatusInfo {
         ],
         clarification_mode: ClarificationMode::Ask,
         branch: Some("arbor/add-word-statistics".to_owned()),
+        activity: None,
     }
 }
 
@@ -280,7 +281,7 @@ fn main() -> std::io::Result<()> {
             {
                 match ui_state.handle_key(key, &view) {
                     KeyOutcome::Quit => return Ok(()),
-                    KeyOutcome::Handled | KeyOutcome::Submitted(_) => {}
+                    KeyOutcome::Handled | KeyOutcome::Submitted(_) | KeyOutcome::Cancel => {}
                 }
             }
         }

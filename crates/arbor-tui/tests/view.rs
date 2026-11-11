@@ -136,6 +136,7 @@ fn rendered(view: &SessionView, selected: usize) -> String {
         models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
         clarification_mode: ClarificationMode::Assume,
         branch: Some("arbor/two-helpers".to_owned()),
+        activity: None,
     };
     let ui_state = UiState {
         selected,
@@ -180,6 +181,7 @@ fn the_event_log_scrolls_back_and_says_how_much_is_below() {
         models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
         clarification_mode: ClarificationMode::Ask,
         branch: None,
+        activity: None,
     };
     let mut ui_state = UiState {
         focus: Focus::Log,
@@ -289,6 +291,7 @@ fn rendered_with(view: &SessionView, ui_state: &UiState) -> String {
         models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
         clarification_mode: ClarificationMode::Ask,
         branch: None,
+        activity: None,
     };
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal
