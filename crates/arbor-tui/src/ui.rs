@@ -34,11 +34,15 @@ const RED: Color = Color::Rgb(247, 118, 142);
 const LOG_ROWS: u16 = 10;
 
 /// A row of the Plan tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TreeNode {
+    #[default]
     Plan,
     Task(usize),
-    WorkUnit { task: usize, unit: usize },
+    WorkUnit {
+        task: usize,
+        unit: usize,
+    },
 }
 
 /// The tree's rows, top to bottom, leaving out the Work Units of `collapsed` Tasks.
@@ -55,6 +59,11 @@ pub fn tree_nodes(view: &SessionView, collapsed: &BTreeSet<usize>) -> Vec<TreeNo
         nodes.extend((0..task_view.work_units.len()).map(|unit| TreeNode::WorkUnit { task, unit }));
     }
     nodes
+}
+
+/// The row of `selected` among `nodes`, or the top row when it isn't shown.
+pub(crate) fn selected_row(nodes: &[TreeNode], selected: TreeNode) -> usize {
+    nodes.iter().position(|node| *node == selected).unwrap_or(0)
 }
 
 /// The pane that takes the keys.
@@ -79,8 +88,8 @@ pub enum DetailTab {
 /// The TUI's own state, apart from the Session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiState {
-    /// Index into [`tree_nodes`].
-    pub selected: usize,
+    /// Kept as the node, not its row, so it stays put when Work Units arrive above it.
+    pub selected: TreeNode,
     pub focus: Focus,
     pub detail_tab: DetailTab,
     /// How many entries the event log is scrolled back from the newest. 0 follows new events.
@@ -142,7 +151,7 @@ pub fn draw(frame: &mut Frame, view: &SessionView, ui_state: &UiState, status: &
         frame,
         detail_area,
         view,
-        nodes.get(ui_state.selected).copied(),
+        nodes.get(selected_row(&nodes, ui_state.selected)).copied(),
         ui_state,
     );
     draw_log(frame, log_area, view, ui_state);
@@ -266,13 +275,18 @@ fn draw_header(frame: &mut Frame, area: Rect, view: &SessionView, status: &Statu
             Style::new().fg(MUTED),
         ));
     }
+    let right = Line::from(right);
+    let right_width = u16::try_from(right.width()).unwrap_or(u16::MAX);
+    let [left_area, _gap, right_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(2),
+        Constraint::Length(right_width),
+    ])
+    .areas(area);
     let header = Block::new().style(Style::new().bg(BAR));
     frame.render_widget(header, area);
-    frame.render_widget(Paragraph::new(Line::from(left)), area);
-    frame.render_widget(
-        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Line::from(left)), left_area);
+    frame.render_widget(Paragraph::new(right), right_area);
 }
 
 fn draw_tree(
@@ -360,7 +374,8 @@ fn draw_tree(
         .block(block)
         .highlight_style(highlight)
         .highlight_symbol(Span::styled("▎", Style::new().fg(ACCENT)));
-    let mut list_state = ListState::default().with_selected(Some(ui_state.selected));
+    let mut list_state =
+        ListState::default().with_selected(Some(selected_row(nodes, ui_state.selected)));
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -755,6 +770,11 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     }
     let hints = Line::from(hint_spans).alignment(Alignment::Right);
     let block = pane(pane_title(title, focused), focused).title_bottom(hints);
+    // Border, padding and "❯ " on the left; padding, border and the cursor's cell on the right.
+    let text_start = 4;
+    let room = usize::from(area.width.saturating_sub(text_start + 3));
+    let shown = typed_tail(&ui_state.prompt, room);
+    let shown_width = u16::try_from(shown.chars().count()).unwrap_or(u16::MAX);
     let content = if ui_state.prompt.is_empty() {
         let placeholder = match view.session().phase() {
             Phase::NotStarted => "Describe the change you want, then press Enter",
@@ -767,14 +787,24 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     } else {
         Line::from(vec![
             Span::styled("❯ ", Style::new().fg(ACCENT)),
-            Span::raw(ui_state.prompt.clone()),
+            Span::raw(shown),
         ])
     };
     frame.render_widget(Paragraph::new(content).block(block), area);
     if focused {
-        let typed_width = u16::try_from(ui_state.prompt.chars().count()).unwrap_or(u16::MAX);
-        frame.set_cursor_position((area.x + 4 + typed_width, area.y + 1));
+        frame.set_cursor_position((area.x + text_start + shown_width, area.y + 1));
     }
+}
+
+/// The end of what was typed, so the cursor stays in view: `room` characters at most, starting
+/// with `…` when the start is cut off.
+fn typed_tail(typed: &str, room: usize) -> String {
+    let typed_length = typed.chars().count();
+    if typed_length <= room {
+        return typed.to_owned();
+    }
+    let kept: String = typed.chars().skip(typed_length + 1 - room.max(1)).collect();
+    format!("…{kept}")
 }
 
 fn phase_label(view: &SessionView) -> String {

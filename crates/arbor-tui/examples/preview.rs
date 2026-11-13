@@ -3,13 +3,15 @@
 //! `cargo run -p arbor-tui --example preview` opens it in the terminal: Tab moves focus, ↑/↓ move
 //! or scroll, ←/→ switch tabs, `q` quits. `-- --snapshot 120x36` prints one frame as text instead.
 
+use std::collections::BTreeSet;
+
 use arbor_config::ClarificationMode;
 use arbor_core::{
     Event, Plan, Priority, Request, Snippet, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId,
 };
 use arbor_tui::{
     DetailTab, Focus, KeyOutcome, ReplyOutcome, SessionView, StatusInfo, UiState,
-    WriterReplyRecord, draw,
+    WriterReplyRecord, draw, tree_nodes,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -250,7 +252,10 @@ fn main() -> std::io::Result<()> {
                 .unwrap_or(0)
         };
         let ui_state = UiState {
-            selected: env_number("PREVIEW_SELECTED"),
+            selected: tree_nodes(&view, &BTreeSet::new())
+                .get(env_number("PREVIEW_SELECTED"))
+                .copied()
+                .unwrap_or_default(),
             log_scrolled_back: env_number("PREVIEW_SCROLLED_BACK"),
             focus: match std::env::var("PREVIEW_FOCUS").as_deref() {
                 Ok("detail") => Focus::Detail,

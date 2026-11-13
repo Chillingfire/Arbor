@@ -1,8 +1,8 @@
 use arbor_config::ClarificationMode;
 use arbor_core::{Event, Plan, Request, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId};
 use arbor_tui::{
-    Focus, KeyOutcome, LogEntry, SessionView, Status, StatusInfo, Tone, TreeNode, UiState, draw,
-    tree_nodes,
+    Focus, KeyOutcome, LogEntry, ReplyOutcome, SessionView, Status, StatusInfo, Tone, TreeNode,
+    UiState, WriterReplyRecord, draw, tree_nodes,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -131,7 +131,7 @@ fn the_log_describes_each_event_in_one_line_with_its_tier_and_tone() {
     );
 }
 
-fn rendered(view: &SessionView, selected: usize) -> String {
+fn rendered(view: &SessionView, selected: TreeNode) -> String {
     let status = StatusInfo {
         models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
         clarification_mode: ClarificationMode::Assume,
@@ -153,7 +153,7 @@ fn rendered(view: &SessionView, selected: usize) -> String {
 fn the_layout_shows_tree_detail_log_and_status_bar() {
     let view = SessionView::from_events(&events()).unwrap();
 
-    let screen = rendered(&view, 5);
+    let screen = rendered(&view, TreeNode::WorkUnit { task: 1, unit: 1 });
 
     assert!(screen.contains("2. Second"), "{screen}");
     assert!(screen.contains("WU-3 Spec · Transcript · Diff"), "{screen}");
@@ -168,7 +168,7 @@ fn the_layout_shows_tree_detail_log_and_status_bar() {
 fn before_a_plan_the_tree_says_so_and_the_detail_shows_the_request() {
     let view = SessionView::from_events(&events()[..1]).unwrap();
 
-    let screen = rendered(&view, 0);
+    let screen = rendered(&view, TreeNode::Plan);
 
     assert!(screen.contains("No Plan yet."), "{screen}");
     assert!(screen.contains("Add two helpers"), "{screen}");
@@ -225,14 +225,14 @@ fn typing_in_the_prompt_submits_on_enter() {
 fn collapsing_a_task_hides_its_units_and_selects_the_task() {
     let view = SessionView::from_events(&events()).unwrap();
     let mut ui_state = UiState {
-        selected: 4,
+        selected: TreeNode::WorkUnit { task: 1, unit: 0 },
         ..UiState::default()
     };
     let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
     ui_state.handle_key(key(KeyCode::Left), &view);
 
-    assert_eq!(ui_state.selected, 3);
+    assert_eq!(ui_state.selected, TreeNode::Task(1));
     assert_eq!(
         tree_nodes(&view, &ui_state.collapsed),
         [
@@ -264,7 +264,7 @@ fn the_transcript_tab_shows_failed_replies_from_the_log_and_the_diff_tab_the_com
     });
     let view = SessionView::from_events(&failing).unwrap();
     let mut ui_state = UiState {
-        selected: 4,
+        selected: TreeNode::WorkUnit { task: 1, unit: 0 },
         focus: Focus::Detail,
         ..UiState::default()
     };
@@ -279,7 +279,7 @@ fn the_transcript_tab_shows_failed_replies_from_the_log_and_the_diff_tab_the_com
 
     let mut committed = SessionView::from_events(&events()).unwrap();
     committed.set_diff(WorkUnitId(1), "+    added line".to_owned());
-    ui_state.selected = 2;
+    ui_state.selected = TreeNode::WorkUnit { task: 0, unit: 0 };
     ui_state.handle_key(key(KeyCode::Right), &committed);
     let diff = rendered_with(&committed, &ui_state);
     assert!(diff.contains("Commit 0123456"), "{diff}");
@@ -298,4 +298,58 @@ fn rendered_with(view: &SessionView, ui_state: &UiState) -> String {
         .draw(|frame| draw(frame, view, ui_state, &status))
         .unwrap();
     terminal.backend().to_string()
+}
+
+#[test]
+fn the_selection_stays_on_its_task_when_work_units_arrive_above_it() {
+    let mut view = SessionView::from_events(&events()[..3]).unwrap();
+    let mut ui_state = UiState {
+        selected: TreeNode::Task(1),
+        ..UiState::default()
+    };
+
+    view.apply(&events()[3]).unwrap();
+    assert_eq!(ui_state.selected, TreeNode::Task(1));
+    let screen = rendered_with(&view, &ui_state);
+    assert!(screen.contains("Description of Second"), "{screen}");
+
+    ui_state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &view);
+    assert_eq!(ui_state.selected, TreeNode::WorkUnit { task: 0, unit: 0 });
+}
+
+#[test]
+fn a_failed_writer_attempt_goes_in_the_log_with_its_number() {
+    let mut view = SessionView::from_events(&events()).unwrap();
+
+    view.record_writer_reply(
+        WorkUnitId(3),
+        WriterReplyRecord {
+            reply: "fn x() {}".to_owned(),
+            outcome: ReplyOutcome::Failed("the Checks failed:\nerror[E0308]".to_owned()),
+        },
+    );
+
+    assert_eq!(
+        view.log().last(),
+        Some(&LogEntry {
+            text: "WU-3 attempt 1 failed: the Checks failed".to_owned(),
+            tier: Some(Tier::Writer),
+            tone: Tone::Failure,
+        })
+    );
+}
+
+#[test]
+fn a_long_prompt_shows_its_end() {
+    let view = SessionView::new();
+    let ui_state = UiState {
+        focus: Focus::Prompt,
+        prompt: format!("start{} end", " middle".repeat(30)),
+        ..UiState::default()
+    };
+
+    let screen = rendered_with(&view, &ui_state);
+
+    assert!(screen.contains("❯ …"), "{screen}");
+    assert!(screen.contains("middle end  │"), "{screen}");
 }

@@ -90,6 +90,26 @@ fn a_running_model_call_shows_a_spinner_with_tier_model_and_label() {
 }
 
 #[test]
+fn a_long_goal_stops_short_of_the_spinner() {
+    let mut app = app();
+    app.apply_update(AutopilotUpdate::Event(Event::SessionStarted {
+        request: Request {
+            text: ["word"; 40].join(" "),
+            issue: None,
+        },
+    }));
+
+    app.apply_update(AutopilotUpdate::Working(Activity {
+        tier: Some(Tier::Planner),
+        model: None,
+        label: "Planning, turn 1".to_owned(),
+    }));
+
+    let header = screen(&app).lines().next().unwrap().to_owned();
+    assert!(header.contains("  ⠋ Planner"), "{header}");
+}
+
+#[test]
 fn writer_attempts_and_diffs_fill_the_work_units_tabs() {
     let mut app = app();
     started_session(&mut app);

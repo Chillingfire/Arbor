@@ -252,9 +252,28 @@ impl SessionView {
     }
 
     /// Adds a Writer reply as it comes, before its outcome event.
+    /// Adds a Writer reply to the Work Unit's transcript. A failed one also goes in the event log,
+    /// since only the Work Unit's final outcome is an event.
     pub fn record_writer_reply(&mut self, id: WorkUnitId, record: WriterReplyRecord) {
-        if let Some(work_unit_view) = self.work_unit_mut(id) {
-            work_unit_view.transcript.push(record);
+        let Some(work_unit_view) = self.work_unit_mut(id) else {
+            return;
+        };
+        let failure = match &record.outcome {
+            ReplyOutcome::Passed => None,
+            ReplyOutcome::Failed(reason) => Some(format!(
+                "failed: {}",
+                first_line(reason).trim_end_matches(':')
+            )),
+            ReplyOutcome::Missing(_) => Some("sent a Missing Response".to_owned()),
+        };
+        work_unit_view.transcript.push(record);
+        let attempt = work_unit_view.transcript.len();
+        if let Some(failure) = failure {
+            self.log.push(LogEntry {
+                text: format!("{id} attempt {attempt} {failure}"),
+                tier: Some(Tier::Writer),
+                tone: Tone::Failure,
+            });
         }
     }
 

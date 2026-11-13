@@ -2,7 +2,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::ui::{DetailTab, Focus, TreeNode, UiState, tree_nodes};
+use crate::ui::{DetailTab, Focus, TreeNode, UiState, selected_row, tree_nodes};
 use crate::view::SessionView;
 
 /// What a key asks of the program running the TUI.
@@ -42,10 +42,10 @@ impl UiState {
             KeyCode::Char('q') => return KeyOutcome::Quit,
             KeyCode::Esc => return KeyOutcome::Cancel,
             KeyCode::Char('/' | 'i') => self.focus = Focus::Prompt,
-            KeyCode::Left if self.focus == Focus::Tree => self.collapse_selected(view),
-            KeyCode::Right if self.focus == Focus::Tree => self.expand_selected(view),
+            KeyCode::Left if self.focus == Focus::Tree => self.collapse_selected(),
+            KeyCode::Right if self.focus == Focus::Tree => self.expand_selected(),
             KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Tree => {
-                self.toggle_selected(view);
+                self.toggle_selected();
             }
             KeyCode::Left => self.switch_tab(previous_tab(self.detail_tab)),
             KeyCode::Right => self.switch_tab(next_tab(self.detail_tab)),
@@ -75,11 +75,23 @@ impl UiState {
         KeyOutcome::Handled
     }
 
-    fn select(&mut self, row: usize) {
-        if row != self.selected {
-            self.selected = row;
+    fn select(&mut self, node: TreeNode) {
+        if node != self.selected {
+            self.selected = node;
             self.detail_scroll = 0;
         }
+    }
+
+    /// Selects the row `offset` rows away from the selected one, stopping at either end.
+    fn select_by_offset(&mut self, view: &SessionView, offset: isize) {
+        let nodes = tree_nodes(view, &self.collapsed);
+        let Some(last) = nodes.len().checked_sub(1) else {
+            return;
+        };
+        let row = selected_row(&nodes, self.selected)
+            .saturating_add_signed(offset)
+            .min(last);
+        self.select(nodes[row]);
     }
 
     fn switch_tab(&mut self, tab: DetailTab) {
@@ -88,41 +100,34 @@ impl UiState {
     }
 
     /// On a Work Unit, collapses its Task and selects the Task.
-    fn collapse_selected(&mut self, view: &SessionView) {
-        let task = match tree_nodes(view, &self.collapsed).get(self.selected) {
-            Some(TreeNode::Task(task) | TreeNode::WorkUnit { task, .. }) => *task,
-            _ => return,
+    fn collapse_selected(&mut self) {
+        let task = match self.selected {
+            TreeNode::Task(task) | TreeNode::WorkUnit { task, .. } => task,
+            TreeNode::Plan => return,
         };
         self.collapsed.insert(task);
-        self.select_task(view, task);
+        self.select(TreeNode::Task(task));
     }
 
-    fn expand_selected(&mut self, view: &SessionView) {
-        if let Some(TreeNode::Task(task)) = tree_nodes(view, &self.collapsed).get(self.selected) {
-            self.collapsed.remove(task);
+    fn expand_selected(&mut self) {
+        if let TreeNode::Task(task) = self.selected {
+            self.collapsed.remove(&task);
         }
     }
 
-    fn toggle_selected(&mut self, view: &SessionView) {
-        if let Some(TreeNode::Task(task)) = tree_nodes(view, &self.collapsed).get(self.selected)
-            && !self.collapsed.remove(task)
+    fn toggle_selected(&mut self) {
+        if let TreeNode::Task(task) = self.selected
+            && !self.collapsed.remove(&task)
         {
-            self.collapsed.insert(*task);
-        }
-    }
-
-    fn select_task(&mut self, view: &SessionView, task: usize) {
-        let row = tree_nodes(view, &self.collapsed)
-            .iter()
-            .position(|node| *node == TreeNode::Task(task));
-        if let Some(row) = row {
-            self.select(row);
+            self.collapsed.insert(task);
         }
     }
 
     fn move_up(&mut self, view: &SessionView, rows: usize) {
         match self.focus {
-            Focus::Tree => self.select(self.selected.saturating_sub(rows)),
+            Focus::Tree => {
+                self.select_by_offset(view, -isize::try_from(rows).unwrap_or(isize::MAX))
+            }
             Focus::Detail => {
                 let rows = u16::try_from(rows).unwrap_or(u16::MAX);
                 self.detail_scroll = self.detail_scroll.saturating_sub(rows);
@@ -137,10 +142,7 @@ impl UiState {
 
     fn move_down(&mut self, view: &SessionView, rows: usize) {
         match self.focus {
-            Focus::Tree => {
-                let last = tree_nodes(view, &self.collapsed).len().saturating_sub(1);
-                self.select(self.selected.saturating_add(rows).min(last));
-            }
+            Focus::Tree => self.select_by_offset(view, isize::try_from(rows).unwrap_or(isize::MAX)),
             Focus::Detail => {
                 let rows = u16::try_from(rows).unwrap_or(u16::MAX);
                 self.detail_scroll = self
