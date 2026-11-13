@@ -5,6 +5,7 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -18,9 +19,9 @@ use arbor_core::{EventLog, Request};
 use arbor_git::{Repo, SessionBranch};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{Autopilot, AutopilotUpdate, SessionEnd};
-use arbor_tui::{App, KeyOutcome, StatusInfo, Tone};
+use arbor_tui::{App, Focus, KeyOutcome, StatusInfo, Tone};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event as TerminalEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event as TerminalEvent, KeyEvent, KeyEventKind};
 use tokio::sync::oneshot;
 
 /// How often the screen redraws while waiting, so the spinner moves.
@@ -107,52 +108,70 @@ fn event_loop(
     project: &Project,
     initial_request: Option<Request>,
 ) -> io::Result<()> {
-    let mut running: Option<RunningSession> = None;
-    let mut started = false;
-    if let Some(request) = initial_request {
-        running = start_session(app, project, request);
-        started = true;
+    let mut run = Run::default();
+    match initial_request {
+        Some(request) => run.start(app, project, request),
+        None => app.ui_state.focus = Focus::Prompt,
     }
     loop {
-        if let Some(session) = &mut running
+        if let Some(session) = &mut run.session
             && !drain_messages(app, session)
         {
-            running = None;
+            run.session = None;
             app.stop_working();
         }
         terminal.draw(|frame| app.draw(frame))?;
-        if !event::poll(FRAME)? {
-            continue;
+        // Take every key already waiting before drawing again, so a paste doesn't trail behind.
+        let mut key_waiting = event::poll(FRAME)?;
+        while key_waiting {
+            if let TerminalEvent::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && run.handle_key(app, project, key).is_break()
+            {
+                return Ok(());
+            }
+            key_waiting = event::poll(Duration::ZERO)?;
         }
-        let TerminalEvent::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
+    }
+}
+
+/// The Session behind the screen, once the Human Operator has sent a Request.
+#[derive(Default)]
+struct Run {
+    session: Option<RunningSession>,
+    started: bool,
+}
+
+impl Run {
+    fn start(&mut self, app: &mut App, project: &Project, request: Request) {
+        self.session = start_session(app, project, request);
+        self.started = true;
+    }
+
+    fn cancel(&mut self) {
+        if let Some(session) = &mut self.session {
+            cancel(session);
         }
+    }
+
+    fn handle_key(&mut self, app: &mut App, project: &Project, key: KeyEvent) -> ControlFlow<()> {
         match app.ui_state.handle_key(key, &app.view) {
             KeyOutcome::Handled => {}
             KeyOutcome::Quit => {
-                if let Some(session) = &mut running {
-                    cancel(session);
-                }
-                return Ok(());
+                self.cancel();
+                return ControlFlow::Break(());
             }
-            KeyOutcome::Cancel => {
-                if let Some(session) = &mut running {
-                    cancel(session);
-                }
-            }
-            KeyOutcome::Submitted(text) if !started => {
-                let request = Request { text, issue: None };
-                running = start_session(app, project, request);
-                started = true;
+            KeyOutcome::Cancel => self.cancel(),
+            KeyOutcome::Submitted(text) if !self.started => {
+                self.start(app, project, Request { text, issue: None });
+                app.ui_state.focus = Focus::Tree;
             }
             KeyOutcome::Submitted(_) => app.view.push_note(
                 "Answers and hints reach the Tiers once the Checkpoint modals exist (#15).",
                 Tone::Progress,
             ),
         }
+        ControlFlow::Continue(())
     }
 }
 
