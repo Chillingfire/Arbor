@@ -38,6 +38,16 @@ impl Repo {
         &self.root
     }
 
+    /// The git directory every worktree of the repository shares, e.g. for `info/exclude`. From
+    /// a linked worktree this is the main checkout's `.git`, not the worktree's own.
+    pub fn common_dir(&self) -> Result<PathBuf, GitError> {
+        let common_dir = git(
+            &self.root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        Ok(PathBuf::from(common_dir))
+    }
+
     /// Fetches `origin`. This is read-only for the remote, so it needs no approval (ADR-0006).
     /// It updates only remote-tracking branches, never the local mainline.
     pub fn fetch(&self) -> Result<Fetch, GitError> {
