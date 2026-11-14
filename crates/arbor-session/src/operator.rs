@@ -10,7 +10,7 @@ use arbor_core::{Plan, Revision, Tier, WorkUnit};
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// A Checkpoint the Session waits at, with what the Human Operator reviews there.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checkpoint {
     Plan {
         plan: Plan,

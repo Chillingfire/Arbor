@@ -1,4 +1,4 @@
-use arbor_core::Plan;
+use arbor_core::{Plan, assumptions_in};
 
 fn plan_with(constraints: &[&str]) -> Plan {
     Plan {
@@ -34,4 +34,19 @@ fn a_plan_without_assumptions_has_none() {
         plan_with(&["Keep it small", "Ass"]).assumptions().count(),
         0
     );
+}
+
+#[test]
+fn a_specs_assumptions_run_to_the_end_of_their_line_or_the_next_one() {
+    let spec = "Return the longest word. Assumption: ties keep the first. assumption: ASCII only\n\
+                Split on whitespace.\nAssumption: empty text has no words";
+    assert_eq!(
+        assumptions_in(spec),
+        [
+            "Assumption: ties keep the first.",
+            "assumption: ASCII only",
+            "Assumption: empty text has no words",
+        ]
+    );
+    assert!(assumptions_in("Return the longest word.").is_empty());
 }

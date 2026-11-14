@@ -18,19 +18,20 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
+use crate::modal::{Modal, draw_modal};
 use crate::view::{
     LogEntry, ReplyOutcome, SessionView, Status, Tone, WorkUnitView, first_line, phase_task, short,
     tokens,
 };
 
-const ACCENT: Color = Color::Rgb(122, 162, 247);
-const MUTED: Color = Color::Rgb(110, 118, 135);
-const FAINT: Color = Color::Rgb(70, 76, 90);
+pub(crate) const ACCENT: Color = Color::Rgb(122, 162, 247);
+pub(crate) const MUTED: Color = Color::Rgb(110, 118, 135);
+pub(crate) const FAINT: Color = Color::Rgb(70, 76, 90);
 const SELECTION: Color = Color::Rgb(40, 46, 62);
-const BAR: Color = Color::Rgb(28, 31, 40);
-const GREEN: Color = Color::Rgb(158, 206, 106);
-const YELLOW: Color = Color::Rgb(224, 175, 104);
-const RED: Color = Color::Rgb(247, 118, 142);
+pub(crate) const BAR: Color = Color::Rgb(28, 31, 40);
+pub(crate) const GREEN: Color = Color::Rgb(158, 206, 106);
+pub(crate) const YELLOW: Color = Color::Rgb(224, 175, 104);
+pub(crate) const RED: Color = Color::Rgb(247, 118, 142);
 
 const LOG_ROWS: u16 = 10;
 
@@ -114,6 +115,22 @@ pub struct UiState {
     /// How far the detail pane can scroll, as last drawn.
     pub detail_scroll_limit: Cell<u16>,
     pub confirming: Option<Confirmation>,
+    /// What the Session waits on the Human Operator for, if anything.
+    pub modal: Option<Modal>,
+    /// The modal is hidden so the Human Operator can look around the Session first.
+    pub modal_hidden: bool,
+}
+
+impl UiState {
+    pub fn open_modal(&mut self, modal: Modal) {
+        self.modal = Some(modal);
+        self.modal_hidden = false;
+    }
+
+    /// The modal the keys go to: open and not hidden.
+    pub fn shown_modal(&self) -> Option<&Modal> {
+        self.modal.as_ref().filter(|_| !self.modal_hidden)
+    }
 }
 
 /// What the screen shows besides the Session's own numbers.
@@ -169,6 +186,9 @@ pub fn draw(frame: &mut Frame, view: &SessionView, ui_state: &UiState, status: &
     draw_log(frame, log_area, view, ui_state);
     draw_prompt(frame, prompt_area, view, ui_state);
     draw_status(frame, status_area, view, status);
+    if let Some(modal) = ui_state.shown_modal() {
+        draw_modal(frame, modal);
+    }
     if let Some(confirmation) = ui_state.confirming {
         draw_confirmation(frame, confirmation, status);
     }
@@ -782,6 +802,13 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
         ],
     };
     let mut hint_spans = vec![Span::raw(" ")];
+    if ui_state.modal.is_some() && ui_state.modal_hidden && !focused {
+        hint_spans.push(Span::styled("c ", Style::new().fg(YELLOW).bold()));
+        hint_spans.push(Span::styled(
+            "back to what the Session waits on  ",
+            Style::new().fg(YELLOW),
+        ));
+    }
     for (keys, action) in hint_pairs {
         hint_spans.push(Span::styled(format!("{keys} "), Style::new().fg(ACCENT)));
         hint_spans.push(Span::styled(format!("{action}  "), Style::new().fg(MUTED)));
@@ -796,7 +823,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     let content = if ui_state.prompt.is_empty() {
         let placeholder = match view.session().phase() {
             Phase::NotStarted => "Describe the change you want, then press Enter",
-            _ => "Answers and hints go here",
+            _ => "A new Request can start once this Session ends",
         };
         Line::from(vec![
             Span::styled("❯ ", Style::new().fg(ACCENT)),

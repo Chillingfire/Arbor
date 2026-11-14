@@ -1,6 +1,6 @@
 //! Runs the TUI and, once there is a Request, a live Session behind it. The Session runs on its own
-//! thread with the Autopilot, which approves every Checkpoint as it is until the Checkpoint modals
-//! exist (#15), and streams its updates to the screen.
+//! thread with the Autopilot and streams its updates to the screen. At a Checkpoint or a Tier's
+//! questions it waits for the Human Operator's reply from a modal.
 
 use std::env;
 use std::fs;
@@ -12,15 +12,14 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arbor_config::{
-    API_KEY_ENV, ClarificationMode, Config, ConfigError, Platform, resolve_api_key,
-    user_config_path,
-};
-use arbor_core::{Effect, Phase, Request};
+use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, resolve_api_key, user_config_path};
+use arbor_core::{Effect, Phase, Request, Tier};
 use arbor_git::{Repo, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
-use arbor_session::{Autopilot, AutopilotUpdate, SessionEnd};
-use arbor_tui::{App, Confirmation, Focus, KeyOutcome, StatusInfo, Tone};
+use arbor_session::{
+    Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, SessionEnd,
+};
+use arbor_tui::{App, Confirmation, Focus, KeyOutcome, Modal, StatusInfo, Tone};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event as TerminalEvent, KeyCode, KeyEvent,
@@ -42,7 +41,58 @@ enum DriverMessage {
         session_dir: PathBuf,
     },
     Update(AutopilotUpdate),
+    Checkpoint {
+        checkpoint: Checkpoint,
+        reply: oneshot::Sender<Decision>,
+    },
+    Questions {
+        tier: Tier,
+        questions: String,
+        reply: oneshot::Sender<Option<String>>,
+    },
     Ended(String, Tone),
+}
+
+/// Where the Human Operator's reply to the open modal goes.
+enum AwaitedReply {
+    Decision(oneshot::Sender<Decision>),
+    Answers(oneshot::Sender<Option<String>>),
+}
+
+/// The Human Operator at the screen: each Checkpoint and question opens a modal there, and the
+/// Session waits for the reply.
+struct ScreenOperator {
+    sender: Sender<DriverMessage>,
+}
+
+/// Without a screen left to reply, the Session waits until it is cancelled rather than go on
+/// undecided.
+async fn screen_reply<T>(replied: oneshot::Receiver<T>) -> T {
+    match replied.await {
+        Ok(reply) => reply,
+        Err(_) => std::future::pending().await,
+    }
+}
+
+impl Operator for ScreenOperator {
+    fn decide<'a>(&'a mut self, checkpoint: &'a Checkpoint) -> Pending<'a, Decision> {
+        let (reply, replied) = oneshot::channel();
+        let _ = self.sender.send(DriverMessage::Checkpoint {
+            checkpoint: checkpoint.clone(),
+            reply,
+        });
+        Box::pin(screen_reply(replied))
+    }
+
+    fn answer<'a>(&'a mut self, tier: Tier, questions: &'a str) -> Pending<'a, Option<String>> {
+        let (reply, replied) = oneshot::channel();
+        let _ = self.sender.send(DriverMessage::Questions {
+            tier,
+            questions: questions.to_owned(),
+            reply,
+        });
+        Box::pin(screen_reply(replied))
+    }
 }
 
 /// The Session running behind the screen.
@@ -50,6 +100,7 @@ struct RunningSession {
     messages: Receiver<DriverMessage>,
     cancel: Option<oneshot::Sender<()>>,
     driver: JoinHandle<()>,
+    awaited_reply: Option<AwaitedReply>,
 }
 
 struct Project {
@@ -85,8 +136,7 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
             roles.scaffolder.model.clone(),
             roles.writer.model.clone(),
         ],
-        // Nobody can answer the Planner's questions until the question modal exists (#15).
-        clarification_mode: ClarificationMode::Assume,
+        clarification_mode: project.config.clarification_mode,
         branch: None,
         activity: None,
     });
@@ -198,6 +248,7 @@ impl Run {
             self.session = None;
             app.stop_working();
             app.ui_state.confirming = None;
+            app.ui_state.modal = None;
         }
     }
 
@@ -236,11 +287,34 @@ impl Run {
                 }
             }
             KeyOutcome::Submitted(_) => app.view.push_note(
-                "Answers and hints reach the Tiers once the Checkpoint modals exist (#15).",
+                "A Session is running; its Checkpoints and questions open in a modal.",
                 Tone::Progress,
             ),
+            KeyOutcome::Decided(decision) => self.send_decision(app, decision),
+            KeyOutcome::Answered(answers) => self.send_answers(app, answers),
         }
         ControlFlow::Continue(())
+    }
+
+    fn take_awaited_reply(&mut self) -> Option<AwaitedReply> {
+        self.session
+            .as_mut()
+            .and_then(|session| session.awaited_reply.take())
+    }
+
+    fn send_decision(&mut self, app: &mut App, decision: Decision) {
+        if let Some(AwaitedReply::Decision(reply)) = self.take_awaited_reply() {
+            app.view.push_note(decision_note(&decision), Tone::Operator);
+            let _ = reply.send(decision);
+        }
+    }
+
+    fn send_answers(&mut self, app: &mut App, answers: String) {
+        if let Some(AwaitedReply::Answers(reply)) = self.take_awaited_reply() {
+            app.view
+                .push_note("Answered the Tier's questions.", Tone::Operator);
+            let _ = reply.send(Some(answers));
+        }
     }
 }
 
@@ -259,6 +333,20 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
                 );
             }
             Ok(DriverMessage::Update(update)) => app.apply_update(update),
+            Ok(DriverMessage::Checkpoint { checkpoint, reply }) => {
+                app.stop_working();
+                app.ui_state.open_modal(Modal::checkpoint(checkpoint));
+                session.awaited_reply = Some(AwaitedReply::Decision(reply));
+            }
+            Ok(DriverMessage::Questions {
+                tier,
+                questions,
+                reply,
+            }) => {
+                app.stop_working();
+                app.ui_state.open_modal(Modal::questions(tier, questions));
+                session.awaited_reply = Some(AwaitedReply::Answers(reply));
+            }
             Ok(DriverMessage::Ended(message, tone)) => {
                 app.view.push_note(message, tone);
                 return false;
@@ -287,16 +375,10 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
             return None;
         }
     };
-    app.view.push_note(
-        "Checkpoints are approved automatically and Clarification Mode is Assume until the \
-         Checkpoint modals exist (#15).",
-        Tone::Operator,
-    );
     let (sender, messages) = mpsc::channel();
     let (cancel, cancelled) = oneshot::channel();
     let root = project.root.clone();
-    let mut config = project.config.clone();
-    config.clarification_mode = ClarificationMode::Assume;
+    let config = project.config.clone();
     let driver = thread::spawn(move || {
         let ending = drive(&root, config, &api_key, request, &sender, cancelled);
         let _ = sender.send(ending);
@@ -305,6 +387,7 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
         messages,
         cancel: Some(cancel),
         driver,
+        awaited_reply: None,
     })
 }
 
@@ -354,9 +437,13 @@ fn drive(
 
     let client = OpenRouterClient::new(api_key);
     let observer_sender = sender.clone();
+    let operator = ScreenOperator {
+        sender: sender.clone(),
+    };
     let autopilot = Autopilot::new(&worktree, &mainline, &client, config);
     let mut autopilot = match autopilot {
         Ok(autopilot) => autopilot
+            .with_operator(operator)
             .log_events_to(event_file)
             .on_update(move |update| {
                 let _ = observer_sender.send(DriverMessage::Update(update));
@@ -442,6 +529,24 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
     }
 }
 
+/// The event log line for the Human Operator's decision at a Checkpoint.
+fn decision_note(decision: &Decision) -> String {
+    match decision {
+        Decision::Approve => "Approved the Checkpoint.".to_owned(),
+        Decision::ApproveTasks(task_order) => {
+            let task_numbers: Vec<String> = task_order
+                .iter()
+                .map(|task| (task + 1).to_string())
+                .collect();
+            format!(
+                "Approved the Plan with Tasks {} in that order.",
+                task_numbers.join(", ")
+            )
+        }
+        Decision::Reject(feedback) => format!("Rejected the Checkpoint: {feedback}"),
+    }
+}
+
 /// What the Session waits on the Human Operator for, in a few words.
 fn operator_step(effect: &Effect) -> String {
     match effect {
@@ -464,9 +569,6 @@ fn operator_step(effect: &Effect) -> String {
             if remaining.len() == 1 { "" } else { "s" }
         ),
         Effect::ShowBudgetCheckpoint => "the Budget Checkpoint".to_owned(),
-        Effect::RunPlanner { .. } | Effect::RunScaffolder { .. } => {
-            "reworking after a rejected Checkpoint".to_owned()
-        }
         Effect::RunReplan { task, .. } => format!("the Replan of Task {}", task + 1),
         Effect::ResetTask { task } => format!("resetting Task {}", task + 1),
         _ => "the next step".to_owned(),

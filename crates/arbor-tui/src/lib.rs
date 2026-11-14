@@ -2,11 +2,13 @@
 
 mod app;
 mod input;
+mod modal;
 mod ui;
 mod view;
 
 pub use app::App;
 pub use input::KeyOutcome;
+pub use modal::{CheckpointModal, Modal, QuestionsModal, TaskRow};
 pub use ui::{
     Confirmation, DetailTab, Focus, RunningActivity, StatusInfo, TreeNode, UiState, draw,
     tree_nodes,

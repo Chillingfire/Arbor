@@ -1,7 +1,9 @@
 //! What each key does to the [`UiState`].
 
+use arbor_session::Decision;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::modal::ModalOutcome;
 use crate::ui::{
     Confirmation, DetailTab, Focus, TreeNode, UiState, confirmation_key, selected_row, tree_nodes,
 };
@@ -20,6 +22,10 @@ pub enum KeyOutcome {
     Cancel,
     /// The Human Operator pressed the confirming key.
     Confirmed(Confirmation),
+    /// The Human Operator decided at the open Checkpoint.
+    Decided(Decision),
+    /// The Human Operator answered a Tier's questions.
+    Answered(String),
 }
 
 const LOG_PAGE: usize = 10;
@@ -31,6 +37,13 @@ impl UiState {
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return KeyOutcome::Quit;
+        }
+        if self.shown_modal().is_some() {
+            return self.handle_modal_key(key);
+        }
+        if self.modal.is_some() && self.focus != Focus::Prompt && key.code == KeyCode::Char('c') {
+            self.modal_hidden = false;
+            return KeyOutcome::Handled;
         }
         match key.code {
             KeyCode::Tab => {
@@ -90,9 +103,37 @@ impl UiState {
         KeyOutcome::Handled
     }
 
-    /// Pasted text goes into the prompt whole, newlines included, so none of it is read as keys.
+    fn handle_modal_key(&mut self, key: KeyEvent) -> KeyOutcome {
+        let Some(modal) = &mut self.modal else {
+            return KeyOutcome::Handled;
+        };
+        match modal.handle_key(key) {
+            None => KeyOutcome::Handled,
+            Some(ModalOutcome::Hide) => {
+                self.modal_hidden = true;
+                KeyOutcome::Handled
+            }
+            Some(ModalOutcome::Decided(decision)) => {
+                self.modal = None;
+                KeyOutcome::Decided(decision)
+            }
+            Some(ModalOutcome::Answered(answers)) => {
+                self.modal = None;
+                KeyOutcome::Answered(answers)
+            }
+        }
+    }
+
+    /// Pasted text goes whole into the shown modal's text, or else the prompt, newlines included,
+    /// so none of it is read as keys.
     pub fn paste(&mut self, pasted: &str) {
         self.confirming = None;
+        if self.shown_modal().is_some()
+            && let Some(modal) = &mut self.modal
+        {
+            modal.paste(pasted);
+            return;
+        }
         self.focus = Focus::Prompt;
         self.prompt
             .push_str(&pasted.replace("\r\n", "\n").replace('\r', "\n"));

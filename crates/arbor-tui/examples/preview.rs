@@ -9,8 +9,9 @@ use arbor_config::ClarificationMode;
 use arbor_core::{
     Event, Plan, Priority, Request, Snippet, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId,
 };
+use arbor_session::Checkpoint;
 use arbor_tui::{
-    DetailTab, Focus, KeyOutcome, ReplyOutcome, SessionView, StatusInfo, UiState,
+    DetailTab, Focus, KeyOutcome, Modal, ReplyOutcome, SessionView, StatusInfo, UiState,
     WriterReplyRecord, draw, tree_nodes,
 };
 use ratatui::Terminal;
@@ -233,6 +234,34 @@ fn status_info() -> StatusInfo {
     }
 }
 
+/// The modal `PREVIEW_MODAL` asks for: `plan`, `scaffold` or `questions`.
+fn preview_modal(view: &SessionView) -> Option<Modal> {
+    let plan = view.plan()?.clone();
+    match std::env::var("PREVIEW_MODAL").as_deref() {
+        Ok("plan") => {
+            let Modal::Checkpoint(mut checkpoint_modal) =
+                Modal::checkpoint(Checkpoint::Plan { plan: plan.clone() })
+            else {
+                unreachable!("a Checkpoint opens a Checkpoint modal");
+            };
+            checkpoint_modal.task_rows.swap(0, 1);
+            checkpoint_modal.task_rows[1].kept = false;
+            checkpoint_modal.selected_row = 1;
+            Some(Modal::Checkpoint(checkpoint_modal))
+        }
+        Ok("scaffold") => Some(Modal::checkpoint(Checkpoint::Scaffold {
+            task: 1,
+            work_units: view.session().work_units().to_vec(),
+        })),
+        Ok("questions") => Some(Modal::questions(
+            Tier::Planner,
+            "1. Should ties keep the first word or the last?\n2. Do digits count as letters?"
+                .to_owned(),
+        )),
+        _ => None,
+    }
+}
+
 fn main() -> std::io::Result<()> {
     let mut view = SessionView::from_events(&demo_events()).expect("the demo events fit a Session");
     add_writer_details(&mut view);
@@ -271,6 +300,7 @@ fn main() -> std::io::Result<()> {
                 _ => DetailTab::Spec,
             },
             prompt: std::env::var("PREVIEW_PROMPT").unwrap_or_default(),
+            modal: preview_modal(&view),
             ..UiState::default()
         };
         let Ok(mut terminal) = Terminal::new(TestBackend::new(width, height));
@@ -291,7 +321,9 @@ fn main() -> std::io::Result<()> {
                     KeyOutcome::Handled
                     | KeyOutcome::Submitted(_)
                     | KeyOutcome::Cancel
-                    | KeyOutcome::Confirmed(_) => {}
+                    | KeyOutcome::Confirmed(_)
+                    | KeyOutcome::Decided(_)
+                    | KeyOutcome::Answered(_) => {}
                 }
             }
         }
