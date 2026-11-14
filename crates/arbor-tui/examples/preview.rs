@@ -234,7 +234,7 @@ fn status_info() -> StatusInfo {
     }
 }
 
-/// The modal `PREVIEW_MODAL` asks for: `plan`, `scaffold` or `questions`.
+/// The modal `PREVIEW_MODAL` asks for: `plan`, `scaffold`, `escalation` or `questions`.
 fn preview_modal(view: &SessionView) -> Option<Modal> {
     let plan = view.plan()?.clone();
     match std::env::var("PREVIEW_MODAL").as_deref() {
@@ -252,6 +252,20 @@ fn preview_modal(view: &SessionView) -> Option<Modal> {
         Ok("scaffold") => Some(Modal::checkpoint(Checkpoint::Scaffold {
             task: 1,
             work_units: view.session().work_units().to_vec(),
+        })),
+        Ok("escalation") => Some(Modal::checkpoint(Checkpoint::Escalation {
+            task: 1,
+            cause: arbor_core::RevisionCause::TaskChecksFailed {
+                output: "running 3 tests
+test longest_word_tests::keeps_the_first_of_tied_words ...                          FAILED
+
+failures:
+    left: Some(\"dog\")
+   right: Some(\"cat\")"
+                    .to_owned(),
+            },
+            may_replan: true,
+            failed_fix: None,
         })),
         Ok("questions") => Some(Modal::questions(
             Tier::Planner,

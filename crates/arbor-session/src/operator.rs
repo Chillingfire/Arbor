@@ -4,7 +4,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arbor_core::{Plan, Revision, Tier, WorkUnit};
+use arbor_core::{Plan, Replan, Revision, RevisionCause, Tier, WorkUnit};
 
 /// A future the Operator resolves once the Human Operator has decided, e.g. in a TUI modal.
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -23,6 +23,21 @@ pub enum Checkpoint {
         task: usize,
         revision: Revision,
     },
+    /// The Scaffolder couldn't make the Task pass. The Human Operator fixes it by hand, sends it
+    /// to the Planner, or stops here.
+    Escalation {
+        task: usize,
+        cause: RevisionCause,
+        /// Whether the Task may still go to the Planner: only one Replan per Task.
+        may_replan: bool,
+        /// The Checks' output when the Human Operator's last fix didn't pass them.
+        failed_fix: Option<String>,
+    },
+    /// The Tasks the Planner would put in place of the failed one. Decided like a Plan.
+    Replan {
+        task: usize,
+        replan: Replan,
+    },
 }
 
 /// The Human Operator's choice at a [`Checkpoint`].
@@ -34,6 +49,13 @@ pub enum Decision {
     ApproveTasks(Vec<usize>),
     /// The same Tier runs again with this feedback.
     Reject(String),
+    /// At an Escalation Checkpoint only: the Human Operator fixed the work by hand in the
+    /// worktree, so Arbor checks the fix and commits it.
+    Fixed,
+    /// At an Escalation Checkpoint only: send the failed Task to the Planner.
+    Replan,
+    /// End the run here, keeping the branch and worktree as they are.
+    Stop,
 }
 
 pub trait Operator {
@@ -45,12 +67,17 @@ pub trait Operator {
 }
 
 /// Approves every Checkpoint as it is and answers no questions, for runs nobody is watching, such
-/// as the end-to-end tests and `xtask eval`.
+/// as the end-to-end tests and `xtask eval`. It stops at an Escalation, which has nothing to
+/// approve.
 pub struct ApproveEverything;
 
 impl Operator for ApproveEverything {
-    fn decide<'a>(&'a mut self, _checkpoint: &'a Checkpoint) -> Pending<'a, Decision> {
-        Box::pin(async { Decision::Approve })
+    fn decide<'a>(&'a mut self, checkpoint: &'a Checkpoint) -> Pending<'a, Decision> {
+        let decision = match checkpoint {
+            Checkpoint::Escalation { .. } => Decision::Stop,
+            _ => Decision::Approve,
+        };
+        Box::pin(async move { decision })
     }
 
     fn answer<'a>(&'a mut self, _tier: Tier, _questions: &'a str) -> Pending<'a, Option<String>> {

@@ -508,6 +508,13 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
         Ok(SessionEnd::Finished) => {
             DriverMessage::Ended("Session finished.".to_owned(), Tone::Success)
         }
+        Ok(SessionEnd::NeedsOperator(effect)) if has_modal(&effect) => DriverMessage::Ended(
+            format!(
+                "Stopped at {}. The branch and worktree are kept.",
+                operator_step(&effect)
+            ),
+            Tone::Operator,
+        ),
         Ok(SessionEnd::NeedsOperator(effect)) => DriverMessage::Ended(
             format!(
                 "Stopped: {} needs the Checkpoint modals (#15).",
@@ -544,7 +551,23 @@ fn decision_note(decision: &Decision) -> String {
             )
         }
         Decision::Reject(feedback) => format!("Rejected the Checkpoint: {feedback}"),
+        Decision::Fixed => "Fixed it by hand; checking the fix.".to_owned(),
+        Decision::Replan => "Sent the Task to the Planner.".to_owned(),
+        Decision::Stop => "Stopped at the Checkpoint.".to_owned(),
     }
+}
+
+/// Whether the Session can wait at `effect` in a modal, so a run that ended there was stopped by
+/// the Human Operator.
+fn has_modal(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::ShowPlanCheckpoint
+            | Effect::ShowScaffoldCheckpoint { .. }
+            | Effect::ShowRevisionCheckpoint { .. }
+            | Effect::ShowEscalationCheckpoint { .. }
+            | Effect::ShowReplanCheckpoint { .. }
+    )
 }
 
 /// What the Session waits on the Human Operator for, in a few words.
@@ -569,8 +592,6 @@ fn operator_step(effect: &Effect) -> String {
             if remaining.len() == 1 { "" } else { "s" }
         ),
         Effect::ShowBudgetCheckpoint => "the Budget Checkpoint".to_owned(),
-        Effect::RunReplan { task, .. } => format!("the Replan of Task {}", task + 1),
-        Effect::ResetTask { task } => format!("resetting Task {}", task + 1),
         _ => "the next step".to_owned(),
     }
 }

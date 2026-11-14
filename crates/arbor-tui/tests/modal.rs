@@ -1,5 +1,7 @@
 use arbor_config::ClarificationMode;
-use arbor_core::{Plan, Task, Tier, WorkUnit, WorkUnitId};
+use arbor_core::{
+    FailedAttempt, Plan, Replan, RevisionCause, Task, Tier, WorkUnit, WorkUnitFailure, WorkUnitId,
+};
 use arbor_session::{Checkpoint, Decision};
 use arbor_tui::{KeyOutcome, Modal, SessionView, StatusInfo, UiState, draw};
 use ratatui::Terminal;
@@ -173,4 +175,75 @@ fn the_checkpoints_show_their_assumptions() {
     })));
     assert!(scaffold_screen.contains("Scaffold Checkpoint · Task 2"));
     assert!(scaffold_screen.contains("▲ Assumption: ties keep the first."));
+}
+
+fn escalation(may_replan: bool, failed_fix: Option<&str>) -> Modal {
+    Modal::checkpoint(Checkpoint::Escalation {
+        task: 0,
+        cause: RevisionCause::WorkUnitFailed(WorkUnitFailure {
+            id: WorkUnitId(3),
+            attempts: vec![FailedAttempt {
+                reply: "None".to_owned(),
+                error: "test longest_word_tests::ties ... FAILED".to_owned(),
+            }],
+            missing_response: None,
+        }),
+        may_replan,
+        failed_fix: failed_fix.map(str::to_owned),
+    })
+}
+
+#[test]
+fn an_escalation_is_fixed_by_hand_replanned_or_stopped_but_never_approved() {
+    for (key, decision) in [
+        ('f', Decision::Fixed),
+        ('p', Decision::Replan),
+        ('s', Decision::Stop),
+    ] {
+        let mut ui_state = opened(escalation(true, None));
+        assert_eq!(
+            press(&mut ui_state, KeyCode::Char(key)),
+            KeyOutcome::Decided(decision)
+        );
+    }
+    let mut ui_state = opened(escalation(true, None));
+    for key in [KeyCode::Enter, KeyCode::Char('a'), KeyCode::Char('r')] {
+        assert_eq!(press(&mut ui_state, key), KeyOutcome::Handled);
+    }
+    let escalation_screen = screen(&ui_state);
+    assert!(escalation_screen.contains("Escalation · Task 1"));
+    assert!(escalation_screen.contains("WU-3"));
+    assert!(escalation_screen.contains("longest_word_tests::ties ... FAILED"));
+}
+
+#[test]
+fn a_task_replanned_once_cant_go_to_the_planner_again() {
+    let mut ui_state = opened(escalation(false, Some("error[E0308]: mismatched types")));
+
+    assert_eq!(
+        press(&mut ui_state, KeyCode::Char('p')),
+        KeyOutcome::Handled
+    );
+    let escalation_screen = screen(&ui_state);
+    assert!(escalation_screen.contains("can't go to the Planner again"));
+    assert!(escalation_screen.contains("Your fix didn't pass the Checks:"));
+    assert!(escalation_screen.contains("error[E0308]: mismatched types"));
+}
+
+#[test]
+fn a_replan_is_approved_like_a_plan_with_tasks_dropped() {
+    let replan = Replan {
+        diagnosis: "The Task needed a tokenizer first".to_owned(),
+        tasks: plan().tasks,
+    };
+    let mut ui_state = opened(Modal::checkpoint(Checkpoint::Replan { task: 1, replan }));
+    press(&mut ui_state, KeyCode::Char(' '));
+
+    let replan_screen = screen(&ui_state);
+    assert!(replan_screen.contains("Replan Checkpoint · Task 2"));
+    assert!(replan_screen.contains("The Task needed a tokenizer first"));
+    assert_eq!(
+        press(&mut ui_state, KeyCode::Char('a')),
+        KeyOutcome::Decided(Decision::ApproveTasks(vec![1]))
+    );
 }

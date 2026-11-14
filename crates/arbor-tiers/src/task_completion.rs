@@ -71,6 +71,38 @@ pub fn commit_operator_fix(
     })
 }
 
+/// Runs the Checks a fix by hand must pass at an Escalation Checkpoint, and returns the output of
+/// the first that fails. With a `test_filter`, the fix is of one Work Unit, so it passes the same
+/// Checks a Writer's code does: later Work Units' Placeholders would fail the full Unit Check.
+/// Without one, the fix is of a failed Task, so it passes `checks.unit`.
+pub async fn check_operator_fix(
+    worktree: &Path,
+    checks: &Checks,
+    test_filter: Option<&str>,
+) -> Result<Option<String>, String> {
+    let runs = match test_filter {
+        Some(filter) => vec![
+            (CheckName::Scaffold, checks.scaffold.is_some(), None),
+            (
+                CheckName::UnitFiltered,
+                checks.unit_filtered.is_some(),
+                Some(filter),
+            ),
+        ],
+        None => vec![(CheckName::Unit, checks.unit.is_some(), None)],
+    };
+    for (check, configured, filter) in runs {
+        if !configured {
+            continue;
+        }
+        let check_output = run_check(worktree, checks, check, filter).await?;
+        if check_output.is_error {
+            return Ok(Some(check_output.text));
+        }
+    }
+    Ok(None)
+}
+
 /// Looks for Markers in what the Session branch has committed and returns `MarkersChecked`.
 /// Uncommitted changes don't count, since a push or merge would leave them behind.
 pub fn check_markers(worktree: &Worktree, mainline: &Mainline) -> Result<Event, GitError> {

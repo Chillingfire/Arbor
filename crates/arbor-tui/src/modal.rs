@@ -1,7 +1,8 @@
 //! The modals where the Session waits on the Human Operator: a Checkpoint to approve or reject,
-//! and a Tier's clarifying questions to answer (grilling log Round 1 decision 7).
+//! an Escalation to settle, and a Tier's clarifying questions to answer (grilling log Round 1
+//! decision 7 and Round 3 decision 2).
 
-use arbor_core::{Tier, assumptions_in, is_assumption};
+use arbor_core::{RevisionCause, Task, Tier, assumptions_in, is_assumption};
 use arbor_session::{Checkpoint, Decision};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -29,7 +30,7 @@ pub enum Modal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckpointModal {
     pub checkpoint: Checkpoint,
-    /// At a Plan Checkpoint, the Plan's Tasks in the order they would run, each marked kept or
+    /// At a Plan or Replan Checkpoint, its Tasks in the order they would run, each marked kept or
     /// dropped. Empty at other Checkpoints.
     pub task_rows: Vec<TaskRow>,
     pub selected_row: usize,
@@ -53,12 +54,10 @@ pub struct QuestionsModal {
 
 impl Modal {
     pub fn checkpoint(checkpoint: Checkpoint) -> Self {
-        let task_rows = match &checkpoint {
-            Checkpoint::Plan { plan } => (0..plan.tasks.len())
-                .map(|task| TaskRow { task, kept: true })
-                .collect(),
-            _ => Vec::new(),
-        };
+        let task_count = proposed_tasks(&checkpoint).map_or(0, <[Task]>::len);
+        let task_rows = (0..task_count)
+            .map(|task| TaskRow { task, kept: true })
+            .collect();
         Self::Checkpoint(CheckpointModal {
             checkpoint,
             task_rows,
@@ -96,8 +95,20 @@ impl Modal {
     }
 }
 
+/// The Tasks a Plan or Replan Checkpoint would run.
+fn proposed_tasks(checkpoint: &Checkpoint) -> Option<&[Task]> {
+    match checkpoint {
+        Checkpoint::Plan { plan } => Some(&plan.tasks),
+        Checkpoint::Replan { replan, .. } => Some(&replan.tasks),
+        _ => None,
+    }
+}
+
 impl CheckpointModal {
     fn handle_key(&mut self, key: KeyEvent) -> Option<ModalOutcome> {
+        if let Checkpoint::Escalation { may_replan, .. } = self.checkpoint {
+            return escalation_key(key, may_replan);
+        }
         if let Some(feedback) = &mut self.feedback {
             return match edit_text(feedback, key) {
                 TextEdit::Send => Some(ModalOutcome::Decided(Decision::Reject(
@@ -170,6 +181,19 @@ impl CheckpointModal {
             self.selected_row = target;
         }
     }
+}
+
+/// An Escalation has nothing to approve: the Human Operator fixes the work, sends it to the
+/// Planner, or stops.
+fn escalation_key(key: KeyEvent, may_replan: bool) -> Option<ModalOutcome> {
+    let decision = match key.code {
+        KeyCode::Esc => return Some(ModalOutcome::Hide),
+        KeyCode::Char('f') => Decision::Fixed,
+        KeyCode::Char('p') if may_replan => Decision::Replan,
+        KeyCode::Char('s') => Decision::Stop,
+        _ => return None,
+    };
+    Some(ModalOutcome::Decided(decision))
 }
 
 impl QuestionsModal {
@@ -267,11 +291,24 @@ fn checkpoint_title(checkpoint: &Checkpoint) -> String {
         Checkpoint::Plan { .. } => "Plan Checkpoint".to_owned(),
         Checkpoint::Scaffold { task, .. } => format!("Scaffold Checkpoint · Task {}", task + 1),
         Checkpoint::Revision { task, .. } => format!("Revision Checkpoint · Task {}", task + 1),
+        Checkpoint::Escalation { task, .. } => format!("Escalation · Task {}", task + 1),
+        Checkpoint::Replan { task, .. } => format!("Replan Checkpoint · Task {}", task + 1),
     }
 }
 
 fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> &'static [(&'static str, &'static str)] {
-    if checkpoint_modal.feedback.is_some() {
+    if let Checkpoint::Escalation { may_replan, .. } = checkpoint_modal.checkpoint {
+        if may_replan {
+            &[
+                ("f", "I fixed it"),
+                ("p", "replan"),
+                ("s", "stop"),
+                ("Esc", "look around"),
+            ]
+        } else {
+            &[("f", "I fixed it"), ("s", "stop"), ("Esc", "look around")]
+        }
+    } else if checkpoint_modal.feedback.is_some() {
         TYPING_HINTS
     } else if checkpoint_modal.task_rows.is_empty() {
         &[("a", "approve"), ("r", "reject"), ("Esc", "look around")]
@@ -295,23 +332,24 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
                 lines.push(constraint_line(constraint));
             }
             lines.push(Line::default());
-            lines.push(Line::styled("Tasks", Style::new().fg(MUTED)));
-            for (row_index, row) in checkpoint_modal.task_rows.iter().enumerate() {
-                let title = &plan.tasks[row.task].title;
-                lines.push(task_row_line(
-                    row,
-                    title,
-                    row_index == checkpoint_modal.selected_row,
-                ));
-            }
-            if checkpoint_modal.task_order().is_empty() {
-                lines.push(Line::styled(
-                    "Keep at least one Task to approve the Plan.",
-                    Style::new().fg(YELLOW),
-                ));
-            }
+            lines.extend(task_lines(checkpoint_modal, &plan.tasks, "Plan"));
             lines
         }
+        Checkpoint::Replan { replan, .. } => {
+            let mut lines = vec![labelled("Diagnosis", &replan.diagnosis), Line::default()];
+            lines.push(Line::styled(
+                "These Tasks replace the failed one, which starts again from its first commit.",
+                Style::new().fg(MUTED),
+            ));
+            lines.extend(task_lines(checkpoint_modal, &replan.tasks, "Replan"));
+            lines
+        }
+        Checkpoint::Escalation {
+            cause,
+            may_replan,
+            failed_fix,
+            ..
+        } => escalation_lines(cause, *may_replan, failed_fix.as_deref()),
         Checkpoint::Scaffold { work_units, .. } => {
             let mut lines = vec![Line::styled(
                 "The Skeleton and tests are in the worktree; Esc to look at each Work Unit first.",
@@ -358,6 +396,93 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
         lines.extend(typed_lines(feedback));
     }
     lines
+}
+
+fn task_lines(
+    checkpoint_modal: &CheckpointModal,
+    tasks: &[Task],
+    proposal: &str,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled("Tasks", Style::new().fg(MUTED))];
+    for (row_index, row) in checkpoint_modal.task_rows.iter().enumerate() {
+        lines.push(task_row_line(
+            row,
+            &tasks[row.task].title,
+            row_index == checkpoint_modal.selected_row,
+        ));
+    }
+    if checkpoint_modal.task_order().is_empty() {
+        lines.push(Line::styled(
+            format!("Keep at least one Task to approve the {proposal}."),
+            Style::new().fg(YELLOW),
+        ));
+    }
+    lines
+}
+
+/// Check output is long; its last lines usually say what failed.
+const CHECK_OUTPUT_LINES: usize = 8;
+
+fn escalation_lines(
+    cause: &RevisionCause,
+    may_replan: bool,
+    failed_fix: Option<&str>,
+) -> Vec<Line<'static>> {
+    let mut lines = match cause {
+        RevisionCause::TaskChecksFailed { output } => {
+            let mut lines = vec![Line::raw(
+                "The Task's Unit Check still fails after the Scaffolder's Revisions.",
+            )];
+            lines.extend(output_tail(output));
+            lines
+        }
+        RevisionCause::WorkUnitFailed(failure) => {
+            let mut lines = vec![Line::raw(format!(
+                "The Writer still can't make {} pass after the Scaffolder's Revisions.",
+                failure.id
+            ))];
+            for missing in failure.missing_response.iter().flatten() {
+                lines.push(labelled("Missing", missing));
+            }
+            if let Some(last_attempt) = failure.attempts.last() {
+                lines.extend(output_tail(&last_attempt.error));
+            }
+            lines
+        }
+    };
+    if let Some(check_output) = failed_fix {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            "Your fix didn't pass the Checks:",
+            Style::new().fg(YELLOW),
+        ));
+        lines.extend(output_tail(check_output));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "f  Fix it yourself in the worktree; Arbor runs the Checks and commits the fix.",
+        Style::new().fg(MUTED),
+    ));
+    let replan_line = if may_replan {
+        "p  Send the Task to the Planner, which replaces it with revised Tasks."
+    } else {
+        "   The Task was replanned once already, so it can't go to the Planner again."
+    };
+    lines.push(Line::styled(replan_line, Style::new().fg(MUTED)));
+    lines.push(Line::styled(
+        "s  Stop here, keeping the branch and worktree.",
+        Style::new().fg(MUTED),
+    ));
+    lines
+}
+
+fn output_tail(check_output: &str) -> Vec<Line<'static>> {
+    let output_lines: Vec<&str> = check_output.trim_end().lines().collect();
+    let start = output_lines.len().saturating_sub(CHECK_OUTPUT_LINES);
+    output_lines[start..]
+        .iter()
+        .map(|output_line| Line::styled(format!("  {output_line}"), Style::new().fg(FAINT)))
+        .collect()
 }
 
 fn question_lines(questions_modal: &QuestionsModal) -> Vec<Line<'static>> {

@@ -1,7 +1,8 @@
 //! Runs a Session: applies each event to the pure Session state machine and carries out the
 //! effects it asks for with the real Tiers, real git and the project's real Checks. Checkpoints
 //! and a Tier's clarifying questions go to an [`Operator`]; by default [`ApproveEverything`]. The
-//! run stops where the Operator can't decide yet, such as an escalation Checkpoint.
+//! run stops where the Operator says so, or at a Checkpoint it can't show yet, such as the Marker
+//! Checkpoint.
 
 mod operator;
 
@@ -10,17 +11,19 @@ use std::io::Write;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnitId,
+    Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnit, WorkUnitId,
 };
-use arbor_git::{CommitId, Mainline, Worktree};
+use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
 use arbor_prompts::{
-    Conventions, PlannerInputs, Prompts, RevisionInputs, ScaffolderInputs, WriterInputs,
+    Conventions, PlannerInputs, Prompts, ReplanInputs, RevisionInputs, ScaffolderInputs,
+    WriterInputs,
 };
 use arbor_tiers::{
-    Agent, Attempt, AttemptOutcome, Outcome, PlannerRun, Rejection, RevisionRun, ScaffolderRun,
-    WriterRun, check_markers, commit_revision, commit_skeleton, discard_revision, review_revision,
-    run_task_check, task_diff,
+    Agent, Attempt, AttemptOutcome, Outcome, PlannerRun, Rejection, ReplanRun, RevisionRun,
+    ScaffolderRun, TASK_FIX_SUBJECT, WriterRun, check_markers, check_operator_fix,
+    commit_operator_fix, commit_revision, commit_skeleton, discard_revision, reset_task,
+    review_revision, run_task_check, task_diff,
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
@@ -33,7 +36,8 @@ use serde::de::DeserializeOwned;
 pub enum SessionEnd {
     /// The Session finished: every Task is done and no Markers are left.
     Finished,
-    /// The Session asked for something only the Human Operator can do.
+    /// The Session waits at this Checkpoint: the Operator stopped there, or the Autopilot can't
+    /// show it yet.
     NeedsOperator(Effect),
     /// A Tier ended its run without submitting, by escalating or asking questions.
     TierStopped { tier: Tier, reason: String },
@@ -232,18 +236,35 @@ impl<'a> Autopilot<'a> {
                     step: "reading the Plan",
                     message: "the Session has no Plan".to_owned(),
                 })?;
-                self.checkpoint(Checkpoint::Plan { plan }).await?
+                return self.checkpoint(Checkpoint::Plan { plan }).await;
             }
             Effect::RunScaffolder { task, feedback } => return self.scaffold(task, feedback).await,
             Effect::RunScaffoldChecks { .. } => return self.scaffold_checks().await,
             Effect::ShowScaffoldCheckpoint { task } => {
                 let work_units = self.session.work_units().to_vec();
-                self.checkpoint(Checkpoint::Scaffold { task, work_units })
-                    .await?
+                return self
+                    .checkpoint(Checkpoint::Scaffold { task, work_units })
+                    .await;
             }
             Effect::ShowRevisionCheckpoint { task, revision } => {
-                self.checkpoint(Checkpoint::Revision { task, revision })
-                    .await?
+                return self
+                    .checkpoint(Checkpoint::Revision { task, revision })
+                    .await;
+            }
+            Effect::ShowEscalationCheckpoint { task, cause } => {
+                return self.escalation(task, cause).await;
+            }
+            Effect::RunReplan {
+                task,
+                cause,
+                feedback,
+            } => return self.replan(task, cause, feedback).await,
+            Effect::ShowReplanCheckpoint { task, replan } => {
+                return self.checkpoint(Checkpoint::Replan { task, replan }).await;
+            }
+            Effect::ResetTask { .. } => {
+                let reset = reset_task(self.worktree, self.session.task_commits());
+                vec![reset.map_err(failed("resetting the Task"))?]
             }
             Effect::CommitSkeleton { task } => {
                 let skeleton = commit_skeleton(self.worktree, self.task(task)?);
@@ -291,26 +312,84 @@ impl<'a> Autopilot<'a> {
     }
 
     /// Waits for the Operator's Decision at `checkpoint` and turns it into the events that record it.
-    async fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<Vec<Event>, AutopilotError> {
+    async fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<Step, AutopilotError> {
         let decision = self.operator.decide(&checkpoint).await;
         let decided = match (&checkpoint, decision) {
+            (_, Decision::Stop) => return Ok(self.stopped_here()),
             (_, Decision::Reject(feedback)) => Event::CheckpointRejected { feedback },
             (Checkpoint::Plan { plan }, Decision::Approve) => Event::PlanApproved {
                 task_order: (0..plan.tasks.len()).collect(),
             },
-            (Checkpoint::Plan { .. }, Decision::ApproveTasks(task_order)) => {
-                Event::PlanApproved { task_order }
-            }
+            (Checkpoint::Replan { replan, .. }, Decision::Approve) => Event::PlanApproved {
+                task_order: (0..replan.tasks.len()).collect(),
+            },
+            (
+                Checkpoint::Plan { .. } | Checkpoint::Replan { .. },
+                Decision::ApproveTasks(task_order),
+            ) => Event::PlanApproved { task_order },
             (Checkpoint::Scaffold { .. }, Decision::Approve) => Event::ScaffoldApproved,
             (Checkpoint::Revision { .. }, Decision::Approve) => Event::RevisionApproved,
-            (_, Decision::ApproveTasks(_)) => {
-                return Err(AutopilotError {
-                    step: "reading the Operator's decision",
-                    message: "only a Plan Checkpoint takes a Task order".to_owned(),
-                });
-            }
+            (_, decision) => return Err(misplaced(&checkpoint, &decision)),
         };
-        Ok(vec![decided])
+        Ok(Step::Events(vec![decided]))
+    }
+
+    /// Asks the Operator at the Escalation Checkpoint until they send the Task to the Planner,
+    /// stop, or fix it by hand in a way that passes the Checks.
+    async fn escalation(
+        &mut self,
+        task: usize,
+        cause: RevisionCause,
+    ) -> Result<Step, AutopilotError> {
+        let mut failed_fix = None;
+        loop {
+            let checkpoint = Checkpoint::Escalation {
+                task,
+                cause: cause.clone(),
+                may_replan: self.session.may_replan(task),
+                failed_fix: failed_fix.take(),
+            };
+            match self.operator.decide(&checkpoint).await {
+                Decision::Stop => return Ok(self.stopped_here()),
+                Decision::Replan if self.session.may_replan(task) => {
+                    return Ok(Step::Events(vec![Event::ReplanRequested]));
+                }
+                Decision::Fixed => match self.check_fix(&cause).await? {
+                    Some(check_output) => failed_fix = Some(check_output),
+                    None => return Ok(Step::Events(vec![self.commit_fix()?])),
+                },
+                decision => return Err(misplaced(&checkpoint, &decision)),
+            }
+        }
+    }
+
+    /// The output of the first Check the Human Operator's fix fails, or `None` when it passes.
+    async fn check_fix(&mut self, cause: &RevisionCause) -> Result<Option<String>, AutopilotError> {
+        let test_filter = match cause.work_unit() {
+            Some(id) => Some(self.work_unit(id)?.test_filter),
+            None => None,
+        };
+        self.working(None, None, "Checking your fix".to_owned());
+        check_operator_fix(
+            self.worktree.path(),
+            &self.config.checks,
+            test_filter.as_deref(),
+        )
+        .await
+        .map_err(failed("checking the fix"))
+    }
+
+    fn commit_fix(&self) -> Result<Event, AutopilotError> {
+        let message = CommitMessage::new(TASK_FIX_SUBJECT).map_err(failed("committing the fix"))?;
+        commit_operator_fix(self.worktree, &message).map_err(failed("committing the fix"))
+    }
+
+    /// Ends the run where the Session waits, so a later resume shows the same Checkpoint again.
+    fn stopped_here(&self) -> Step {
+        let waiting = self.session.pending().into_iter().next();
+        Step::End(SessionEnd::NeedsOperator(
+            waiting.unwrap_or(Effect::EndSession),
+        ))
     }
 
     /// Tells the observer the diff of the Work Unit's commit, which is `HEAD` just after it passed.
@@ -371,6 +450,18 @@ impl<'a> Autopilot<'a> {
             step: "reading the Plan",
             message: format!("the Plan has no Task {task}"),
         })
+    }
+
+    fn work_unit(&self, id: WorkUnitId) -> Result<WorkUnit, AutopilotError> {
+        self.session
+            .work_units()
+            .iter()
+            .find(|unit| unit.id == id)
+            .cloned()
+            .ok_or(AutopilotError {
+                step: "reading the Work Unit",
+                message: format!("the Session has no {id:?}"),
+            })
     }
 
     fn tools(&self, toolset: Toolset) -> Tools {
@@ -508,16 +599,7 @@ impl<'a> Autopilot<'a> {
 
     /// Runs the Writer until its Work Unit passes or the Writer gives up.
     async fn write(&mut self, id: WorkUnitId) -> Result<Vec<Event>, AutopilotError> {
-        let work_unit = self
-            .session
-            .work_units()
-            .iter()
-            .find(|unit| unit.id == id)
-            .cloned()
-            .ok_or(AutopilotError {
-                step: "reading the Work Unit",
-                message: format!("the Session has no {id:?}"),
-            })?;
+        let work_unit = self.work_unit(id)?;
         let prompt = self
             .prompts
             .writer(&WriterInputs {
@@ -650,6 +732,68 @@ impl<'a> Autopilot<'a> {
         )
     }
 
+    /// The Planner reworks the failed Task from its failure chain. With `feedback`, the Human
+    /// Operator rejected its last Replan.
+    async fn replan(
+        &mut self,
+        task: usize,
+        cause: RevisionCause,
+        feedback: Option<String>,
+    ) -> Result<Step, AutopilotError> {
+        let request = self.request()?;
+        let plan = self.session.plan().cloned().ok_or(AutopilotError {
+            step: "reading the Plan",
+            message: "the Session has no Plan".to_owned(),
+        })?;
+        let revisions = self.session.revisions().to_vec();
+        let diff = task_diff(self.worktree, self.session.task_commits())
+            .map_err(failed("reading the Task diff"))?;
+        let mode = self.config.clarification_mode;
+        let inputs = PlannerInputs {
+            request: &request,
+            clarification_mode: mode,
+            replan: Some(ReplanInputs {
+                plan: &plan,
+                task,
+                cause: &cause,
+                revisions: &revisions,
+                task_diff: &diff,
+            }),
+        };
+        let prompt = self
+            .prompts
+            .planner(&self.conventions, &inputs)
+            .map_err(failed("rendering the Replan prompt"))?;
+        let role = self.config.roles.planner.clone();
+        let agent = ReplanRun {
+            prompt: &prompt,
+            model: self.model(&role.model).await?,
+            temperature: role.temperature,
+            clarification_mode: mode,
+            tools: self.tools(Toolset::Planner),
+            feedback: feedback.as_deref(),
+        }
+        .start()
+        .map_err(failed("starting the Replan"))?;
+        let again = if feedback.is_some() {
+            " again with feedback"
+        } else {
+            ""
+        };
+        let label = format!("Replanning Task {}{again}", task + 1);
+        Ok(
+            match self
+                .submitted(Tier::Planner, &role.model, &label, agent)
+                .await?
+            {
+                Submitted::Accepted(replan, usage) => {
+                    Step::Events(vec![Event::ReplanSubmitted { replan }, usage])
+                }
+                Submitted::Stopped(end) => Step::End(end),
+            },
+        )
+    }
+
     /// Takes turns until the agent submits or stops. A submission comes with the
     /// `UsageRecorded` of the call that made it, which goes in the log after the submission's own
     /// event.
@@ -707,6 +851,13 @@ impl<'a> Autopilot<'a> {
             self.apply(usage)?;
             return Ok(Submitted::Stopped(SessionEnd::TierStopped { tier, reason }));
         }
+    }
+}
+
+fn misplaced(checkpoint: &Checkpoint, decision: &Decision) -> AutopilotError {
+    AutopilotError {
+        step: "reading the Operator's decision",
+        message: format!("{decision:?} doesn't fit {checkpoint:?}"),
     }
 }
 

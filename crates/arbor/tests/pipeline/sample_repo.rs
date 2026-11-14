@@ -54,6 +54,11 @@ impl SampleRepo {
         fs::read_to_string(self.path().join(file)).unwrap()
     }
 
+    /// Edits the worktree as the Human Operator would by hand.
+    pub fn write(&self, file: &str, file_text: &str) {
+        fs::write(self.path().join(file), file_text).unwrap();
+    }
+
     /// The subjects of the commits the Session branch added, oldest first.
     pub fn session_commit_subjects(&self) -> Vec<String> {
         let range = format!("{}..HEAD", self.start);
