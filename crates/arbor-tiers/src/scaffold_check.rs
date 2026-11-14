@@ -160,7 +160,8 @@ fn marker_problems_keeping(
 }
 
 /// Marker lines in the changed files whose format has no comments, where a Marker would change
-/// what the file means.
+/// what the file means. Marker text inside a string value is data, e.g. a recorded prompt, so it
+/// doesn't count.
 pub fn comment_less_marker_problems(
     changed_files: &[String],
     read_file: impl Fn(&str) -> Option<String>,
@@ -174,7 +175,7 @@ pub fn comment_less_marker_problems(
             file_text
                 .lines()
                 .enumerate()
-                .filter(|(_, line)| is_marker_line(line))
+                .filter(|(_, line)| is_marker_line(line) && !is_inside_string(line))
                 .map(|(index, _)| {
                     format!(
                         "{file}: line {} holds a Marker, but this format has no comments. Remove \
@@ -185,6 +186,25 @@ pub fn comment_less_marker_problems(
         );
     }
     problems
+}
+
+/// Whether the line's Marker text sits inside a `"…"` string, i.e. it is data such as a recorded
+/// prompt, not a stray Marker. A stray one is a bare line like `// ARBOR:BEGIN WU-7`.
+fn is_inside_string(line: &str) -> bool {
+    let Some(marker_start) = line.find("ARBOR:") else {
+        return false;
+    };
+    let mut inside = false;
+    let mut escaped = false;
+    for line_char in line[..marker_start].chars() {
+        match line_char {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => inside = !inside,
+            _ => {}
+        }
+    }
+    inside
 }
 
 pub struct ScaffoldCheck {

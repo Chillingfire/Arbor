@@ -14,9 +14,7 @@ pub const END: &str = "ARBOR:END";
 /// Lines of context a Writer echoes on each side of its code (ADR-0002).
 pub const CONTEXT_LINES: usize = 2;
 
-/// Extensions of file formats without comments, so no Marker can live in them. `.jsonc` and
-/// `.json5` aren't here because they allow comments.
-pub const COMMENT_LESS_EXTENSIONS: &[&str] = &["json"];
+pub use arbor_prompts::COMMENT_LESS_EXTENSIONS;
 
 /// Whether `file`'s format has no comments, judged by its extension.
 pub fn is_comment_less(file: &str) -> bool {

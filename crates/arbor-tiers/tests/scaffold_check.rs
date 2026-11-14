@@ -6,6 +6,8 @@ use arbor_tiers::{
 };
 use tempfile::TempDir;
 
+mod common;
+
 fn unit(id: u32, file: &str) -> WorkUnit {
     WorkUnit {
         id: WorkUnitId(id),
@@ -29,13 +31,7 @@ const SKELETON: &str = "pub fn add(a: i32, b: i32) -> i32 {\n    // ARBOR:BEGIN 
                         todo!()\n    // ARBOR:END WU-1\n}\n";
 
 fn worktree(files: &[(&str, &str)]) -> TempDir {
-    let dir = TempDir::new().unwrap();
-    let init = std::process::Command::new("git")
-        .args(["init", "--quiet"])
-        .current_dir(dir.path())
-        .status()
-        .unwrap();
-    assert!(init.success());
+    let dir = common::git_dir();
     for (path, text) in files {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -203,7 +199,7 @@ fn a_marker_line_in_a_changed_json_file_is_reported_with_its_line() {
 fn only_comment_less_files_are_scanned_for_marker_lines() {
     let files = ["src/lib.rs".to_owned(), "data/Fixture.JSON".to_owned()];
     let problems = comment_less_marker_problems(&files, |_| {
-        Some("[\n  1,\n  \"ARBOR:END WU-4\"\n]\n".to_owned())
+        Some("[\n  1,\n// ARBOR:END WU-4\n]\n".to_owned())
     });
     assert_eq!(
         problems,
@@ -245,4 +241,16 @@ async fn the_scaffold_check_runs_after_a_clean_review() {
         error.starts_with("the Work Units were not accepted."),
         "the check doesn't run while the review fails: {error}"
     );
+}
+
+#[test]
+fn marker_text_inside_a_json_string_is_data_not_a_marker() {
+    let files = ["tests/fixtures/prompt.json".to_owned()];
+    let fixture = r#"{
+  "text": "Bracket it with // ARBOR:BEGIN WU-7 and // ARBOR:END WU-7",
+  "quoted": "a \"quote\" then ARBOR:END WU-7"
+}
+"#;
+    let problems = comment_less_marker_problems(&files, |_| Some(fixture.to_owned()));
+    assert_eq!(problems, Vec::<String>::new());
 }
