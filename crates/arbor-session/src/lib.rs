@@ -1,8 +1,7 @@
 //! Runs a Session: applies each event to the pure Session state machine and carries out the
 //! effects it asks for with the real Tiers, real git and the project's real Checks. Checkpoints
 //! and a Tier's clarifying questions go to an [`Operator`]; by default [`ApproveEverything`]. The
-//! run stops where the Operator says so, or at a Checkpoint it can't show yet, such as the Marker
-//! Checkpoint.
+//! run stops where the Operator says so.
 
 mod operator;
 
@@ -11,7 +10,8 @@ use std::io::Write;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnit, WorkUnitId,
+    Effect, Event, EventLog, Phase, Request, RevisionCause, Session, Task, Tier, Usd, WorkUnit,
+    WorkUnitId,
 };
 use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
@@ -20,8 +20,8 @@ use arbor_prompts::{
     WriterInputs,
 };
 use arbor_tiers::{
-    Agent, Attempt, AttemptOutcome, Outcome, PlannerRun, Rejection, ReplanRun, RevisionRun,
-    ScaffolderRun, TASK_FIX_SUBJECT, WriterRun, check_markers, check_operator_fix,
+    Agent, Attempt, AttemptOutcome, MARKER_FIX_SUBJECT, Outcome, PlannerRun, Rejection, ReplanRun,
+    RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, WriterRun, check_markers, check_operator_fix,
     commit_operator_fix, commit_revision, commit_skeleton, discard_revision, reset_task,
     review_revision, run_task_check, task_diff,
 };
@@ -36,8 +36,9 @@ use serde::de::DeserializeOwned;
 pub enum SessionEnd {
     /// The Session finished: every Task is done and no Markers are left.
     Finished,
-    /// The Session waits at this Checkpoint: the Operator stopped there, or the Autopilot can't
-    /// show it yet.
+    /// The Human Operator stopped the Session at the Budget Checkpoint. The branch is kept.
+    StoppedAtBudget,
+    /// The Operator stopped the run at this Checkpoint, where the Session waits.
     NeedsOperator(Effect),
     /// A Tier ended its run without submitting, by escalating or asking questions.
     TierStopped { tier: Tier, reason: String },
@@ -211,6 +212,9 @@ impl<'a> Autopilot<'a> {
     /// Starts a Session for `request` and carries out its effects until it ends.
     pub async fn run(&mut self, request: Request) -> Result<SessionEnd, AutopilotError> {
         let mut effects = self.apply(Event::SessionStarted { request })?;
+        for setting in self.configured_settings() {
+            effects = self.apply(setting)?;
+        }
         loop {
             let [effect] = effects.as_slice() else {
                 return Err(AutopilotError {
@@ -270,7 +274,7 @@ impl<'a> Autopilot<'a> {
                 let skeleton = commit_skeleton(self.worktree, self.task(task)?);
                 vec![skeleton.map_err(failed("committing the Skeleton"))?]
             }
-            Effect::RunWriter { id } => self.write(id).await?,
+            Effect::RunWriter { id } => return self.write(id).await,
             Effect::CommitWorkUnit { id } => {
                 let commit = self.passed_commit.take().ok_or_else(|| AutopilotError {
                     step: "committing the Work Unit",
@@ -305,8 +309,14 @@ impl<'a> Autopilot<'a> {
                 let markers = check_markers(self.worktree, self.mainline);
                 vec![markers.map_err(failed("checking for Markers"))?]
             }
+            Effect::ShowMarkerCheckpoint { remaining } => {
+                return self.checkpoint(Checkpoint::Markers { remaining }).await;
+            }
+            Effect::ShowBudgetCheckpoint => vec![self.budget_checkpoint().await],
+            Effect::EndSession if *self.session.phase() == Phase::Stopped => {
+                return Ok(Step::End(SessionEnd::StoppedAtBudget));
+            }
             Effect::EndSession => return Ok(Step::End(SessionEnd::Finished)),
-            needs_operator => return Ok(Step::End(SessionEnd::NeedsOperator(needs_operator))),
         };
         Ok(Step::Events(events))
     }
@@ -329,6 +339,13 @@ impl<'a> Autopilot<'a> {
             ) => Event::PlanApproved { task_order },
             (Checkpoint::Scaffold { .. }, Decision::Approve) => Event::ScaffoldApproved,
             (Checkpoint::Revision { .. }, Decision::Approve) => Event::RevisionApproved,
+            (Checkpoint::Markers { .. }, Decision::Approve) => Event::MarkersApproved,
+            (Checkpoint::Markers { .. }, Decision::Fixed) => {
+                let message = CommitMessage::new(MARKER_FIX_SUBJECT)
+                    .map_err(failed("committing the Marker fix"))?;
+                commit_operator_fix(self.worktree, &message)
+                    .map_err(failed("committing the Marker fix"))?
+            }
             (_, decision) => return Err(misplaced(&checkpoint, &decision)),
         };
         Ok(Step::Events(vec![decided]))
@@ -382,6 +399,52 @@ impl<'a> Autopilot<'a> {
     fn commit_fix(&self) -> Result<Event, AutopilotError> {
         let message = CommitMessage::new(TASK_FIX_SUBJECT).map_err(failed("committing the fix"))?;
         commit_operator_fix(self.worktree, &message).map_err(failed("committing the fix"))
+    }
+
+    /// The settings from the config that the event log records, applied as the Session starts.
+    fn configured_settings(&self) -> Vec<Event> {
+        let mut settings = Vec::new();
+        if self.config.revision_checkpoints {
+            settings.push(Event::RevisionCheckpointsSet { enabled: true });
+        }
+        if let Some(budget_cap_usd) = self.config.budget_cap_usd {
+            settings.push(Event::BudgetCapSet {
+                cap: Some(Usd::from_dollars(budget_cap_usd)),
+            });
+        }
+        settings
+    }
+
+    /// Asks the Operator at the Budget Checkpoint until they set a cap above what the Session has
+    /// spent, or stop. Returns `BudgetCapSet` or `SessionStopped`.
+    async fn budget_checkpoint(&mut self) -> Event {
+        let spent = self.session.usage().total().cost;
+        let cap = self.session.budget_cap().unwrap_or(spent);
+        loop {
+            let checkpoint = Checkpoint::Budget { cap, spent };
+            match self.operator.decide(&checkpoint).await {
+                Decision::SetBudgetCap(new_cap)
+                    if new_cap.is_none_or(|new_cap| new_cap > spent) =>
+                {
+                    return Event::BudgetCapSet { cap: new_cap };
+                }
+                Decision::Stop => return Event::SessionStopped,
+                _ => {}
+            }
+        }
+    }
+
+    /// Between two calls of one run, waits at the Budget Checkpoint if the last call reached the
+    /// cap. Once the cap is raised the run goes on where it was; `Some` means the Operator
+    /// stopped.
+    async fn pause_at_budget(&mut self) -> Result<Option<SessionEnd>, AutopilotError> {
+        if !self.session.is_at_budget_checkpoint() {
+            return Ok(None);
+        }
+        let decided = self.budget_checkpoint().await;
+        let stopped = decided == Event::SessionStopped;
+        self.apply(decided)?;
+        Ok(stopped.then_some(SessionEnd::StoppedAtBudget))
     }
 
     /// Ends the run where the Session waits, so a later resume shows the same Checkpoint again.
@@ -598,7 +661,7 @@ impl<'a> Autopilot<'a> {
     }
 
     /// Runs the Writer until its Work Unit passes or the Writer gives up.
-    async fn write(&mut self, id: WorkUnitId) -> Result<Vec<Event>, AutopilotError> {
+    async fn write(&mut self, id: WorkUnitId) -> Result<Step, AutopilotError> {
         let work_unit = self.work_unit(id)?;
         let prompt = self
             .prompts
@@ -658,12 +721,15 @@ impl<'a> Autopilot<'a> {
             if let AttemptOutcome::Passed { commit, .. } = attempt.outcome {
                 // The Writer committed already, so `CommitWorkUnit` only records it.
                 self.passed_commit = Some(commit);
-                return Ok(vec![Event::WorkUnitPassed { id }, usage]);
+                return Ok(Step::Events(vec![Event::WorkUnitPassed { id }, usage]));
             }
             if let Some(failure) = writer.work_unit_failure() {
-                return Ok(vec![Event::WorkUnitFailed { failure }, usage]);
+                return Ok(Step::Events(vec![Event::WorkUnitFailed { failure }, usage]));
             }
             self.apply(usage)?;
+            if let Some(end) = self.pause_at_budget().await? {
+                return Ok(Step::End(end));
+            }
         }
     }
 
@@ -826,6 +892,9 @@ impl<'a> Autopilot<'a> {
             let reason = match turn.outcome {
                 None => {
                     self.apply(usage)?;
+                    if let Some(end) = self.pause_at_budget().await? {
+                        return Ok(Submitted::Stopped(end));
+                    }
                     continue;
                 }
                 Some(Outcome::Submitted(submission)) => {
@@ -839,6 +908,9 @@ impl<'a> Autopilot<'a> {
                             agent
                                 .answer(&answers)
                                 .map_err(failed("passing on the Operator's answers"))?;
+                            if let Some(end) = self.pause_at_budget().await? {
+                                return Ok(Submitted::Stopped(end));
+                            }
                             continue;
                         }
                         None => format!("asked questions: {questions}"),

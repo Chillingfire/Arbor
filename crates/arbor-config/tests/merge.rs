@@ -1,4 +1,4 @@
-use arbor_config::{ClarificationMode, Config, RoleConfig};
+use arbor_config::{ClarificationMode, Config, ConfigError, RoleConfig};
 
 #[test]
 fn defaults_apply_when_neither_file_exists() {
@@ -113,4 +113,30 @@ checkpoints = true
     assert_eq!(config.context_files, ["docs/style.md"]);
     assert_eq!(config.revision_tool_call_budget, 25);
     assert!(config.revision_checkpoints);
+}
+
+#[test]
+fn the_projects_budget_cap_wins_over_the_users() {
+    let config =
+        Config::from_toml(Some("budget_cap_usd = 5.0"), Some("budget_cap_usd = 1.5")).unwrap();
+    assert_eq!(config.budget_cap_usd, Some(1.5));
+
+    let user_only = Config::from_toml(Some("budget_cap_usd = 5.0"), None).unwrap();
+    assert_eq!(user_only.budget_cap_usd, Some(5.0));
+    assert_eq!(Config::default().budget_cap_usd, None);
+}
+
+#[test]
+fn a_budget_cap_that_isnt_a_positive_amount_is_an_error() {
+    for project in [
+        "budget_cap_usd = 0.0",
+        "budget_cap_usd = -2.0",
+        "budget_cap_usd = nan",
+    ] {
+        let err = Config::from_toml(None, Some(project)).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidBudgetCap { .. }),
+            "{project}: {err}"
+        );
+    }
 }

@@ -443,3 +443,54 @@ async fn a_replan_resets_the_task_and_scaffolds_its_replacement() {
     );
     assert_cost(pipeline.session(), Tier::Planner, 0.025 + 0.025);
 }
+
+#[tokio::test]
+async fn markers_left_by_a_fix_by_hand_wait_at_the_marker_checkpoint_until_removed() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation");
+    let operator = ScriptedOperator::new(|checkpoint| {
+        let library = sample.read("src/lib.rs");
+        match checkpoint {
+            // The fix keeps the Region's Markers around the new body.
+            Checkpoint::Escalation { .. } => {
+                let fixed = library.replace("    todo!()\n", HAND_WRITTEN_BODY);
+                sample.write("src/lib.rs", &fixed);
+            }
+            Checkpoint::Markers { .. } => {
+                let unmarked: String = library
+                    .lines()
+                    .filter(|line| !line.contains("ARBOR:"))
+                    .map(|line| format!("{line}\n"))
+                    .collect();
+                sample.write("src/lib.rs", &unmarked);
+            }
+            _ => return Decision::Approve,
+        }
+        Decision::Fixed
+    });
+    let shown = operator.shown.clone();
+    let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
+
+    client.finish();
+    assert_eq!(end, SessionEnd::Finished);
+    assert_replays(&pipeline);
+    let markers = shown
+        .borrow()
+        .iter()
+        .find_map(|checkpoint| match checkpoint {
+            Checkpoint::Markers { remaining } => Some(remaining.clone()),
+            _ => None,
+        })
+        .expect("the Marker Checkpoint opens");
+    assert_eq!(markers.len(), 2, "{markers:?}");
+    assert!(markers.iter().all(|marker| marker.file == "src/lib.rs"));
+    assert!(!sample.read("src/lib.rs").contains("ARBOR:"));
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [
+            SKELETON_COMMIT,
+            arbor_tiers::TASK_FIX_SUBJECT,
+            arbor_tiers::MARKER_FIX_SUBJECT
+        ]
+    );
+}

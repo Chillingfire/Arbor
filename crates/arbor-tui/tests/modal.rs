@@ -1,6 +1,7 @@
 use arbor_config::ClarificationMode;
 use arbor_core::{
-    FailedAttempt, Plan, Replan, RevisionCause, Task, Tier, WorkUnit, WorkUnitFailure, WorkUnitId,
+    FailedAttempt, LeftoverMarker, Plan, Replan, RevisionCause, Task, Tier, Usd, WorkUnit,
+    WorkUnitFailure, WorkUnitId,
 };
 use arbor_session::{Checkpoint, Decision};
 use arbor_tui::{KeyOutcome, Modal, SessionView, StatusInfo, UiState, draw};
@@ -246,4 +247,68 @@ fn a_replan_is_approved_like_a_plan_with_tasks_dropped() {
         press(&mut ui_state, KeyCode::Char('a')),
         KeyOutcome::Decided(Decision::ApproveTasks(vec![1]))
     );
+}
+
+fn budget() -> Modal {
+    Modal::checkpoint(Checkpoint::Budget {
+        cap: Usd::from_dollars(1.0),
+        spent: Usd::from_dollars(1.02),
+    })
+}
+
+#[test]
+fn the_budget_cap_is_raised_to_the_typed_amount_once_it_is_above_the_spend() {
+    let mut ui_state = opened(budget());
+    assert!(screen(&ui_state).contains("New cap  $2.00"));
+    for _ in 0..4 {
+        press(&mut ui_state, KeyCode::Backspace);
+    }
+    type_text(&mut ui_state, "1.01");
+    assert_eq!(press(&mut ui_state, KeyCode::Enter), KeyOutcome::Handled);
+    assert!(screen(&ui_state).contains("Type an amount above $1.0200."));
+
+    press(&mut ui_state, KeyCode::Backspace);
+    type_text(&mut ui_state, "5");
+    assert_eq!(
+        press(&mut ui_state, KeyCode::Enter),
+        KeyOutcome::Decided(Decision::SetBudgetCap(Some(Usd::from_dollars(1.05))))
+    );
+}
+
+#[test]
+fn the_budget_checkpoint_also_lifts_the_cap_or_stops() {
+    let mut uncapped = opened(budget());
+    assert_eq!(
+        press(&mut uncapped, KeyCode::Char('u')),
+        KeyOutcome::Decided(Decision::SetBudgetCap(None))
+    );
+    let mut stopped = opened(budget());
+    assert_eq!(
+        press(&mut stopped, KeyCode::Char('s')),
+        KeyOutcome::Decided(Decision::Stop)
+    );
+}
+
+#[test]
+fn leftover_markers_are_listed_and_approved_removed_or_stopped_at() {
+    let markers = Modal::checkpoint(Checkpoint::Markers {
+        remaining: vec![LeftoverMarker {
+            file: "src/lib.rs".to_owned(),
+            line: 12,
+            text: "// ARBOR:BEGIN WU-4".to_owned(),
+        }],
+    });
+    let marker_screen = screen(&opened(markers.clone()));
+    assert!(marker_screen.contains("Marker Checkpoint"));
+    assert!(marker_screen.contains("src/lib.rs:12  // ARBOR:BEGIN WU-4"));
+    for (key, decision) in [
+        ('a', Decision::Approve),
+        ('f', Decision::Fixed),
+        ('s', Decision::Stop),
+    ] {
+        assert_eq!(
+            press(&mut opened(markers.clone()), KeyCode::Char(key)),
+            KeyOutcome::Decided(decision)
+        );
+    }
 }

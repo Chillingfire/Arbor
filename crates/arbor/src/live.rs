@@ -508,19 +508,16 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
         Ok(SessionEnd::Finished) => {
             DriverMessage::Ended("Session finished.".to_owned(), Tone::Success)
         }
-        Ok(SessionEnd::NeedsOperator(effect)) if has_modal(&effect) => DriverMessage::Ended(
+        Ok(SessionEnd::NeedsOperator(effect)) => DriverMessage::Ended(
             format!(
                 "Stopped at {}. The branch and worktree are kept.",
                 operator_step(&effect)
             ),
             Tone::Operator,
         ),
-        Ok(SessionEnd::NeedsOperator(effect)) => DriverMessage::Ended(
-            format!(
-                "Stopped: {} needs the Checkpoint modals (#15).",
-                operator_step(&effect)
-            ),
-            Tone::Failure,
+        Ok(SessionEnd::StoppedAtBudget) => DriverMessage::Ended(
+            "Stopped at the Budget Cap. The branch and worktree are kept.".to_owned(),
+            Tone::Operator,
         ),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
             DriverMessage::Ended(format!("Stopped: the {tier:?} {reason}"), Tone::Failure)
@@ -554,20 +551,11 @@ fn decision_note(decision: &Decision) -> String {
         Decision::Fixed => "Fixed it by hand; checking the fix.".to_owned(),
         Decision::Replan => "Sent the Task to the Planner.".to_owned(),
         Decision::Stop => "Stopped at the Checkpoint.".to_owned(),
+        Decision::SetBudgetCap(Some(cap)) => {
+            format!("Raised the Budget Cap to ${:.2}.", cap.dollars())
+        }
+        Decision::SetBudgetCap(None) => "Removed the Budget Cap.".to_owned(),
     }
-}
-
-/// Whether the Session can wait at `effect` in a modal, so a run that ended there was stopped by
-/// the Human Operator.
-fn has_modal(effect: &Effect) -> bool {
-    matches!(
-        effect,
-        Effect::ShowPlanCheckpoint
-            | Effect::ShowScaffoldCheckpoint { .. }
-            | Effect::ShowRevisionCheckpoint { .. }
-            | Effect::ShowEscalationCheckpoint { .. }
-            | Effect::ShowReplanCheckpoint { .. }
-    )
 }
 
 /// What the Session waits on the Human Operator for, in a few words.

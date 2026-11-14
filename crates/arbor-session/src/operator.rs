@@ -4,7 +4,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arbor_core::{Plan, Replan, Revision, RevisionCause, Tier, WorkUnit};
+use arbor_core::{LeftoverMarker, Plan, Replan, Revision, RevisionCause, Tier, Usd, WorkUnit};
 
 /// A future the Operator resolves once the Human Operator has decided, e.g. in a TUI modal.
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -38,6 +38,17 @@ pub enum Checkpoint {
         task: usize,
         replan: Replan,
     },
+    /// Markers are left in the branch's commits. The Human Operator approves them as they are,
+    /// e.g. fixtures that only look like Markers, or removes them by hand.
+    Markers {
+        remaining: Vec<LeftoverMarker>,
+    },
+    /// The Session has spent its Budget Cap, so no new model call starts until the Human Operator
+    /// raises the cap or stops.
+    Budget {
+        cap: Usd,
+        spent: Usd,
+    },
 }
 
 /// The Human Operator's choice at a [`Checkpoint`].
@@ -49,13 +60,17 @@ pub enum Decision {
     ApproveTasks(Vec<usize>),
     /// The same Tier runs again with this feedback.
     Reject(String),
-    /// At an Escalation Checkpoint only: the Human Operator fixed the work by hand in the
+    /// At an Escalation or Marker Checkpoint: the Human Operator fixed the work by hand in the
     /// worktree, so Arbor checks the fix and commits it.
     Fixed,
     /// At an Escalation Checkpoint only: send the failed Task to the Planner.
     Replan,
-    /// End the run here, keeping the branch and worktree as they are.
+    /// End the run here, keeping the branch and worktree as they are. At the Budget Checkpoint
+    /// this stops the Session for good.
     Stop,
+    /// At the Budget Checkpoint only: carry on with this cap, which must be above what the
+    /// Session has spent, or with no cap.
+    SetBudgetCap(Option<Usd>),
 }
 
 pub trait Operator {
@@ -67,14 +82,16 @@ pub trait Operator {
 }
 
 /// Approves every Checkpoint as it is and answers no questions, for runs nobody is watching, such
-/// as the end-to-end tests and `xtask eval`. It stops at an Escalation, which has nothing to
-/// approve.
+/// as the end-to-end tests and `xtask eval`. It stops at an Escalation, leftover Markers and the
+/// Budget Cap, which only the Human Operator can settle.
 pub struct ApproveEverything;
 
 impl Operator for ApproveEverything {
     fn decide<'a>(&'a mut self, checkpoint: &'a Checkpoint) -> Pending<'a, Decision> {
         let decision = match checkpoint {
-            Checkpoint::Escalation { .. } => Decision::Stop,
+            Checkpoint::Escalation { .. }
+            | Checkpoint::Markers { .. }
+            | Checkpoint::Budget { .. } => Decision::Stop,
             _ => Decision::Approve,
         };
         Box::pin(async move { decision })

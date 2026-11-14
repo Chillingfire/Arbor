@@ -1,8 +1,8 @@
 //! The modals where the Session waits on the Human Operator: a Checkpoint to approve or reject,
-//! an Escalation to settle, and a Tier's clarifying questions to answer (grilling log Round 1
-//! decision 7 and Round 3 decision 2).
+//! an Escalation, leftover Markers or the Budget Cap to settle, and a Tier's clarifying questions
+//! to answer (grilling log Round 1 decision 7, Round 3 decisions 2 and 9).
 
-use arbor_core::{RevisionCause, Task, Tier, assumptions_in, is_assumption};
+use arbor_core::{LeftoverMarker, RevisionCause, Task, Tier, Usd, assumptions_in, is_assumption};
 use arbor_session::{Checkpoint, Decision};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -36,6 +36,8 @@ pub struct CheckpointModal {
     pub selected_row: usize,
     /// The rejection feedback being typed, or `None` while choosing.
     pub feedback: Option<String>,
+    /// At the Budget Checkpoint, the new cap in dollars as typed. It starts at double the old cap.
+    pub budget_cap_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,11 +60,16 @@ impl Modal {
         let task_rows = (0..task_count)
             .map(|task| TaskRow { task, kept: true })
             .collect();
+        let budget_cap_text = match &checkpoint {
+            Checkpoint::Budget { cap, .. } => format!("{:.2}", cap.dollars() * 2.0),
+            _ => String::new(),
+        };
         Self::Checkpoint(CheckpointModal {
             checkpoint,
             task_rows,
             selected_row: 0,
             feedback: None,
+            budget_cap_text,
         })
     }
 
@@ -106,8 +113,11 @@ fn proposed_tasks(checkpoint: &Checkpoint) -> Option<&[Task]> {
 
 impl CheckpointModal {
     fn handle_key(&mut self, key: KeyEvent) -> Option<ModalOutcome> {
-        if let Checkpoint::Escalation { may_replan, .. } = self.checkpoint {
-            return escalation_key(key, may_replan);
+        match self.checkpoint {
+            Checkpoint::Escalation { may_replan, .. } => return escalation_key(key, may_replan),
+            Checkpoint::Markers { .. } => return markers_key(key),
+            Checkpoint::Budget { spent, .. } => return self.budget_key(key, spent),
+            _ => {}
         }
         if let Some(feedback) = &mut self.feedback {
             return match edit_text(feedback, key) {
@@ -181,6 +191,49 @@ impl CheckpointModal {
             self.selected_row = target;
         }
     }
+}
+
+impl CheckpointModal {
+    /// Digits and a point edit the new cap; Enter sends it once it is above what was spent.
+    fn budget_key(&mut self, key: KeyEvent, spent: Usd) -> Option<ModalOutcome> {
+        let decision = match key.code {
+            KeyCode::Esc => return Some(ModalOutcome::Hide),
+            KeyCode::Char(typed_char) if typed_char.is_ascii_digit() || typed_char == '.' => {
+                self.budget_cap_text.push(typed_char);
+                return None;
+            }
+            KeyCode::Backspace => {
+                self.budget_cap_text.pop();
+                return None;
+            }
+            KeyCode::Enter => {
+                Decision::SetBudgetCap(Some(typed_budget_cap(&self.budget_cap_text, spent)?))
+            }
+            KeyCode::Char('u') => Decision::SetBudgetCap(None),
+            KeyCode::Char('s') => Decision::Stop,
+            _ => return None,
+        };
+        Some(ModalOutcome::Decided(decision))
+    }
+}
+
+/// The typed cap, when it is an amount above what the Session has spent.
+fn typed_budget_cap(budget_cap_text: &str, spent: Usd) -> Option<Usd> {
+    let dollars: f64 = budget_cap_text.parse().ok()?;
+    let cap = Usd::from_dollars(dollars);
+    (dollars.is_finite() && cap > spent).then_some(cap)
+}
+
+/// Markers left in the branch are approved as they are, removed by hand, or the run stops.
+fn markers_key(key: KeyEvent) -> Option<ModalOutcome> {
+    let decision = match key.code {
+        KeyCode::Esc => return Some(ModalOutcome::Hide),
+        KeyCode::Char('a') => Decision::Approve,
+        KeyCode::Char('f') => Decision::Fixed,
+        KeyCode::Char('s') => Decision::Stop,
+        _ => return None,
+    };
+    Some(ModalOutcome::Decided(decision))
 }
 
 /// An Escalation has nothing to approve: the Human Operator fixes the work, sends it to the
@@ -293,11 +346,27 @@ fn checkpoint_title(checkpoint: &Checkpoint) -> String {
         Checkpoint::Revision { task, .. } => format!("Revision Checkpoint · Task {}", task + 1),
         Checkpoint::Escalation { task, .. } => format!("Escalation · Task {}", task + 1),
         Checkpoint::Replan { task, .. } => format!("Replan Checkpoint · Task {}", task + 1),
+        Checkpoint::Markers { .. } => "Marker Checkpoint".to_owned(),
+        Checkpoint::Budget { .. } => "Budget Checkpoint".to_owned(),
     }
 }
 
 fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> &'static [(&'static str, &'static str)] {
-    if let Checkpoint::Escalation { may_replan, .. } = checkpoint_modal.checkpoint {
+    if let Checkpoint::Markers { .. } = checkpoint_modal.checkpoint {
+        &[
+            ("a", "approve as they are"),
+            ("f", "I removed them"),
+            ("s", "stop"),
+            ("Esc", "look around"),
+        ]
+    } else if let Checkpoint::Budget { .. } = checkpoint_modal.checkpoint {
+        &[
+            ("Enter", "raise the cap"),
+            ("u", "no cap"),
+            ("s", "stop"),
+            ("Esc", "look around"),
+        ]
+    } else if let Checkpoint::Escalation { may_replan, .. } = checkpoint_modal.checkpoint {
         if may_replan {
             &[
                 ("f", "I fixed it"),
@@ -350,6 +419,10 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
             failed_fix,
             ..
         } => escalation_lines(cause, *may_replan, failed_fix.as_deref()),
+        Checkpoint::Markers { remaining } => marker_lines(remaining),
+        Checkpoint::Budget { cap, spent } => {
+            budget_lines(*cap, *spent, &checkpoint_modal.budget_cap_text)
+        }
         Checkpoint::Scaffold { work_units, .. } => {
             let mut lines = vec![Line::styled(
                 "The Skeleton and tests are in the worktree; Esc to look at each Work Unit first.",
@@ -473,6 +546,71 @@ fn escalation_lines(
         "s  Stop here, keeping the branch and worktree.",
         Style::new().fg(MUTED),
     ));
+    lines
+}
+
+/// More Markers than this are counted, not listed.
+const LISTED_MARKERS: usize = 12;
+
+fn marker_lines(remaining: &[LeftoverMarker]) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::raw("The branch's commits still hold Markers, so the Session can't finish yet."),
+        Line::default(),
+    ];
+    for marker in remaining.iter().take(LISTED_MARKERS) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}:{}  ", marker.file, marker.line),
+                Style::new().fg(ACCENT),
+            ),
+            Span::styled(marker.text.clone(), Style::new().fg(FAINT)),
+        ]));
+    }
+    if remaining.len() > LISTED_MARKERS {
+        lines.push(Line::styled(
+            format!("…and {} more", remaining.len() - LISTED_MARKERS),
+            Style::new().fg(MUTED),
+        ));
+    }
+    lines.push(Line::default());
+    for option in [
+        "a  Approve them as they are, e.g. fixtures or docs that only look like Markers.",
+        "f  Remove them yourself in the worktree; Arbor commits that and checks again.",
+        "s  Stop here, keeping the branch and worktree.",
+    ] {
+        lines.push(Line::styled(option, Style::new().fg(MUTED)));
+    }
+    lines
+}
+
+fn budget_lines(cap: Usd, spent: Usd, budget_cap_text: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::raw(format!(
+            "The Session has spent ${:.4} of its ${:.2} Budget Cap. No new model call starts \
+             until you raise the cap or stop.",
+            spent.dollars(),
+            cap.dollars()
+        )),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("New cap  $", Style::new().fg(MUTED)),
+            Span::raw(budget_cap_text.to_owned()),
+            Span::styled("▏", Style::new().fg(ACCENT)),
+        ]),
+    ];
+    if typed_budget_cap(budget_cap_text, spent).is_none() {
+        lines.push(Line::styled(
+            format!("Type an amount above ${:.4}.", spent.dollars()),
+            Style::new().fg(YELLOW),
+        ));
+    }
+    lines.push(Line::default());
+    for option in [
+        "u  Carry on with no cap.",
+        "s  Stop the Session here, keeping the branch and worktree.",
+    ] {
+        lines.push(Line::styled(option, Style::new().fg(MUTED)));
+    }
     lines
 }
 

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use arbor_config::Config;
-use arbor_core::{Event, Plan, Request, Task, Tier};
+use arbor_core::{Effect, Event, Phase, Plan, Request, Task, Tier, Usd};
 use arbor_git::{Mainline, Repo, Worktree};
 use arbor_llm::{
     BoxFuture, ChatRequest, ChatResponse, FinishReason, LlmClient, LlmError, Message, ModelInfo,
@@ -401,4 +401,78 @@ async fn an_invalid_task_order_ends_the_run_without_approving() {
             .iter()
             .any(|event| matches!(event, Event::PlanApproved { .. }))
     );
+}
+
+fn read_readme() -> ChatResponse {
+    let call = ToolCall {
+        id: "call-read".to_owned(),
+        name: "read_file".to_owned(),
+        arguments: r#"{"path": "README.md"}"#.to_owned(),
+    };
+    model_reply(None, vec![call])
+}
+
+/// A Session whose Budget Cap is the cost of one scripted call, so the first call reaches it.
+fn capped_config(worktree: &Worktree) -> Config {
+    let mut config = Config::load(None, worktree.path()).unwrap();
+    config.budget_cap_usd = Some(0.001);
+    config
+}
+
+#[tokio::test]
+async fn raising_the_budget_cap_between_two_calls_lets_the_run_go_on() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let model = ScriptedModel::new([read_readme(), submitted_plan(&two_task_plan())]);
+    let raised = Usd::from_dollars(0.01);
+    let operator = ScriptedOperator {
+        decisions: [Decision::SetBudgetCap(Some(raised)), Decision::Stop].into(),
+        ..ScriptedOperator::default()
+    };
+    let shown = operator.shown.clone();
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, capped_config(&worktree))
+        .unwrap()
+        .with_operator(operator);
+
+    let end = autopilot.run(request()).await.unwrap();
+
+    assert_eq!(end, SessionEnd::NeedsOperator(Effect::ShowPlanCheckpoint));
+    let spent = Usd::from_dollars(0.001);
+    assert_eq!(
+        shown.borrow()[0],
+        format!("{:?}", Checkpoint::Budget { cap: spent, spent })
+    );
+    assert!(
+        shown.borrow()[1].starts_with("Plan"),
+        "{:?}",
+        shown.borrow()
+    );
+    assert_eq!(autopilot.session().budget_cap(), Some(raised));
+    let cap_settings: Vec<&Event> = autopilot
+        .events()
+        .iter()
+        .filter(|event| matches!(event, Event::BudgetCapSet { .. }))
+        .collect();
+    assert_eq!(cap_settings.len(), 2, "the config's cap, then the raise");
+}
+
+#[tokio::test]
+async fn stopping_at_the_budget_checkpoint_ends_the_session_before_the_next_call() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let model = ScriptedModel::new([read_readme(), submitted_plan(&two_task_plan())]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::Stop].into(),
+        ..ScriptedOperator::default()
+    };
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, capped_config(&worktree))
+        .unwrap()
+        .with_operator(operator);
+
+    let end = autopilot.run(request()).await.unwrap();
+
+    assert_eq!(end, SessionEnd::StoppedAtBudget);
+    assert_eq!(*autopilot.session().phase(), Phase::Stopped);
+    assert_eq!(autopilot.events().last(), Some(&Event::SessionStopped));
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
 }
