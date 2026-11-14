@@ -1,7 +1,9 @@
-//! Runs a Session without a Human Operator: applies each event to the pure Session state machine
-//! and carries out the effects it asks for with the real Tiers, real git and the project's real
-//! Checks. Every Checkpoint is approved as it is, and the run stops where only the Human Operator
-//! could decide, such as an escalation Checkpoint or a Tier's clarifying questions.
+//! Runs a Session: applies each event to the pure Session state machine and carries out the
+//! effects it asks for with the real Tiers, real git and the project's real Checks. Checkpoints
+//! and a Tier's clarifying questions go to an [`Operator`]; by default [`ApproveEverything`]. The
+//! run stops where the Operator can't decide yet, such as an escalation Checkpoint.
+
+mod operator;
 
 use std::fmt;
 use std::io::Write;
@@ -16,11 +18,13 @@ use arbor_prompts::{
     Conventions, PlannerInputs, Prompts, RevisionInputs, ScaffolderInputs, WriterInputs,
 };
 use arbor_tiers::{
-    Agent, Attempt, AttemptOutcome, Outcome, PlannerRun, RevisionRun, ScaffolderRun, WriterRun,
-    check_markers, commit_revision, commit_skeleton, discard_revision, review_revision,
+    Agent, Attempt, AttemptOutcome, Outcome, PlannerRun, Rejection, RevisionRun, ScaffolderRun,
+    WriterRun, check_markers, commit_revision, commit_skeleton, discard_revision, review_revision,
     run_task_check, task_diff,
 };
+
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
+pub use operator::{ApproveEverything, Checkpoint, Decision, Operator, Pending};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
@@ -113,6 +117,7 @@ pub struct Autopilot<'a> {
     /// Where each event is written before anyone is told of it (ADR-0004).
     event_log: Option<EventLog<Box<dyn Write + 'a>>>,
     observer: Option<Box<dyn FnMut(AutopilotUpdate) + 'a>>,
+    operator: Box<dyn Operator + 'a>,
 }
 
 impl<'a> Autopilot<'a> {
@@ -139,7 +144,14 @@ impl<'a> Autopilot<'a> {
             passed_commit: None,
             event_log: None,
             observer: None,
+            operator: Box::new(ApproveEverything),
         })
+    }
+
+    /// Sends each Checkpoint and each Tier's questions to `operator` instead of approving them.
+    pub fn with_operator(mut self, operator: impl Operator + 'a) -> Self {
+        self.operator = Box::new(operator);
+        self
     }
 
     /// Writes each event to `event_file` as it is applied. A failed write ends the run, since a log
@@ -214,19 +226,25 @@ impl<'a> Autopilot<'a> {
 
     async fn carry_out(&mut self, effect: Effect) -> Result<Step, AutopilotError> {
         let events = match effect {
-            Effect::RunPlanner { feedback: None } => return self.plan().await,
+            Effect::RunPlanner { feedback } => return self.plan(feedback).await,
             Effect::ShowPlanCheckpoint => {
-                let task_count = self.plan_tasks()?.len();
-                vec![Event::PlanApproved {
-                    task_order: (0..task_count).collect(),
-                }]
+                let plan = self.session.plan().cloned().ok_or(AutopilotError {
+                    step: "reading the Plan",
+                    message: "the Session has no Plan".to_owned(),
+                })?;
+                self.checkpoint(Checkpoint::Plan { plan }).await?
             }
-            Effect::RunScaffolder {
-                task,
-                feedback: None,
-            } => return self.scaffold(task).await,
+            Effect::RunScaffolder { task, feedback } => return self.scaffold(task, feedback).await,
             Effect::RunScaffoldChecks { .. } => return self.scaffold_checks().await,
-            Effect::ShowScaffoldCheckpoint { .. } => vec![Event::ScaffoldApproved],
+            Effect::ShowScaffoldCheckpoint { task } => {
+                let work_units = self.session.work_units().to_vec();
+                self.checkpoint(Checkpoint::Scaffold { task, work_units })
+                    .await?
+            }
+            Effect::ShowRevisionCheckpoint { task, revision } => {
+                self.checkpoint(Checkpoint::Revision { task, revision })
+                    .await?
+            }
             Effect::CommitSkeleton { task } => {
                 let skeleton = commit_skeleton(self.worktree, self.task(task)?);
                 vec![skeleton.map_err(failed("committing the Skeleton"))?]
@@ -270,6 +288,29 @@ impl<'a> Autopilot<'a> {
             needs_operator => return Ok(Step::End(SessionEnd::NeedsOperator(needs_operator))),
         };
         Ok(Step::Events(events))
+    }
+
+    /// Waits for the Operator's Decision at `checkpoint` and turns it into the events that record it.
+    async fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<Vec<Event>, AutopilotError> {
+        let decision = self.operator.decide(&checkpoint).await;
+        let decided = match (&checkpoint, decision) {
+            (_, Decision::Reject(feedback)) => Event::CheckpointRejected { feedback },
+            (Checkpoint::Plan { plan }, Decision::Approve) => Event::PlanApproved {
+                task_order: (0..plan.tasks.len()).collect(),
+            },
+            (Checkpoint::Plan { .. }, Decision::ApproveTasks(task_order)) => {
+                Event::PlanApproved { task_order }
+            }
+            (Checkpoint::Scaffold { .. }, Decision::Approve) => Event::ScaffoldApproved,
+            (Checkpoint::Revision { .. }, Decision::Approve) => Event::RevisionApproved,
+            (_, Decision::ApproveTasks(_)) => {
+                return Err(AutopilotError {
+                    step: "reading the Operator's decision",
+                    message: "only a Plan Checkpoint takes a Task order".to_owned(),
+                });
+            }
+        };
+        Ok(vec![decided])
     }
 
     /// Tells the observer the diff of the Work Unit's commit, which is `HEAD` just after it passed.
@@ -336,8 +377,10 @@ impl<'a> Autopilot<'a> {
         Tools::new(self.worktree.path(), toolset, self.config.checks.clone())
     }
 
-    async fn plan(&mut self) -> Result<Step, AutopilotError> {
+    /// With `feedback`, the Planner sees the Plan the Human Operator rejected and why.
+    async fn plan(&mut self, feedback: Option<String>) -> Result<Step, AutopilotError> {
         let request = self.request()?;
+        let rejected_plan = self.session.plan().cloned();
         let mode = self.config.clarification_mode;
         let inputs = PlannerInputs {
             request: &request,
@@ -355,13 +398,21 @@ impl<'a> Autopilot<'a> {
             temperature: role.temperature,
             clarification_mode: mode,
             tools: self.tools(Toolset::Planner),
-            rejected: None,
+            rejected: rejected_plan
+                .as_ref()
+                .zip(feedback.as_deref())
+                .map(|(plan, feedback)| Rejection { plan, feedback }),
         }
         .start()
         .map_err(failed("starting the Planner"))?;
+        let label = if feedback.is_some() {
+            "Planning again with feedback"
+        } else {
+            "Planning"
+        };
         Ok(
             match self
-                .submitted(Tier::Planner, &role.model, "Planning", agent)
+                .submitted(Tier::Planner, &role.model, label, agent)
                 .await?
             {
                 Submitted::Accepted(plan, usage) => {
@@ -372,7 +423,12 @@ impl<'a> Autopilot<'a> {
         )
     }
 
-    async fn scaffold(&mut self, task: usize) -> Result<Step, AutopilotError> {
+    /// With `feedback`, the Scaffolder revises the Skeleton the Human Operator rejected, in place.
+    async fn scaffold(
+        &mut self,
+        task: usize,
+        feedback: Option<String>,
+    ) -> Result<Step, AutopilotError> {
         let request = self.request()?;
         let plan = self.session.plan().cloned().ok_or(AutopilotError {
             step: "reading the Plan",
@@ -402,16 +458,21 @@ impl<'a> Autopilot<'a> {
             checks: self.config.checks.clone(),
             cap_tokens,
             first_id: self.session.next_work_unit_id(),
-            feedback: None,
+            feedback: feedback.as_deref(),
         }
         .start()
         .map_err(failed("starting the Scaffolder"))?;
+        let again = if feedback.is_some() {
+            " again with feedback"
+        } else {
+            ""
+        };
         Ok(
             match self
                 .submitted(
                     Tier::Scaffolder,
                     &role.model,
-                    &format!("Scaffolding Task {}", task + 1),
+                    &format!("Scaffolding Task {}{again}", task + 1),
                     agent,
                 )
                 .await?
@@ -626,7 +687,19 @@ impl<'a> Autopilot<'a> {
                 Some(Outcome::Submitted(submission)) => {
                     return Ok(Submitted::Accepted(submission, usage));
                 }
-                Some(Outcome::Questions(questions)) => format!("asked questions: {questions}"),
+                Some(Outcome::Questions(questions)) => {
+                    let answers = self.operator.answer(tier, &questions).await;
+                    match answers {
+                        Some(answers) => {
+                            self.apply(usage)?;
+                            agent
+                                .answer(&answers)
+                                .map_err(failed("passing on the Operator's answers"))?;
+                            continue;
+                        }
+                        None => format!("asked questions: {questions}"),
+                    }
+                }
                 Some(Outcome::Escalated { failures }) => {
                     format!("escalated after: {}", failures.join("; "))
                 }

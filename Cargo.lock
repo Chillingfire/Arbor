@@ -126,6 +126,7 @@ dependencies = [
  "arbor-tools",
  "schemars",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
