@@ -294,6 +294,19 @@ impl Markers {
         errors
     }
 
+    /// What is wrong with `id`'s Markers. Malformed Markers count only when `id` has no Region,
+    /// since a damaged BEGIN or END may then be its own.
+    pub fn problems_for(&self, id: WorkUnitId) -> Vec<MarkerError> {
+        let has_region = self.regions.iter().any(|region| region.id == id);
+        self.check(&[id])
+            .into_iter()
+            .filter(|error| {
+                error.concerns(id)
+                    || (!has_region && matches!(error, MarkerError::Malformed { .. }))
+            })
+            .collect()
+    }
+
     fn find_close_regions(&mut self) {
         for pair in self.regions.windows(2) {
             let [first, second] = pair else { continue };

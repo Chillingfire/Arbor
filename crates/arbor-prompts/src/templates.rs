@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use arbor_config::ClarificationMode;
 use arbor_core::{
-    FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task,
-    WorkUnit, WorkUnitFailure, WorkUnitId,
+    BrokenRegion, FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound,
+    Snippet, Task, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use minijinja::syntax::SyntaxConfig;
 use minijinja::value::Serde;
@@ -502,6 +502,10 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
                 error: sample_text("error"),
             }],
             missing_response: Some(vec![sample_text("missing item")]),
+            broken_region: Some(BrokenRegion {
+                problem: sample_text("Marker problem"),
+                file_text: sample_text("file text"),
+            }),
         })
     };
     let earlier = [RevisionRound {

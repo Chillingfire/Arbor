@@ -55,6 +55,7 @@ fn retries_used_up(id: u32) -> WorkUnitFailure {
             })
             .collect(),
         missing_response: None,
+        broken_region: None,
     }
 }
 
@@ -63,6 +64,7 @@ fn missing_response(id: u32) -> WorkUnitFailure {
         id: WorkUnitId(id),
         attempts: vec![],
         missing_response: Some(vec!["the Config type".into()]),
+        broken_region: None,
     }
 }
 

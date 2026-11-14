@@ -81,6 +81,15 @@ It sent a Missing Response: its Context Pack lacked
 - {{ item }}
 {% endfor %}
 {% endif %}
+{% if revision.cause.broken_region is defined %}
+No Writer could fill it: its Region is missing or broken. {{ revision.cause.broken_region.problem }}
+
+Mark the Region again with exactly one BEGIN and one END Marker for WU-{{ revision.cause.id }}, with its Placeholder between them. The Work Unit's file as Arbor found it:
+
+````text
+{{ revision.cause.broken_region.file_text }}
+````
+{% endif %}
 {% for attempt in revision.cause.attempts %}
 
 ### Attempt {{ loop.index }}

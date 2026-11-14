@@ -3,8 +3,8 @@ use std::path::Path;
 
 use arbor_config::ClarificationMode;
 use arbor_core::{
-    FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task,
-    WorkUnit, WorkUnitFailure, WorkUnitId,
+    BrokenRegion, FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound,
+    Snippet, Task, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use arbor_llm::{ContentPart, Message};
 use arbor_prompts::{
@@ -287,6 +287,7 @@ fn writer_failed_on_wu_7() -> RevisionCause {
             error: "the Checks failed:\ntest greets ... FAILED".to_owned(),
         }],
         missing_response: Some(vec!["the Greeting type".to_owned()]),
+        broken_region: None,
     })
 }
 
@@ -546,4 +547,49 @@ fn without_failed_commands_the_check_proposal_shows_only_the_detection() {
 Detected a Rust project from Cargo.toml.
 "
     );
+}
+
+#[test]
+fn a_broken_region_revision_sees_the_marker_problem_and_the_file() {
+    let dir = tempdir().unwrap();
+    let cause = RevisionCause::WorkUnitFailed(WorkUnitFailure {
+        id: WorkUnitId(7),
+        attempts: vec![],
+        missing_response: None,
+        broken_region: Some(BrokenRegion {
+            problem: "WU-7: ARBOR:END on line 3 has no ARBOR:BEGIN".to_owned(),
+            file_text: "pub fn greet() {\n    todo!()\n    // ARBOR:END WU-7\n}\n".to_owned(),
+        }),
+    });
+    let units = [work_unit()];
+    let inputs = ScaffolderInputs {
+        request: &request("Greet people"),
+        plan: &plan(),
+        task: &task(),
+        clarification_mode: ClarificationMode::Assume,
+        cap_tokens: 8000,
+        revision: Some(RevisionInputs {
+            cause: &cause,
+            task_diff: "",
+            work_units: &units,
+            earlier: &[],
+        }),
+    };
+
+    let revising = Prompts::builtin()
+        .scaffolder(&conventions(dir.path()), &inputs)
+        .unwrap();
+
+    for expected in [
+        "its Region is missing or broken. WU-7: ARBOR:END on line 3 has no ARBOR:BEGIN",
+        "Mark the Region again with exactly one BEGIN and one END Marker for WU-7",
+        "    // ARBOR:END WU-7\n}",
+    ] {
+        assert!(
+            revising.inputs.contains(expected),
+            "{expected}\n\n{}",
+            revising.inputs
+        );
+    }
+    assert!(!revising.inputs.contains("### Attempt"));
 }

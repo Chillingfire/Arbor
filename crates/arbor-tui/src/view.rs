@@ -366,15 +366,20 @@ pub fn describe(event: &Event) -> String {
         Event::ScaffoldApproved => "Skeleton approved".to_owned(),
         Event::SkeletonCommitted { commit } => committed("Skeleton", commit.as_deref()),
         Event::WorkUnitPassed { id } => format!("{id} passed its Checks"),
-        Event::WorkUnitFailed { failure } => match &failure.missing_response {
-            Some(_) => format!("{} sent a Missing Response", failure.id),
-            None => format!(
-                "{} failed after {} attempt{}",
-                failure.id,
-                failure.attempts.len(),
-                plural(failure.attempts.len())
-            ),
-        },
+        Event::WorkUnitFailed { failure } => {
+            match (&failure.broken_region, &failure.missing_response) {
+                (Some(broken), _) => {
+                    format!("{}'s Region is broken: {}", failure.id, broken.problem)
+                }
+                (None, Some(_)) => format!("{} sent a Missing Response", failure.id),
+                (None, None) => format!(
+                    "{} failed after {} attempt{}",
+                    failure.id,
+                    failure.attempts.len(),
+                    plural(failure.attempts.len())
+                ),
+            }
+        }
         Event::WorkUnitCommitted { id, commit } => format!("{id} committed {}", short(commit)),
         Event::TaskChecksPassed => "Task's Unit Check passed".to_owned(),
         Event::TaskChecksFailed { .. } => "Task's Unit Check failed".to_owned(),

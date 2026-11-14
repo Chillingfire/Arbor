@@ -38,6 +38,19 @@ pub struct WorkUnitFailure {
     /// What the Writer's Missing Response said its Context Pack lacked, one item per entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing_response: Option<Vec<String>>,
+    /// Set when the Work Unit's Region was missing or broken, so no Writer could fill it. Such a
+    /// failure goes straight to a Revision and uses up no Writer attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broken_region: Option<BrokenRegion>,
+}
+
+/// What was wrong with a Work Unit's Markers when the Writer came to fill its Region.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenRegion {
+    /// What is wrong, with 1-based line numbers, and what changed the file when Arbor knows.
+    pub problem: String,
+    /// The Work Unit's file as it was when the problem was found.
+    pub file_text: String,
 }
 
 /// One Writer attempt that failed: its reply and the error it got back.
