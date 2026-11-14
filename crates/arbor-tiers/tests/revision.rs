@@ -429,3 +429,27 @@ fn a_revision_of_a_broken_region_counts_once_the_region_is_marked_again() {
         "{reviewed:?}"
     );
 }
+
+#[test]
+fn an_intact_region_that_was_never_broken_on_disk_isnt_counted_as_mended() {
+    let dir = repo_with_failed_region();
+    let task_work_units = [unit(4, "Add the numbers."), unit(5, "Subtract.")];
+    let intact_file = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    let unchanged = RevisionCause::WorkUnitFailed(WorkUnitFailure {
+        id: WorkUnitId(4),
+        attempts: vec![],
+        missing_response: None,
+        broken_region: Some(BrokenRegion {
+            problem: "WU-4 has more than one Region, on lines 2, 9".into(),
+            file_text: intact_file,
+        }),
+    });
+    let no_op = revision("Mark WU-4 again", &[4]);
+
+    let reviewed = review_revision(dir.path(), &task_work_units, &unchanged, no_op).unwrap();
+
+    assert!(
+        matches!(reviewed, Event::RevisionRejected { .. }),
+        "{reviewed:?}"
+    );
+}

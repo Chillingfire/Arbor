@@ -17,8 +17,8 @@ use arbor_prompts::{
 };
 use arbor_tiers::{
     Agent, Attempt, AttemptError, AttemptOutcome, Outcome, PlannerRun, RevisionRun, ScaffolderRun,
-    Writer, WriterRun, check_markers, commit_revision, commit_skeleton, discard_revision,
-    review_revision, run_task_check, task_diff,
+    Writer, WriterError, WriterRun, check_markers, commit_revision, commit_skeleton,
+    discard_revision, review_revision, run_task_check, task_diff,
 };
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
 use schemars::JsonSchema;
@@ -534,7 +534,9 @@ impl<'a> Autopilot<'a> {
         writer: &Writer,
         err: AttemptError,
     ) -> Result<Vec<Event>, AutopilotError> {
-        let Some(failure) = writer.work_unit_failure() else {
+        let (WriterError::RegionBroken { .. }, Some(failure)) =
+            (&err.error, writer.work_unit_failure())
+        else {
             return Err(failed("running the Writer")(err));
         };
         let mut events = vec![Event::WorkUnitFailed { failure }];

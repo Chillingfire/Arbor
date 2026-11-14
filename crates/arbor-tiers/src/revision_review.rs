@@ -45,17 +45,21 @@ fn mends_broken_region(
     let RevisionCause::WorkUnitFailed(failure) = cause else {
         return false;
     };
-    let file = task_work_units
-        .iter()
-        .find(|unit| unit.id == failure.id)
-        .map(|unit| unit.file.as_str());
-    let file_text = file.and_then(|file| fs::read_to_string(worktree.join(file)).ok());
-    failure.broken_region.is_some()
-        && file_text.is_some_and(|file_text| {
-            Markers::parse(&file_text)
-                .problems_for(failure.id)
-                .is_empty()
-        })
+    let Some(broken) = &failure.broken_region else {
+        return false;
+    };
+    let Some(unit) = task_work_units.iter().find(|unit| unit.id == failure.id) else {
+        return false;
+    };
+    let Ok(file_text) = fs::read_to_string(worktree.join(&unit.file)) else {
+        return false;
+    };
+    // An intact Region that differs from the broken file the Writer found is one the Revision
+    // mended, not one that was intact all along.
+    file_text != broken.file_text
+        && Markers::parse(&file_text)
+            .problems_for(failure.id)
+            .is_empty()
 }
 
 /// A spec change alone doesn't count: Arbor can't tell a tighter spec from a reworded one.

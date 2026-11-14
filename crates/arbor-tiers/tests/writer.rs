@@ -504,7 +504,7 @@ async fn a_duplicated_region_fails_the_work_unit_before_any_model_call() {
 }
 
 #[tokio::test]
-async fn a_check_that_rewrites_a_marker_line_fails_the_work_unit_and_is_named() {
+async fn a_check_that_rewrites_a_marker_line_still_commits_the_code_that_passed() {
     let dir = repo();
     let path = dir.path();
     // A "formatter" Check: checking out this branch's calc.py drops the END Marker.
@@ -522,17 +522,30 @@ async fn a_check_that_rewrites_a_marker_line_fails_the_work_unit_and_is_named() 
     let client = QueueClient::new([text(GOOD)]);
     let mut writer = writer(&dir, formatting);
 
+    let attempt = writer.attempt(&client).await.unwrap();
+
+    assert!(
+        matches!(attempt.outcome, AttemptOutcome::Passed { .. }),
+        "{:?}",
+        attempt.outcome
+    );
+    assert_eq!(file(&dir), FILLED);
+}
+
+#[tokio::test]
+async fn a_deleted_file_is_a_broken_region_found_before_any_model_call() {
+    let dir = repo();
+    fs::remove_file(dir.path().join("calc.py")).unwrap();
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, checks());
+
     let err = writer.attempt(&client).await.unwrap_err();
 
-    assert_eq!(err.usage.map(|usage| usage.input_tokens), Some(100));
+    assert!(matches!(err.error, WriterError::RegionBroken { .. }));
+    assert!(client.requests().is_empty());
     let broken = broken_region_failure(&writer);
-    assert_eq!(
-        broken.problem,
-        "WU-1: ARBOR:BEGIN on line 4 has no ARBOR:END. The Region was intact before the Checks \
-         ran, so a Check changed the file: `scaffold` (`git checkout formatted -- calc.py`), \
-         `unit_filtered` (`git grep --quiet -F {filter} -- calc.py`)"
-    );
-    assert_eq!(file(&dir), SKELETON);
+    assert_eq!(broken.problem, "calc.py is gone");
+    assert_eq!(broken.file_text, "");
 }
 
 #[test]

@@ -341,8 +341,7 @@ impl Writer {
             }
             .into());
         }
-        let path = self.worktree.join(&self.work_unit.file);
-        self.intact_region(&read(&path)?, None)?;
+        self.region_before_call()?;
         let chat_response = client
             .chat(&self.request())
             .await
@@ -399,7 +398,7 @@ impl Writer {
         let unit = &self.work_unit;
         let path = self.worktree.join(&unit.file);
         let original = read(&path)?;
-        let region = self.intact_region(&original, None)?;
+        let region = self.intact_region(&original)?;
         let lines: Vec<&str> = original.lines().collect();
         let before = &lines[region.context_before()];
         let after = &lines[region.context_after(lines.len())];
@@ -415,13 +414,8 @@ impl Writer {
             write(&path, &original)?;
             return Ok(Err(FailureReason::ChecksFailed { output }));
         }
-        let checked = read(&path)?;
-        let after_checks = self.check_names();
-        restoring(
-            &path,
-            &original,
-            self.intact_region(&checked, Some(&after_checks)),
-        )?;
+        // A Check may rewrite the file, e.g. a formatter that moves a Marker line. What is
+        // committed is the spliced code that passed, so that can't break the Region.
         let commit = restoring(&path, &original, self.commit(&path, &spliced))?;
         Ok(Ok(AttemptOutcome::Passed {
             commit,
@@ -431,7 +425,7 @@ impl Writer {
 
     fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {
         let unit = &self.work_unit;
-        let region = self.intact_region(spliced, None)?;
+        let region = self.intact_region(spliced)?;
         write(path, &strip(spliced, &region))?;
         let message = CommitMessage::new(&commit_subject(&unit.spec, &unit.file))?;
         Worktree::open(&self.worktree)?
@@ -485,13 +479,21 @@ impl Writer {
         });
     }
 
+    /// Checks the Region before the model call, so a broken one costs no call. A deleted file is a
+    /// broken Region too.
+    fn region_before_call(&self) -> Result<(), WriterError> {
+        let path = self.worktree.join(&self.work_unit.file);
+        match fs::read_to_string(&path) {
+            Ok(file_text) => self.intact_region(&file_text).map(|_| ()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                Err(self.region_broken(format!("{} is gone", self.work_unit.file), ""))
+            }
+            Err(source) => Err(WriterError::Io { path, source }),
+        }
+    }
+
     /// The Work Unit's Region in `file_text`, or the error saying what is wrong with its Markers.
-    /// `checks_ran` names the Checks that ran since the Region was last seen intact.
-    fn intact_region(
-        &self,
-        file_text: &str,
-        checks_ran: Option<&str>,
-    ) -> Result<Region, WriterError> {
+    fn intact_region(&self, file_text: &str) -> Result<Region, WriterError> {
         let id = self.work_unit.id;
         let markers = Markers::parse(file_text);
         let problems = markers.problems_for(id);
@@ -499,41 +501,23 @@ impl Writer {
             Some(region) if problems.is_empty() => return Ok(*region),
             _ => {}
         }
-        let mut problem = problems
+        let problem = problems
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ");
-        if let Some(checks_ran) = checks_ran {
-            problem.push_str(&format!(
-                ". The Region was intact before the Checks ran, so a Check changed the file: \
-                 {checks_ran}"
-            ));
-        }
-        Err(WriterError::RegionBroken {
+        Err(self.region_broken(problem, file_text))
+    }
+
+    fn region_broken(&self, problem: String, file_text: &str) -> WriterError {
+        WriterError::RegionBroken {
             file: self.work_unit.file.clone(),
-            id,
+            id: self.work_unit.id,
             broken: Box::new(BrokenRegion {
                 problem,
                 file_text: file_text.to_owned(),
             }),
-        })
-    }
-
-    /// The configured Checks a Writer attempt runs, as `name` (`command`).
-    fn check_names(&self) -> String {
-        [
-            (CheckName::Scaffold, &self.checks.scaffold),
-            (CheckName::UnitFiltered, &self.checks.unit_filtered),
-        ]
-        .into_iter()
-        .filter_map(|(check, command)| {
-            command
-                .as_ref()
-                .map(|command| format!("`{}` (`{command}`)", check.name()))
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+        }
     }
 }
 
