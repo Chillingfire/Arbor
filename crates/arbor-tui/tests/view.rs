@@ -1,8 +1,8 @@
 use arbor_config::ClarificationMode;
 use arbor_core::{Event, Plan, Request, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId};
 use arbor_tui::{
-    Focus, KeyOutcome, LogEntry, ReplyOutcome, SessionView, Status, StatusInfo, Tone, TreeNode,
-    UiState, WriterReplyRecord, draw, tree_nodes,
+    Confirmation, Focus, KeyOutcome, LogEntry, ReplyOutcome, SessionView, Status, StatusInfo, Tone,
+    TreeNode, UiState, WriterReplyRecord, draw, tree_nodes,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -202,7 +202,7 @@ fn the_event_log_scrolls_back_and_says_how_much_is_below() {
     assert!(screen.contains("newer below"), "{screen}");
 
     ui_state.handle_key(key(KeyCode::End), &view);
-    assert_eq!(ui_state.log_scrolled_back, 0);
+    assert_eq!(ui_state.log_top, None);
 }
 
 #[test]
@@ -352,4 +352,66 @@ fn a_long_prompt_shows_its_end() {
 
     assert!(screen.contains("❯ …"), "{screen}");
     assert!(screen.contains("middle end  │"), "{screen}");
+}
+
+#[test]
+fn a_scrolled_back_log_holds_still_as_events_arrive() {
+    let events = events();
+    let mut view = SessionView::from_events(&events[..events.len() - 1]).unwrap();
+    let mut ui_state = UiState {
+        focus: Focus::Log,
+        ..UiState::default()
+    };
+    rendered_with(&view, &ui_state);
+    ui_state.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &view);
+    let top_line = |screen: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains("Session    · Session started"))
+            .map(str::to_owned)
+    };
+    let before = top_line(&rendered_with(&view, &ui_state));
+
+    view.apply(events.last().unwrap()).unwrap();
+    view.push_note("A note", Tone::Progress);
+
+    assert!(before.is_some());
+    assert_eq!(top_line(&rendered_with(&view, &ui_state)), before);
+}
+
+#[test]
+fn a_paste_lands_in_the_prompt_whole_and_alt_enter_adds_a_line() {
+    let view = SessionView::from_events(&events()).unwrap();
+    let mut ui_state = UiState::default();
+
+    ui_state.paste("Add x\r\nand quit with q");
+    ui_state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &view);
+    ui_state.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE), &view);
+    let outcome = ui_state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &view);
+
+    assert_eq!(
+        outcome,
+        KeyOutcome::Submitted("Add x\nand quit with q\ny".to_owned())
+    );
+}
+
+#[test]
+fn only_the_confirming_key_confirms_and_any_other_dismisses() {
+    let view = SessionView::from_events(&events()).unwrap();
+    let mut ui_state = UiState {
+        confirming: Some(Confirmation::Quit),
+        ..UiState::default()
+    };
+    assert!(rendered_with(&view, &ui_state).contains("Leave arbor?"));
+
+    let doubled = ui_state.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &view);
+    assert_eq!(doubled, KeyOutcome::Handled);
+    assert_eq!(ui_state.confirming, None);
+
+    ui_state.confirming = Some(Confirmation::Quit);
+    let confirmed = ui_state.handle_key(
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+        &view,
+    );
+    assert_eq!(confirmed, KeyOutcome::Confirmed(Confirmation::Quit));
 }

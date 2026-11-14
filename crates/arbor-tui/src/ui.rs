@@ -19,7 +19,8 @@ use ratatui::widgets::{
 };
 
 use crate::view::{
-    LogEntry, ReplyOutcome, SessionView, Status, Tone, WorkUnitView, phase_task, tokens,
+    LogEntry, ReplyOutcome, SessionView, Status, Tone, WorkUnitView, first_line, phase_task, short,
+    tokens,
 };
 
 const ACCENT: Color = Color::Rgb(122, 162, 247);
@@ -85,6 +86,13 @@ pub enum DetailTab {
     Diff,
 }
 
+/// A key that would stop the running Session, waiting for the Human Operator to confirm it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmation {
+    Quit,
+    Cancel,
+}
+
 /// The TUI's own state, apart from the Session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiState {
@@ -92,8 +100,11 @@ pub struct UiState {
     pub selected: TreeNode,
     pub focus: Focus,
     pub detail_tab: DetailTab,
-    /// How many entries the event log is scrolled back from the newest. 0 follows new events.
-    pub log_scrolled_back: usize,
+    /// The first entry the event log shows once scrolled back, or `None` to follow new events.
+    /// Kept as an entry, not a distance from the newest, so the view holds still as events arrive.
+    pub log_top: Option<usize>,
+    /// How many log entries fit, as last drawn.
+    pub log_rows: Cell<usize>,
     /// What the Human Operator has typed into the prompt.
     pub prompt: String,
     /// Tasks whose Work Units the tree hides.
@@ -102,6 +113,7 @@ pub struct UiState {
     pub detail_scroll: u16,
     /// How far the detail pane can scroll, as last drawn.
     pub detail_scroll_limit: Cell<u16>,
+    pub confirming: Option<Confirmation>,
 }
 
 /// What the screen shows besides the Session's own numbers.
@@ -157,6 +169,9 @@ pub fn draw(frame: &mut Frame, view: &SessionView, ui_state: &UiState, status: &
     draw_log(frame, log_area, view, ui_state);
     draw_prompt(frame, prompt_area, view, ui_state);
     draw_status(frame, status_area, view, status);
+    if let Some(confirmation) = ui_state.confirming {
+        draw_confirmation(frame, confirmation, status);
+    }
 }
 
 fn pane(title: Line<'_>, focused: bool) -> Block<'_> {
@@ -618,12 +633,10 @@ fn transcript_lines(work_unit_view: &WorkUnitView, lines: &mut Vec<Line<'static>
                     }),
                 );
             }
-            ReplyOutcome::Missing(items) => {
-                lines.extend(
-                    items.iter().map(|item| {
-                        Line::styled(format!("needs: {item}"), Style::new().fg(YELLOW))
-                    }),
-                );
+            ReplyOutcome::Missing(missing_items) => {
+                lines.extend(missing_items.iter().map(|missing_item| {
+                    Line::styled(format!("needs: {missing_item}"), Style::new().fg(YELLOW))
+                }));
             }
         }
     }
@@ -639,10 +652,7 @@ fn diff_lines(work_unit_view: &WorkUnitView, lines: &mut Vec<Line<'static>>) {
     };
     lines.push(Line::from(vec![
         label("Commit"),
-        Span::styled(
-            commit.get(..7).unwrap_or(commit).to_owned(),
-            Style::new().fg(YELLOW),
-        ),
+        Span::styled(short(commit).to_owned(), Style::new().fg(YELLOW)),
     ]));
     lines.push(Line::default());
     let Some(diff) = &work_unit_view.diff else {
@@ -698,8 +708,11 @@ fn draw_log(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiStat
     let focused = ui_state.focus == Focus::Log;
     let log = view.log();
     let visible_rows = usize::from(area.height.saturating_sub(2));
+    ui_state.log_rows.set(visible_rows);
     let newest_start = log.len().saturating_sub(visible_rows);
-    let start = newest_start.saturating_sub(ui_state.log_scrolled_back);
+    let start = ui_state
+        .log_top
+        .map_or(newest_start, |top| top.min(newest_start));
     let lines: Vec<Line> = log
         .iter()
         .enumerate()
@@ -761,7 +774,12 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
             ("End", "follow"),
             ("q", "quit"),
         ],
-        Focus::Prompt => &[("Enter", "send"), ("Esc", "leave"), ("Tab", "focus")],
+        Focus::Prompt => &[
+            ("Enter", "send"),
+            ("Alt+Enter", "new line"),
+            ("Esc", "leave"),
+            ("Tab", "focus"),
+        ],
     };
     let mut hint_spans = vec![Span::raw(" ")];
     for (keys, action) in hint_pairs {
@@ -773,7 +791,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     // Border, padding and "❯ " on the left; padding, border and the cursor's cell on the right.
     let text_start = 4;
     let room = usize::from(area.width.saturating_sub(text_start + 3));
-    let shown = typed_tail(&ui_state.prompt, room);
+    let shown = typed_tail(&ui_state.prompt.replace('\n', "↵"), room);
     let shown_width = u16::try_from(shown.chars().count()).unwrap_or(u16::MAX);
     let content = if ui_state.prompt.is_empty() {
         let placeholder = match view.session().phase() {
@@ -896,15 +914,77 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &SessionView, status: &Statu
     frame.render_widget(status_bar, area);
 }
 
-fn first_line(text: &str) -> &str {
-    text.lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-}
-
 /// `anthropic/claude-opus-5.5` as `opus-5.5`, so the status bar fits.
 fn short_model(model: &str) -> &str {
     let name = model.rsplit('/').next().unwrap_or(model);
     name.strip_prefix("claude-").unwrap_or(name)
+}
+
+/// The key that confirms each [`Confirmation`]. It differs from the key that asked, so a stray or
+/// doubled key press can't stop a Session.
+pub fn confirmation_key(confirmation: Confirmation) -> (char, &'static str) {
+    match confirmation {
+        Confirmation::Quit => ('q', "Ctrl+Q"),
+        Confirmation::Cancel => ('x', "Ctrl+X"),
+    }
+}
+
+fn draw_confirmation(frame: &mut Frame, confirmation: Confirmation, status: &StatusInfo) {
+    let (_, keys) = confirmation_key(confirmation);
+    let (title, question, action) = match confirmation {
+        Confirmation::Quit => (
+            "Leave arbor?",
+            "Leaving stops the running Session.",
+            "leave",
+        ),
+        Confirmation::Cancel => (
+            "Stop the Session?",
+            "Stopping ends the running Session.",
+            "stop",
+        ),
+    };
+    let branch = status.branch.as_deref().unwrap_or("the Session branch");
+    let lines = vec![
+        Line::styled(question, Style::new().bold()),
+        Line::default(),
+        Line::raw(format!(
+            "Work already committed stays on {branch}. The model call or Check running now is \
+             lost, and the Work Unit being written goes back to its Placeholder."
+        )),
+        Line::default(),
+        Line::raw(
+            "Markers stay in the Session branch until the Session is resumed or deleted; \
+             the mainline is not touched.",
+        ),
+        Line::default(),
+        Line::from(vec![
+            Span::styled(format!("{keys} "), Style::new().fg(RED).bold()),
+            Span::styled(format!("{action}   "), Style::new().fg(MUTED)),
+            Span::styled("any other key ", Style::new().fg(ACCENT)),
+            Span::styled("keep working", Style::new().fg(MUTED)),
+        ]),
+    ];
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(64);
+    let height = 11.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(RED))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(RED).bold(),
+        ))
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(BAR));
+    frame.render_widget(ratatui::widgets::Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        popup,
+    );
 }

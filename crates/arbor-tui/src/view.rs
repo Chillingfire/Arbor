@@ -251,7 +251,6 @@ impl SessionView {
         }
     }
 
-    /// Adds a Writer reply as it comes, before its outcome event.
     /// Adds a Writer reply to the Work Unit's transcript. A failed one also goes in the event log,
     /// since only the Work Unit's final outcome is an event.
     pub fn record_writer_reply(&mut self, id: WorkUnitId, record: WriterReplyRecord) {
@@ -441,11 +440,11 @@ fn committed(what: &str, commit: Option<&str>) -> String {
     }
 }
 
-fn short(hash: &str) -> &str {
+pub(crate) fn short(hash: &str) -> &str {
     hash.get(..7).unwrap_or(hash)
 }
 
-fn first_line(text: &str) -> &str {
+pub(crate) fn first_line(text: &str) -> &str {
     text.lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("")

@@ -256,7 +256,9 @@ fn main() -> std::io::Result<()> {
                 .get(env_number("PREVIEW_SELECTED"))
                 .copied()
                 .unwrap_or_default(),
-            log_scrolled_back: env_number("PREVIEW_SCROLLED_BACK"),
+            log_top: std::env::var("PREVIEW_LOG_TOP")
+                .ok()
+                .and_then(|top| top.parse().ok()),
             focus: match std::env::var("PREVIEW_FOCUS").as_deref() {
                 Ok("detail") => Focus::Detail,
                 Ok("log") => Focus::Log,
@@ -286,7 +288,10 @@ fn main() -> std::io::Result<()> {
             {
                 match ui_state.handle_key(key, &view) {
                     KeyOutcome::Quit => return Ok(()),
-                    KeyOutcome::Handled | KeyOutcome::Submitted(_) | KeyOutcome::Cancel => {}
+                    KeyOutcome::Handled
+                    | KeyOutcome::Submitted(_)
+                    | KeyOutcome::Cancel
+                    | KeyOutcome::Confirmed(_) => {}
                 }
             }
         }

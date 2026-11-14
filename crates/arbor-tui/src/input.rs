@@ -2,7 +2,9 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::ui::{DetailTab, Focus, TreeNode, UiState, selected_row, tree_nodes};
+use crate::ui::{
+    Confirmation, DetailTab, Focus, TreeNode, UiState, confirmation_key, selected_row, tree_nodes,
+};
 use crate::view::SessionView;
 
 /// What a key asks of the program running the TUI.
@@ -10,17 +12,23 @@ use crate::view::SessionView;
 pub enum KeyOutcome {
     /// The key only changed what the screen shows.
     Handled,
+    /// `q` or Ctrl+C: leave, after a [`Confirmation`] if a Session is running.
     Quit,
     /// The Human Operator pressed Enter in the prompt with this text.
     Submitted(String),
-    /// Esc outside the prompt: stop what is running.
+    /// Esc outside the prompt: stop what is running, after a [`Confirmation`].
     Cancel,
+    /// The Human Operator pressed the confirming key.
+    Confirmed(Confirmation),
 }
 
 const LOG_PAGE: usize = 10;
 
 impl UiState {
     pub fn handle_key(&mut self, key: KeyEvent, view: &SessionView) -> KeyOutcome {
+        if let Some(confirmation) = self.confirming.take() {
+            return confirmed(confirmation, key);
+        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return KeyOutcome::Quit;
         }
@@ -66,6 +74,13 @@ impl UiState {
             KeyCode::Backspace => {
                 self.prompt.pop();
             }
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
+                self.prompt.push('\n');
+            }
             KeyCode::Enter if !self.prompt.trim().is_empty() => {
                 return KeyOutcome::Submitted(std::mem::take(&mut self.prompt));
             }
@@ -73,6 +88,14 @@ impl UiState {
             _ => {}
         }
         KeyOutcome::Handled
+    }
+
+    /// Pasted text goes into the prompt whole, newlines included, so none of it is read as keys.
+    pub fn paste(&mut self, pasted: &str) {
+        self.confirming = None;
+        self.focus = Focus::Prompt;
+        self.prompt
+            .push_str(&pasted.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
     fn select(&mut self, node: TreeNode) {
@@ -133,8 +156,8 @@ impl UiState {
                 self.detail_scroll = self.detail_scroll.saturating_sub(rows);
             }
             Focus::Log => {
-                let oldest = view.log().len().saturating_sub(1);
-                self.log_scrolled_back = self.log_scrolled_back.saturating_add(rows).min(oldest);
+                let top = self.log_top.unwrap_or_else(|| self.newest_log_top(view));
+                self.log_top = Some(top.saturating_sub(rows));
             }
             Focus::Prompt => {}
         }
@@ -150,9 +173,33 @@ impl UiState {
                     .saturating_add(rows)
                     .min(self.detail_scroll_limit.get());
             }
-            Focus::Log => self.log_scrolled_back = self.log_scrolled_back.saturating_sub(rows),
+            Focus::Log => {
+                let newest = self.newest_log_top(view);
+                self.log_top = self
+                    .log_top
+                    .map(|top| top.saturating_add(rows))
+                    .filter(|&top| top < newest);
+            }
             Focus::Prompt => {}
         }
+    }
+}
+
+impl UiState {
+    /// The first entry shown when the log follows new events.
+    fn newest_log_top(&self, view: &SessionView) -> usize {
+        view.log().len().saturating_sub(self.log_rows.get().max(1))
+    }
+}
+
+fn confirmed(confirmation: Confirmation, key: KeyEvent) -> KeyOutcome {
+    let (confirming_char, _) = confirmation_key(confirmation);
+    let is_confirming_key =
+        key.code == KeyCode::Char(confirming_char) && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_confirming_key {
+        KeyOutcome::Confirmed(confirmation)
+    } else {
+        KeyOutcome::Handled
     }
 }
 

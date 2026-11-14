@@ -7,7 +7,9 @@ use std::fmt;
 use std::io::Write;
 
 use arbor_config::Config;
-use arbor_core::{Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnitId};
+use arbor_core::{
+    Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnitId,
+};
 use arbor_git::{CommitId, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
 use arbor_prompts::{

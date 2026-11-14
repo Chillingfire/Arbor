@@ -7,7 +7,10 @@ mod view;
 
 pub use app::App;
 pub use input::KeyOutcome;
-pub use ui::{DetailTab, Focus, RunningActivity, StatusInfo, TreeNode, UiState, draw, tree_nodes};
+pub use ui::{
+    Confirmation, DetailTab, Focus, RunningActivity, StatusInfo, TreeNode, UiState, draw,
+    tree_nodes,
+};
 pub use view::{
     LogEntry, ReplyOutcome, SessionView, Status, TaskView, Tone, WorkUnitView, WriterReplyRecord,
     describe, event_tier, event_tone, phase_task, tokens,

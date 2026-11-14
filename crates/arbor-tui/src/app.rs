@@ -63,6 +63,18 @@ impl App {
         }
     }
 
+    /// Clears the last Session off the screen before a new one starts. Its event log stays in its
+    /// Session folder.
+    pub fn start_over(&mut self) {
+        self.view = SessionView::new();
+        self.ui_state = UiState {
+            focus: self.ui_state.focus,
+            ..UiState::default()
+        };
+        self.status.branch = None;
+        self.activity = None;
+    }
+
     /// The run ended: nothing is running any more.
     pub fn stop_working(&mut self) {
         self.activity = None;
