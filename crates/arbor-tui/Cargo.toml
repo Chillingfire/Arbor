@@ -10,3 +10,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+arbor-config.workspace = true
+arbor-core.workspace = true
+arbor-session.workspace = true
+arbor-tiers.workspace = true
+ratatui = "0.30.2"

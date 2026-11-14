@@ -108,6 +108,8 @@ pub struct Attempt {
 pub enum AttemptOutcome {
     Passed {
         commit: CommitId,
+        /// The reply whose code passed.
+        reply: String,
     },
     Failed(Failure),
     /// Goes to a Revision rather than a retry.
@@ -284,6 +286,16 @@ impl Writer {
 
     /// An `Err` uses up no attempt.
     pub async fn attempt(&mut self, client: &dyn LlmClient) -> Result<Attempt, AttemptError> {
+        self.attempt_reporting_checks(client, &mut || {}).await
+    }
+
+    /// Like [`Self::attempt`], calling `checks_started` when the reply is spliced and its Checks
+    /// start, so a caller can show that the Check, not the model, is running.
+    pub async fn attempt_reporting_checks(
+        &mut self,
+        client: &dyn LlmClient,
+        checks_started: &mut dyn FnMut(),
+    ) -> Result<Attempt, AttemptError> {
         if self.finished {
             return Err(WriterError::Finished.into());
         }
@@ -304,7 +316,9 @@ impl Writer {
             .map_err(WriterError::Llm)?;
         let usage = core_usage(&chat_response.usage);
         let reply = chat_response.content.unwrap_or_default();
-        let handled = self.handle(&reply, &chat_response.finish_reason).await;
+        let handled = self
+            .handle(&reply, &chat_response.finish_reason, checks_started)
+            .await;
         let handled = handled.map_err(|error| AttemptError {
             error,
             usage: Some(usage),
@@ -333,6 +347,7 @@ impl Writer {
         &self,
         reply: &str,
         finish: &FinishReason,
+        checks_started: &mut dyn FnMut(),
     ) -> Result<Result<AttemptOutcome, FailureReason>, WriterError> {
         if *finish == FinishReason::Length {
             return Ok(Err(FailureReason::Rejected(ReplyError::CutOff)));
@@ -364,12 +379,16 @@ impl Writer {
 
         let spliced = splice(&original, &region, &body);
         write(&path, &spliced)?;
+        checks_started();
         if let Some(output) = restoring(&path, &original, self.run_checks().await)? {
             write(&path, &original)?;
             return Ok(Err(FailureReason::ChecksFailed { output }));
         }
         let commit = restoring(&path, &original, self.commit(&path, &spliced))?;
-        Ok(Ok(AttemptOutcome::Passed { commit }))
+        Ok(Ok(AttemptOutcome::Passed {
+            commit,
+            reply: reply.to_owned(),
+        }))
     }
 
     fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {

@@ -124,3 +124,22 @@ fn an_existing_worktree_can_be_opened_again() {
     assert_eq!(opened.branch(), "arbor/resume-me");
     assert_eq!(opened.head().unwrap(), created.head().unwrap());
 }
+
+#[test]
+fn a_linked_worktree_shares_the_main_checkouts_git_directory() {
+    let local = Local::new();
+    let repo = Repo::open(local.path()).unwrap();
+    let mainline = repo.mainline(None).unwrap();
+    let place = tempdir().unwrap();
+    let branch = SessionBranch::for_feature("Add a thing").unwrap();
+    let worktree = repo
+        .create_worktree(&mainline, &branch, &place.path().join("linked"))
+        .unwrap();
+
+    let from_linked = Repo::open(worktree.path()).unwrap().common_dir().unwrap();
+
+    assert_eq!(
+        from_linked.canonicalize().unwrap(),
+        local.path().join(".git").canonicalize().unwrap()
+    );
+}

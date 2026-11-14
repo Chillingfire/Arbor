@@ -4,10 +4,13 @@
 //! could decide, such as an escalation Checkpoint or a Tier's clarifying questions.
 
 use std::fmt;
+use std::io::Write;
 
 use arbor_config::Config;
-use arbor_core::{Effect, Event, Request, RevisionCause, Session, Task, Tier, WorkUnitId};
-use arbor_git::{Mainline, Worktree};
+use arbor_core::{
+    Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnitId,
+};
+use arbor_git::{CommitId, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
 use arbor_prompts::{
     Conventions, PlannerInputs, Prompts, RevisionInputs, ScaffolderInputs, WriterInputs,
@@ -62,6 +65,31 @@ enum Step {
     End(SessionEnd),
 }
 
+/// What the Autopilot tells its observer while it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutopilotUpdate {
+    /// An event, just applied to the Session.
+    Event(Event),
+    /// Work that can take a while has started: a model call or a Check.
+    Working(Activity),
+    /// A Writer attempt finished, before its Work Unit's outcome event.
+    WriterAttempt {
+        work_unit: WorkUnitId,
+        attempt: Attempt,
+    },
+    /// A Work Unit was committed with this diff.
+    Committed { work_unit: WorkUnitId, diff: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Activity {
+    /// The Tier making a model call, or `None` for a Check.
+    pub tier: Option<Tier>,
+    pub model: Option<String>,
+    /// What is running, e.g. `Writing WU-3, attempt 2`.
+    pub label: String,
+}
+
 /// The attempts of one Writer run on a Work Unit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WriterRunAttempts {
@@ -81,7 +109,10 @@ pub struct Autopilot<'a> {
     conventions: Conventions,
     prompts: Prompts,
     /// The commit of the Work Unit that passed and waits for `WorkUnitCommitted`.
-    passed_commit: Option<String>,
+    passed_commit: Option<CommitId>,
+    /// Where each event is written before anyone is told of it (ADR-0004).
+    event_log: Option<EventLog<Box<dyn Write + 'a>>>,
+    observer: Option<Box<dyn FnMut(AutopilotUpdate) + 'a>>,
 }
 
 impl<'a> Autopilot<'a> {
@@ -106,7 +137,36 @@ impl<'a> Autopilot<'a> {
             conventions,
             prompts,
             passed_commit: None,
+            event_log: None,
+            observer: None,
         })
+    }
+
+    /// Writes each event to `event_file` as it is applied. A failed write ends the run, since a log
+    /// with a gap can't be replayed.
+    pub fn log_events_to(mut self, event_file: impl Write + 'a) -> Self {
+        self.event_log = Some(EventLog::new(Box::new(event_file)));
+        self
+    }
+
+    /// Calls `observer` with each update as the run goes, e.g. to show it live.
+    pub fn on_update(mut self, observer: impl FnMut(AutopilotUpdate) + 'a) -> Self {
+        self.observer = Some(Box::new(observer));
+        self
+    }
+
+    fn notify(&mut self, update: AutopilotUpdate) {
+        if let Some(observer) = &mut self.observer {
+            observer(update);
+        }
+    }
+
+    fn working(&mut self, tier: Option<Tier>, model: Option<&str>, label: String) {
+        self.notify(AutopilotUpdate::Working(Activity {
+            tier,
+            model: model.map(str::to_owned),
+            label,
+        }));
     }
 
     pub fn session(&self) -> &Session {
@@ -177,9 +237,14 @@ impl<'a> Autopilot<'a> {
                     step: "committing the Work Unit",
                     message: format!("{id:?} has no passed commit"),
                 })?;
-                vec![Event::WorkUnitCommitted { id, commit }]
+                self.notify_committed(id, &commit);
+                vec![Event::WorkUnitCommitted {
+                    id,
+                    commit: commit.as_str().to_owned(),
+                }]
             }
             Effect::RunTaskChecks { .. } => {
+                self.working(None, None, "Running the Task's Unit Check".to_owned());
                 let task_check = run_task_check(self.worktree.path(), &self.config.checks).await;
                 vec![task_check.map_err(failed("running the Task's Checks"))?]
             }
@@ -193,6 +258,11 @@ impl<'a> Autopilot<'a> {
                 vec![discarded.map_err(failed("discarding the Revision"))?]
             }
             Effect::CheckMarkers => {
+                self.working(
+                    None,
+                    None,
+                    "Checking the branch for leftover Markers".to_owned(),
+                );
                 let markers = check_markers(self.worktree, self.mainline);
                 vec![markers.map_err(failed("checking for Markers"))?]
             }
@@ -202,12 +272,32 @@ impl<'a> Autopilot<'a> {
         Ok(Step::Events(events))
     }
 
+    /// Tells the observer the diff of the Work Unit's commit, which is `HEAD` just after it passed.
+    fn notify_committed(&mut self, work_unit: WorkUnitId, commit: &CommitId) {
+        if self.observer.is_none() {
+            return;
+        }
+        let diff = self
+            .worktree
+            .parent_of(commit)
+            .and_then(|parent| self.worktree.committed_diff_from(&parent));
+        if let Ok(diff) = diff {
+            self.notify(AutopilotUpdate::Committed { work_unit, diff });
+        }
+    }
+
     fn apply(&mut self, event: Event) -> Result<Vec<Effect>, AutopilotError> {
         let effects = self
             .session
             .apply(&event)
             .map_err(failed("applying an event"))?;
-        self.events.push(event);
+        if let Some(event_log) = &mut self.event_log {
+            event_log
+                .append(&event)
+                .map_err(failed("writing the event log"))?;
+        }
+        self.events.push(event.clone());
+        self.notify(AutopilotUpdate::Event(event));
         Ok(effects)
     }
 
@@ -269,12 +359,17 @@ impl<'a> Autopilot<'a> {
         }
         .start()
         .map_err(failed("starting the Planner"))?;
-        Ok(match self.submitted(Tier::Planner, agent).await? {
-            Submitted::Accepted(plan, usage) => {
-                Step::Events(vec![Event::PlanSubmitted { plan }, usage])
-            }
-            Submitted::Stopped(end) => Step::End(end),
-        })
+        Ok(
+            match self
+                .submitted(Tier::Planner, &role.model, "Planning", agent)
+                .await?
+            {
+                Submitted::Accepted(plan, usage) => {
+                    Step::Events(vec![Event::PlanSubmitted { plan }, usage])
+                }
+                Submitted::Stopped(end) => Step::End(end),
+            },
+        )
     }
 
     async fn scaffold(&mut self, task: usize) -> Result<Step, AutopilotError> {
@@ -311,17 +406,28 @@ impl<'a> Autopilot<'a> {
         }
         .start()
         .map_err(failed("starting the Scaffolder"))?;
-        Ok(match self.submitted(Tier::Scaffolder, agent).await? {
-            Submitted::Accepted(submitted, usage) => {
-                let work_units = submitted.work_units;
-                Step::Events(vec![Event::WorkUnitsSubmitted { work_units }, usage])
-            }
-            Submitted::Stopped(end) => Step::End(end),
-        })
+        Ok(
+            match self
+                .submitted(
+                    Tier::Scaffolder,
+                    &role.model,
+                    &format!("Scaffolding Task {}", task + 1),
+                    agent,
+                )
+                .await?
+            {
+                Submitted::Accepted(submitted, usage) => {
+                    let work_units = submitted.work_units;
+                    Step::Events(vec![Event::WorkUnitsSubmitted { work_units }, usage])
+                }
+                Submitted::Stopped(end) => Step::End(end),
+            },
+        )
     }
 
     /// The submission already ran the Scaffold Check; this runs it again for the effect.
     async fn scaffold_checks(&mut self) -> Result<Step, AutopilotError> {
+        self.working(None, None, "Running the Scaffold Check".to_owned());
         let check_output = run_check(
             self.worktree.path(),
             &self.config.checks,
@@ -362,7 +468,7 @@ impl<'a> Autopilot<'a> {
         let mut writer = WriterRun {
             prompt: &prompt,
             work_unit: &work_unit,
-            model: role.model,
+            model: role.model.clone(),
             temperature: role.temperature,
             supported_parameters,
             worktree: self.worktree.path(),
@@ -375,21 +481,40 @@ impl<'a> Autopilot<'a> {
             work_unit: id,
             attempts: Vec::new(),
         });
+        let mut attempt_number = 0;
         loop {
+            attempt_number += 1;
+            self.working(
+                Some(Tier::Writer),
+                Some(&role.model),
+                format!("Writing {id}, attempt {attempt_number}"),
+            );
+            let client = self.client;
+            let mut checks_started = || {
+                self.working(
+                    None,
+                    None,
+                    format!("Checking {id}, attempt {attempt_number}"),
+                );
+            };
             let attempt = writer
-                .attempt(self.client)
+                .attempt_reporting_checks(client, &mut checks_started)
                 .await
                 .map_err(failed("running the Writer"))?;
             if let Some(run) = self.writer_runs.last_mut() {
                 run.attempts.push(attempt.clone());
             }
+            self.notify(AutopilotUpdate::WriterAttempt {
+                work_unit: id,
+                attempt: attempt.clone(),
+            });
             let usage = Event::UsageRecorded {
                 tier: Tier::Writer,
                 usage: attempt.usage,
             };
-            if let AttemptOutcome::Passed { commit } = attempt.outcome {
+            if let AttemptOutcome::Passed { commit, .. } = attempt.outcome {
                 // The Writer committed already, so `CommitWorkUnit` only records it.
-                self.passed_commit = Some(commit.as_str().to_owned());
+                self.passed_commit = Some(commit);
                 return Ok(vec![Event::WorkUnitPassed { id }, usage]);
             }
             if let Some(failure) = writer.work_unit_failure() {
@@ -444,14 +569,24 @@ impl<'a> Autopilot<'a> {
         }
         .start()
         .map_err(failed("starting the Revision"))?;
-        Ok(match self.submitted(Tier::Scaffolder, agent).await? {
-            Submitted::Accepted(revision, usage) => {
-                let reviewed = review_revision(self.worktree.path(), &work_units, revision)
-                    .map_err(failed("reviewing the Revision"))?;
-                Step::Events(vec![reviewed, usage])
-            }
-            Submitted::Stopped(end) => Step::End(end),
-        })
+        Ok(
+            match self
+                .submitted(
+                    Tier::Scaffolder,
+                    &role.model,
+                    &format!("Revising Task {}", task + 1),
+                    agent,
+                )
+                .await?
+            {
+                Submitted::Accepted(revision, usage) => {
+                    let reviewed = review_revision(self.worktree.path(), &work_units, revision)
+                        .map_err(failed("reviewing the Revision"))?;
+                    Step::Events(vec![reviewed, usage])
+                }
+                Submitted::Stopped(end) => Step::End(end),
+            },
+        )
     }
 
     /// Takes turns until the agent submits or stops. A submission comes with the
@@ -460,12 +595,21 @@ impl<'a> Autopilot<'a> {
     async fn submitted<T>(
         &mut self,
         tier: Tier,
+        model: &str,
+        label: &str,
         mut agent: Agent<T>,
     ) -> Result<Submitted<T>, AutopilotError>
     where
         T: DeserializeOwned + JsonSchema + fmt::Debug,
     {
+        let mut turn_number = 0;
         loop {
+            turn_number += 1;
+            self.working(
+                Some(tier),
+                Some(model),
+                format!("{label}, turn {turn_number}"),
+            );
             let turn = agent
                 .turn(self.client)
                 .await

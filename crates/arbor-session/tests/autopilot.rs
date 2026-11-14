@@ -1,14 +1,16 @@
+use std::cell::RefCell;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 
 use arbor_config::Config;
 use arbor_core::{Event, Request, Tier};
-use arbor_git::Repo;
+use arbor_git::{Mainline, Repo, Worktree};
 use arbor_llm::{
     BoxFuture, ChatRequest, ChatResponse, FinishReason, LlmClient, LlmError, ModelInfo, Pricing,
     Usage,
 };
-use arbor_session::{Autopilot, SessionEnd};
+use arbor_session::{Autopilot, AutopilotUpdate, SessionEnd};
 use tempfile::tempdir;
 
 /// A model that answers every call with the same clarifying question and no tool call.
@@ -65,10 +67,9 @@ fn git(dir: &Path, git_args: &[&str]) {
     );
 }
 
-#[tokio::test]
-async fn a_tier_that_asks_questions_ends_the_run_for_the_operator() {
-    let dir = tempdir().unwrap();
-    let checkout = dir.path().join("project");
+/// A one-commit project with a Session worktree beside it, both under `dir`.
+fn session_worktree(dir: &Path) -> (Worktree, Mainline) {
+    let checkout = dir.join("project");
     std::fs::create_dir(&checkout).unwrap();
     std::fs::write(checkout.join("README.md"), "A project.\n").unwrap();
     git(&checkout, &["init", "--quiet", "-b", "main"]);
@@ -81,18 +82,29 @@ async fn a_tier_that_asks_questions_ends_the_run_for_the_operator() {
     let mainline = repo.mainline(None).unwrap();
     let branch = arbor_git::SessionBranch::for_feature("Add a flag").unwrap();
     let worktree = repo
-        .create_worktree(&mainline, &branch, &dir.path().join("session"))
+        .create_worktree(&mainline, &branch, &dir.join("session"))
         .unwrap();
-    let config = Config::load(None, worktree.path()).unwrap();
-    let mut autopilot = Autopilot::new(&worktree, &mainline, &AskingModel, config).unwrap();
+    (worktree, mainline)
+}
 
-    let end = autopilot
-        .run(Request {
-            text: "Add a --verbose flag".to_owned(),
-            issue: None,
-        })
-        .await
-        .unwrap();
+fn request() -> Request {
+    Request {
+        text: "Add a --verbose flag".to_owned(),
+        issue: None,
+    }
+}
+
+#[tokio::test]
+async fn a_tier_that_asks_questions_ends_the_run_for_the_operator() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let updates = RefCell::new(Vec::new());
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &AskingModel, config)
+        .unwrap()
+        .on_update(|update| updates.borrow_mut().push(update));
+
+    let end = autopilot.run(request()).await.unwrap();
 
     let SessionEnd::TierStopped { tier, reason } = end else {
         panic!("expected the Planner to stop, got {end:?}");
@@ -109,6 +121,52 @@ async fn a_tier_that_asks_questions_ends_the_run_for_the_operator() {
             }
         ]
     ));
+    let working: Vec<String> = updates
+        .borrow()
+        .iter()
+        .filter_map(|update| match update {
+            AutopilotUpdate::Working(activity) => Some(activity.label.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(working, ["Planning, turn 1"]);
+    let streamed_events = updates
+        .borrow()
+        .iter()
+        .filter(|update| matches!(update, AutopilotUpdate::Event(_)))
+        .count();
+    assert_eq!(streamed_events, autopilot.events().len());
     let planner_cost = autopilot.session().usage().tier(Tier::Planner).cost;
     assert_eq!(planner_cost.dollars(), 0.0055);
+}
+
+/// An event log whose disk is full.
+struct FullDisk;
+
+impl Write for FullDisk {
+    fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("no space left on device"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_failed_event_log_write_ends_the_run_before_the_event_is_shown() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let updates = RefCell::new(Vec::new());
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &AskingModel, config)
+        .unwrap()
+        .log_events_to(FullDisk)
+        .on_update(|update| updates.borrow_mut().push(update));
+
+    let err = autopilot.run(request()).await.unwrap_err();
+
+    assert_eq!(err.step, "writing the event log");
+    assert!(err.message.contains("no space left"), "{err}");
+    assert!(updates.borrow().is_empty());
 }
