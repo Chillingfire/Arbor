@@ -1,0 +1,1446 @@
+{
+  "exchanges": [
+    {
+      "request": {
+        "model": "anthropic/claude-opus-5.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "text": "# Role\n\nYou are the Planner, the highest of Arbor's three Tiers (Planner, Scaffolder, Writer). You turn the Human Operator's Request into a Plan: a goal, constraints, and an ordered list of Tasks. You never write code. After the Human Operator approves your Plan at a Checkpoint, the Scaffolder turns each Task into a Skeleton, tests and Work Units, and Writers fill the Work Units.\n\n# Inputs\n\n- The project's Conventions, when it has any, follow these instructions. They are the project's own guidance; follow them where they apply.\n- The Request comes next. If the Human Operator rejected an earlier Plan, it follows the Request with their feedback.\n- You can explore the repository with read-only tools: `read_file`, `list_dir`, `glob` and `grep`.\n\n# Output contract\n\nFinish by calling `submit_plan` exactly once with the Plan. If its arguments don't parse or the Plan is invalid, the error comes back to you as the tool result; fix them and call it again. After 3 failed attempts the run is handed to the Human Operator.\n\nWhen the inputs end with a Replan section, a Task of the approved Plan failed even after the Scaffolder's Revisions, and the Human Operator sent it back to you; this run is a Replan instead. Read its failure chain and the code, then call `submit_replan` exactly once with your diagnosis and the Task, or several, that replace the failed one. The worktree is reset to where the failed Task started, so the new Tasks start from there. The other Tasks of the Plan stay as they are. A Task gets only one Replan; if the new Tasks fail too, the Human Operator takes over.\n\n# Rules\n\n- Each Task must leave the build green and its tests passing when it is finished.\n- Aim for 1 to 6 Tasks. If the Request needs more, say so in the Plan's constraints and suggest how to split the Request.\n- Name the files and modules each Task touches, but never write code.\n- Read the code before you plan. Don't guess at structure you can check.\n- Clarification Mode is Ask: whenever something about the Request is unclear, ask the Human Operator before you submit. Put all your questions in one plain-text reply instead of calling `submit_plan`; the answers come back to you.\n",
+                "cache": false
+              },
+              {
+                "text": "# Conventions\n\n<file path=\"README.md\">\n# wordy\n\nSmall helpers for working with the words in a text. Every function takes `&str` and splits words\non whitespace. Tests sit in a `#[cfg(test)]` module next to the code they test.\n</file>\n",
+                "cache": true
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "# Request\n\nAdd a `longest_word` function to wordy that returns the longest word in a text, or `None` when the text has no words. When several words are equally long, return the first.\n",
+                "cache": false
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "Read a text file with numbered lines, at most 400 lines at a time. Use offset and limit to page through longer files.",
+            "parameters": {
+              "properties": {
+                "limit": {
+                  "description": "How many lines to read, at most 400. Defaults to 400.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "The 1-based line to start at. Defaults to 1.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "list_dir",
+            "description": "List a directory's entries. Directories end with /. Files excluded by .gitignore are left out.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "glob",
+            "description": "Find files whose paths match a glob, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A glob such as `**/*.rs`, matched against paths relative to `path`. `*` doesn't cross `/`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "grep",
+            "description": "Search file contents for a regular expression. Returns path:line: text for each matching line, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "case_insensitive": {
+                  "description": "Ignore case. Defaults to false.",
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "glob": {
+                  "description": "Only search files whose path matches this glob, e.g. `*.rs`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "File or directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A regular expression (Rust `regex` syntax), matched against each line.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "submit_plan",
+            "description": "Submit the Plan for the Request: its goal, constraints, and ordered Tasks. Call it exactly once, when the Plan is complete.",
+            "parameters": {
+              "$defs": {
+                "Task": {
+                  "description": "One step of a Plan that leaves the build green and its tests passing.",
+                  "properties": {
+                    "description": {
+                      "description": "What the Task changes and why, naming the files and modules it touches. Never code.",
+                      "type": "string"
+                    },
+                    "title": {
+                      "description": "A short name for the Task.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "description"
+                  ],
+                  "type": "object"
+                }
+              },
+              "description": "The Planner's output for a Request.",
+              "properties": {
+                "constraints": {
+                  "description": "Limits every Task must respect. Assumptions made in Clarification Mode Assume are recorded\nhere, each starting with `Assumption:`.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "goal": {
+                  "description": "What the Request should achieve, in a sentence or two.",
+                  "type": "string"
+                },
+                "tasks": {
+                  "description": "In the order they will run.",
+                  "items": {
+                    "$ref": "#/$defs/Task"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "goal",
+                "constraints",
+                "tasks"
+              ],
+              "type": "object"
+            }
+          }
+        ],
+        "tool_choice": "Auto",
+        "temperature": 0.5,
+        "seed": null,
+        "max_tokens": null,
+        "require_parameters": false,
+        "cache_transcript": true
+      },
+      "response": {
+        "Ok": {
+          "id": "gen-claude-opus-5.5",
+          "model": "anthropic/claude-opus-5.5",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call-0",
+              "name": "submit_plan",
+              "arguments": "{\"goal\": \"wordy can find the longest word in a text.\", \"constraints\": [\"Keep the public API to plain functions that take `&str`.\"], \"tasks\": [{\"title\": \"Add longest_word\", \"description\": \"Add `pub fn longest_word(text: &str) -> Option<&str>` to src/lib.rs. It returns the first of the longest whitespace-separated words, or `None` for text without words. Test it in its own test module.\"}]}"
+            }
+          ],
+          "finish_reason": "ToolCalls",
+          "usage": {
+            "input_tokens": 3000,
+            "output_tokens": 400,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0.025
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "model": "anthropic/claude-sonnet-5.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "text": "# Role\n\nYou are the Scaffolder, the middle of Arbor's three Tiers (Planner, Scaffolder, Writer). You turn one Task of an approved Plan into a Skeleton, its tests, and Work Units. A Writer, a cheap model with no tools, then fills each Work Unit's Region using only the Context Pack you give it.\n\n# Inputs\n\n- The project's Conventions, when it has any, follow these instructions. They are the project's own guidance; follow them where they apply.\n- Then come the Request, the Plan, and the Task to scaffold.\n- You can read the repository with `read_file`, `list_dir`, `glob` and `grep`, change it with `write_file` and `edit_file`, and run the project's Checks with `run_checks`.\n\n# Output contract\n\n1. Write the Skeleton and the tests into the worktree with `write_file` and `edit_file`.\n2. Run the Scaffold Check with `run_checks` and fix the Skeleton until it builds.\n3. Finish by calling `submit_work_units` exactly once. Each Work Unit names its file, a spec, its Context Pack, acceptance criteria, and a test filter. Arbor then checks every Work Unit: its estimated size against the Writer Cap (with a 10% margin), its Markers, and finally the Scaffold Check. Any problem comes back to you as the tool result, with each Work Unit's size when one is over the cap; trim or split it, fix the rest, then call it again. If the arguments don't parse, that error comes back the same way. After 3 failed attempts the run is handed to the Human Operator.\n\nWhen the inputs end with a Revision section, the Task's Work Units were already written or tried and something failed; this run is a Revision instead:\n\n1. Diagnose why from what the Revision section shows, reading the code as it is now.\n2. Each Work Unit's Markers were removed when it passed. For every Work Unit you revise, put a Marker pair back around its Region, with a Placeholder between them, and fix the Skeleton or tests if they are at fault. A Work Unit whose Writer failed still has its Markers.\n3. Finish by calling `submit_revision` exactly once with your diagnosis and only the Work Units to write again, each one complete. A revised Work Unit keeps its ID. A new one, e.g. from a split, is numbered from the ID Arbor gives you. Arbor checks them as it checks `submit_work_units`.\n\nA Revision must make a real change: more or better Context Pack snippets, tighter acceptance criteria, a fixed Skeleton, types or tests, or a split into smaller Work Units. One that only rewords the spec is rejected and still counts toward the limit of 2 Revisions. A later Revision must take a different approach from the earlier ones. When a single Work Unit failed, revise only that Work Unit, or split it, in its own file. If the fix needs a signature or type that other Work Units depend on, don't make it: call `submit_revision` with `shared_change` naming the change and no Work Units, and the failure goes to the Planner.\n\n# Rules\n\n- The Writer Cap is 8000 tokens: the most a Writer may be given for one Work Unit. A Work Unit over the cap fails the Scaffold Check. Nothing is cut silently.\n- A Work Unit is one function or Region. Aim for at most about 60 lines of Writer output, and split anything bigger.\n- Write every type, signature and import yourself, so Writers only fill bodies.\n- Bracket each Region with Marker comments carrying its Work Unit ID, in the language's comment syntax, e.g. `// ARBOR:BEGIN WU-7` and `// ARBOR:END WU-7`. Put each Marker on a line of its own. Each Work Unit gets exactly one pair, in its own file only; Regions never nest or overlap. The Placeholder between them must compile, using the language's idiom (e.g. `todo!()` in Rust).\n- Write real, complete tests now. Keep them compact and table-driven where the language allows. Writers never write or edit tests.\n- Give each Work Unit a test filter that selects only its tests.\n- The Writer returns its code between the 2 lines just above the BEGIN Marker and the 2 lines just below the END Marker, copied unchanged, so every Context Pack must show the Region with its Markers and those lines. Leave at least 2 lines between one Region's END Marker and the next Region's BEGIN Marker: an earlier Writer removes its Markers, so a Marker in another Region's context lines would no longer match the file.\n- Assume the Writer knows nothing beyond its Context Pack. Mark the snippets it can't work without as `required`, and the rest as `helpful`. List the `required` snippets first; they are packed first.\n- Clarification Mode is Ask: whenever something about the Task is unclear, ask the Human Operator before you submit. Put all your questions in one plain-text reply instead of calling `submit_work_units`; the answers come back to you.\n",
+                "cache": false
+              },
+              {
+                "text": "# Conventions\n\n<file path=\"README.md\">\n# wordy\n\nSmall helpers for working with the words in a text. Every function takes `&str` and splits words\non whitespace. Tests sit in a `#[cfg(test)]` module next to the code they test.\n</file>\n",
+                "cache": true
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "# Request\n\nAdd a `longest_word` function to wordy that returns the longest word in a text, or `None` when the text has no words. When several words are equally long, return the first.\n\n# Plan\n\nGoal: wordy can find the longest word in a text.\n\nConstraints:\n- Keep the public API to plain functions that take `&str`.\n\nTasks:\n1. Add longest_word\n\n# Task to scaffold: Add longest_word\n\nAdd `pub fn longest_word(text: &str) -> Option<&str>` to src/lib.rs. It returns the first of the longest whitespace-separated words, or `None` for text without words. Test it in its own test module.\n",
+                "cache": false
+              },
+              {
+                "text": "Number this Task's Work Units from WU-1 upwards; lower IDs belong to earlier Tasks.",
+                "cache": false
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "Read a text file with numbered lines, at most 400 lines at a time. Use offset and limit to page through longer files.",
+            "parameters": {
+              "properties": {
+                "limit": {
+                  "description": "How many lines to read, at most 400. Defaults to 400.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "The 1-based line to start at. Defaults to 1.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "list_dir",
+            "description": "List a directory's entries. Directories end with /. Files excluded by .gitignore are left out.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "glob",
+            "description": "Find files whose paths match a glob, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A glob such as `**/*.rs`, matched against paths relative to `path`. `*` doesn't cross `/`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "grep",
+            "description": "Search file contents for a regular expression. Returns path:line: text for each matching line, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "case_insensitive": {
+                  "description": "Ignore case. Defaults to false.",
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "glob": {
+                  "description": "Only search files whose path matches this glob, e.g. `*.rs`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "File or directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A regular expression (Rust `regex` syntax), matched against each line.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "write_file",
+            "description": "Create or overwrite a file in the worktree with the given content.",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "The whole new content of the file.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Path relative to the worktree root. Missing parent directories are created.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "edit_file",
+            "description": "Replace one exact snippet in a file. The snippet must occur exactly once.",
+            "parameters": {
+              "properties": {
+                "new_string": {
+                  "description": "The text to put in its place.",
+                  "type": "string"
+                },
+                "old_string": {
+                  "description": "The exact text to replace. It must occur exactly once in the file.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "old_string",
+                "new_string"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "run_checks",
+            "description": "Run one of the project's configured checks in the worktree and return its exit code and output. scaffold verifies the build; unit runs all tests; unit_filtered runs the tests matching filter.",
+            "parameters": {
+              "$defs": {
+                "CheckName": {
+                  "oneOf": [
+                    {
+                      "const": "scaffold",
+                      "description": "Verifies that the Skeleton builds.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unit",
+                      "description": "Builds and runs all tests.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unit_filtered",
+                      "description": "Builds and runs only the tests that match `filter`.",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "properties": {
+                "check": {
+                  "$ref": "#/$defs/CheckName",
+                  "description": "Which configured check to run."
+                },
+                "filter": {
+                  "description": "The test filter. Required for `unit_filtered`, ignored otherwise.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "check"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "submit_work_units",
+            "description": "Submit the Task's Work Units once the Skeleton, its Markers and the tests are written. Arbor checks each Work Unit's size against the Writer Cap and its Markers, then runs the Scaffold Check; any problem comes back to you to fix before submitting again.",
+            "parameters": {
+              "$defs": {
+                "Priority": {
+                  "description": "`Required` snippets are packed before `Helpful` ones.",
+                  "enum": [
+                    "required",
+                    "helpful"
+                  ],
+                  "type": "string"
+                },
+                "Snippet": {
+                  "description": "One entry of a Context Pack.",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "priority": {
+                      "$ref": "#/$defs/Priority"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "text",
+                    "priority"
+                  ],
+                  "type": "object"
+                },
+                "WorkUnit": {
+                  "description": "One Region in one file, filled by exactly one Writer.",
+                  "properties": {
+                    "acceptance_criteria": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "context": {
+                      "description": "The Context Pack: everything the Writer is allowed to know.",
+                      "items": {
+                        "$ref": "#/$defs/Snippet"
+                      },
+                      "type": "array"
+                    },
+                    "file": {
+                      "description": "Path of the file holding the Region, relative to the worktree root.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "$ref": "#/$defs/WorkUnitId"
+                    },
+                    "spec": {
+                      "type": "string"
+                    },
+                    "test_filter": {
+                      "description": "Substituted into `checks.unit_filtered` to run only this Work Unit's tests.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "file",
+                    "spec",
+                    "context",
+                    "acceptance_criteria",
+                    "test_filter"
+                  ],
+                  "type": "object"
+                },
+                "WorkUnitId": {
+                  "description": "Identifies a Work Unit within a Session. Shown and used in Markers as `WU-<n>`.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "description": "A tool's parameters must be an object, so the list is wrapped.",
+              "properties": {
+                "work_units": {
+                  "description": "One per Region, in the order the Writers should fill them.",
+                  "items": {
+                    "$ref": "#/$defs/WorkUnit"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "work_units"
+              ],
+              "type": "object"
+            }
+          }
+        ],
+        "tool_choice": "Auto",
+        "temperature": 0.3,
+        "seed": null,
+        "max_tokens": null,
+        "require_parameters": false,
+        "cache_transcript": true
+      },
+      "response": {
+        "Ok": {
+          "id": "gen-claude-sonnet-5.5",
+          "model": "anthropic/claude-sonnet-5.5",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call-0",
+              "name": "write_file",
+              "arguments": "{\"path\": \"src/lib.rs\", \"content\": \"//! Small helpers for working with the words in a text.\\n\\n/// Counts the words in `text`, splitting on whitespace.\\npub fn word_count(text: &str) -> usize {\\n    text.split_whitespace().count()\\n}\\n\\n/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\\n/// `text` has no words.\\npub fn longest_word(text: &str) -> Option<&str> {\\n    // ARBOR:BEGIN WU-1\\n    todo!()\\n    // ARBOR:END WU-1\\n}\\n\\n#[cfg(test)]\\nmod tests {\\n    use super::*;\\n\\n    #[test]\\n    fn counts_words_separated_by_any_whitespace() {\\n        assert_eq!(word_count(\\\"one two\\\\tthree\\\\nfour\\\"), 4);\\n    }\\n}\\n\\n#[cfg(test)]\\nmod longest_word_tests {\\n    use super::*;\\n\\n    #[test]\\n    fn finds_the_longest_word() {\\n        assert_eq!(longest_word(\\\"a quick fox\\\"), Some(\\\"quick\\\"));\\n    }\\n\\n    #[test]\\n    fn has_none_without_words() {\\n        assert_eq!(longest_word(\\\" \\\\n\\\\t\\\"), None);\\n    }\\n\\n    #[test]\\n    fn keeps_the_first_of_tied_words() {\\n        assert_eq!(longest_word(\\\"cat dog\\\"), Some(\\\"cat\\\"));\\n    }\\n}\\n\"}"
+            },
+            {
+              "id": "call-1",
+              "name": "submit_work_units",
+              "arguments": "{\"work_units\": [{\"id\": 1, \"file\": \"src/lib.rs\", \"spec\": \"Return the longest whitespace-separated word in `text`. On a tie, return the first of the longest words; for text without words, return `None`.\", \"context\": [], \"acceptance_criteria\": [\"longest_word(\\\"a quick fox\\\") is Some(\\\"quick\\\")\", \"longest_word of whitespace only is None\", \"longest_word(\\\"cat dog\\\") is Some(\\\"cat\\\")\"], \"test_filter\": \"longest_word_tests\"}]}"
+            }
+          ],
+          "finish_reason": "ToolCalls",
+          "usage": {
+            "input_tokens": 6000,
+            "output_tokens": 1500,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0.04
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "model": "anthropic/claude-sonnet-5.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "text": "# Role\n\nYou are the Scaffolder, the middle of Arbor's three Tiers (Planner, Scaffolder, Writer). You turn one Task of an approved Plan into a Skeleton, its tests, and Work Units. A Writer, a cheap model with no tools, then fills each Work Unit's Region using only the Context Pack you give it.\n\n# Inputs\n\n- The project's Conventions, when it has any, follow these instructions. They are the project's own guidance; follow them where they apply.\n- Then come the Request, the Plan, and the Task to scaffold.\n- You can read the repository with `read_file`, `list_dir`, `glob` and `grep`, change it with `write_file` and `edit_file`, and run the project's Checks with `run_checks`.\n\n# Output contract\n\n1. Write the Skeleton and the tests into the worktree with `write_file` and `edit_file`.\n2. Run the Scaffold Check with `run_checks` and fix the Skeleton until it builds.\n3. Finish by calling `submit_work_units` exactly once. Each Work Unit names its file, a spec, its Context Pack, acceptance criteria, and a test filter. Arbor then checks every Work Unit: its estimated size against the Writer Cap (with a 10% margin), its Markers, and finally the Scaffold Check. Any problem comes back to you as the tool result, with each Work Unit's size when one is over the cap; trim or split it, fix the rest, then call it again. If the arguments don't parse, that error comes back the same way. After 3 failed attempts the run is handed to the Human Operator.\n\nWhen the inputs end with a Revision section, the Task's Work Units were already written or tried and something failed; this run is a Revision instead:\n\n1. Diagnose why from what the Revision section shows, reading the code as it is now.\n2. Each Work Unit's Markers were removed when it passed. For every Work Unit you revise, put a Marker pair back around its Region, with a Placeholder between them, and fix the Skeleton or tests if they are at fault. A Work Unit whose Writer failed still has its Markers.\n3. Finish by calling `submit_revision` exactly once with your diagnosis and only the Work Units to write again, each one complete. A revised Work Unit keeps its ID. A new one, e.g. from a split, is numbered from the ID Arbor gives you. Arbor checks them as it checks `submit_work_units`.\n\nA Revision must make a real change: more or better Context Pack snippets, tighter acceptance criteria, a fixed Skeleton, types or tests, or a split into smaller Work Units. One that only rewords the spec is rejected and still counts toward the limit of 2 Revisions. A later Revision must take a different approach from the earlier ones. When a single Work Unit failed, revise only that Work Unit, or split it, in its own file. If the fix needs a signature or type that other Work Units depend on, don't make it: call `submit_revision` with `shared_change` naming the change and no Work Units, and the failure goes to the Planner.\n\n# Rules\n\n- The Writer Cap is 8000 tokens: the most a Writer may be given for one Work Unit. A Work Unit over the cap fails the Scaffold Check. Nothing is cut silently.\n- A Work Unit is one function or Region. Aim for at most about 60 lines of Writer output, and split anything bigger.\n- Write every type, signature and import yourself, so Writers only fill bodies.\n- Bracket each Region with Marker comments carrying its Work Unit ID, in the language's comment syntax, e.g. `// ARBOR:BEGIN WU-7` and `// ARBOR:END WU-7`. Put each Marker on a line of its own. Each Work Unit gets exactly one pair, in its own file only; Regions never nest or overlap. The Placeholder between them must compile, using the language's idiom (e.g. `todo!()` in Rust).\n- Write real, complete tests now. Keep them compact and table-driven where the language allows. Writers never write or edit tests.\n- Give each Work Unit a test filter that selects only its tests.\n- The Writer returns its code between the 2 lines just above the BEGIN Marker and the 2 lines just below the END Marker, copied unchanged, so every Context Pack must show the Region with its Markers and those lines. Leave at least 2 lines between one Region's END Marker and the next Region's BEGIN Marker: an earlier Writer removes its Markers, so a Marker in another Region's context lines would no longer match the file.\n- Assume the Writer knows nothing beyond its Context Pack. Mark the snippets it can't work without as `required`, and the rest as `helpful`. List the `required` snippets first; they are packed first.\n- Clarification Mode is Ask: whenever something about the Task is unclear, ask the Human Operator before you submit. Put all your questions in one plain-text reply instead of calling `submit_work_units`; the answers come back to you.\n",
+                "cache": false
+              },
+              {
+                "text": "# Conventions\n\n<file path=\"README.md\">\n# wordy\n\nSmall helpers for working with the words in a text. Every function takes `&str` and splits words\non whitespace. Tests sit in a `#[cfg(test)]` module next to the code they test.\n</file>\n",
+                "cache": true
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "# Request\n\nAdd a `longest_word` function to wordy that returns the longest word in a text, or `None` when the text has no words. When several words are equally long, return the first.\n\n# Plan\n\nGoal: wordy can find the longest word in a text.\n\nConstraints:\n- Keep the public API to plain functions that take `&str`.\n\nTasks:\n1. Add longest_word\n\n# Task to scaffold: Add longest_word\n\nAdd `pub fn longest_word(text: &str) -> Option<&str>` to src/lib.rs. It returns the first of the longest whitespace-separated words, or `None` for text without words. Test it in its own test module.\n\n# Revision 1\n\nThe Writer failed WU-1.\nNo Writer could fill it: its Region is missing or broken. WU-1: ARBOR:END on line 12 has no ARBOR:BEGIN\n\nMark the Region again with exactly one BEGIN and one END Marker for WU-1, with its Placeholder between them. The Work Unit's file as Arbor found it:\n\n````text\n//! Small helpers for working with the words in a text.\n\n/// Counts the words in `text`, splitting on whitespace.\npub fn word_count(text: &str) -> usize {\n    text.split_whitespace().count()\n}\n\n/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\n/// `text` has no words.\npub fn longest_word(text: &str) -> Option<&str> {\n    todo!()\n    // ARBOR:END WU-1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn counts_words_separated_by_any_whitespace() {\n        assert_eq!(word_count(\"one two\\tthree\\nfour\"), 4);\n    }\n}\n\n#[cfg(test)]\nmod longest_word_tests {\n    use super::*;\n\n    #[test]\n    fn finds_the_longest_word() {\n        assert_eq!(longest_word(\"a quick fox\"), Some(\"quick\"));\n    }\n\n    #[test]\n    fn has_none_without_words() {\n        assert_eq!(longest_word(\" \\n\\t\"), None);\n    }\n\n    #[test]\n    fn keeps_the_first_of_tied_words() {\n        assert_eq!(longest_word(\"cat dog\"), Some(\"cat\"));\n    }\n}\n\n````\n\n## Task diff\n\n````diff\ndiff --git a/src/lib.rs b/src/lib.rs\nindex 0b68aba..b470d04 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -5,6 +5,13 @@ pub fn word_count(text: &str) -> usize {\n     text.split_whitespace().count()\n }\n \n+/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\n+/// `text` has no words.\n+pub fn longest_word(text: &str) -> Option<&str> {\n+    todo!()\n+    // ARBOR:END WU-1\n+}\n+\n #[cfg(test)]\n mod tests {\n     use super::*;\n@@ -14,3 +21,23 @@ mod tests {\n         assert_eq!(word_count(\"one two\\tthree\\nfour\"), 4);\n     }\n }\n+\n+#[cfg(test)]\n+mod longest_word_tests {\n+    use super::*;\n+\n+    #[test]\n+    fn finds_the_longest_word() {\n+        assert_eq!(longest_word(\"a quick fox\"), Some(\"quick\"));\n+    }\n+\n+    #[test]\n+    fn has_none_without_words() {\n+        assert_eq!(longest_word(\" \\n\\t\"), None);\n+    }\n+\n+    #[test]\n+    fn keeps_the_first_of_tied_words() {\n+        assert_eq!(longest_word(\"cat dog\"), Some(\"cat\"));\n+    }\n+}\n\n````\n\n## The Task's Work Units\n\n### WU-1 in `src/lib.rs`\n\nSpec: Return the longest whitespace-separated word in `text`. On a tie, return the first of the longest words; for text without words, return `None`.\n\nTest filter: `longest_word_tests`\n- Acceptance criterion: longest_word(\"a quick fox\") is Some(\"quick\")\n- Acceptance criterion: longest_word of whitespace only is None\n- Acceptance criterion: longest_word(\"cat dog\") is Some(\"cat\")\n",
+                "cache": false
+              },
+              {
+                "text": "A revised Work Unit keeps its ID. Number any new Work Unit from WU-2 upwards.",
+                "cache": false
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "Read a text file with numbered lines, at most 400 lines at a time. Use offset and limit to page through longer files.",
+            "parameters": {
+              "properties": {
+                "limit": {
+                  "description": "How many lines to read, at most 400. Defaults to 400.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "The 1-based line to start at. Defaults to 1.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "list_dir",
+            "description": "List a directory's entries. Directories end with /. Files excluded by .gitignore are left out.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "glob",
+            "description": "Find files whose paths match a glob, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A glob such as `**/*.rs`, matched against paths relative to `path`. `*` doesn't cross `/`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "grep",
+            "description": "Search file contents for a regular expression. Returns path:line: text for each matching line, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "case_insensitive": {
+                  "description": "Ignore case. Defaults to false.",
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "glob": {
+                  "description": "Only search files whose path matches this glob, e.g. `*.rs`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "File or directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A regular expression (Rust `regex` syntax), matched against each line.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "write_file",
+            "description": "Create or overwrite a file in the worktree with the given content.",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "The whole new content of the file.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Path relative to the worktree root. Missing parent directories are created.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "edit_file",
+            "description": "Replace one exact snippet in a file. The snippet must occur exactly once.",
+            "parameters": {
+              "properties": {
+                "new_string": {
+                  "description": "The text to put in its place.",
+                  "type": "string"
+                },
+                "old_string": {
+                  "description": "The exact text to replace. It must occur exactly once in the file.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "old_string",
+                "new_string"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "run_checks",
+            "description": "Run one of the project's configured checks in the worktree and return its exit code and output. scaffold verifies the build; unit runs all tests; unit_filtered runs the tests matching filter.",
+            "parameters": {
+              "$defs": {
+                "CheckName": {
+                  "oneOf": [
+                    {
+                      "const": "scaffold",
+                      "description": "Verifies that the Skeleton builds.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unit",
+                      "description": "Builds and runs all tests.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unit_filtered",
+                      "description": "Builds and runs only the tests that match `filter`.",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "properties": {
+                "check": {
+                  "$ref": "#/$defs/CheckName",
+                  "description": "Which configured check to run."
+                },
+                "filter": {
+                  "description": "The test filter. Required for `unit_filtered`, ignored otherwise.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "check"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "submit_revision",
+            "description": "Submit the Revision: your diagnosis of why the work failed, and the Work Units to write again with their Regions marked again. Arbor checks them as it checks `submit_work_units`; any problem comes back to you to fix before submitting again. If the fix needs a signature or type other Work Units depend on, set `shared_change` instead and leave `work_units` empty.",
+            "parameters": {
+              "$defs": {
+                "Priority": {
+                  "description": "`Required` snippets are packed before `Helpful` ones.",
+                  "enum": [
+                    "required",
+                    "helpful"
+                  ],
+                  "type": "string"
+                },
+                "Snippet": {
+                  "description": "One entry of a Context Pack.",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "priority": {
+                      "$ref": "#/$defs/Priority"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "text",
+                    "priority"
+                  ],
+                  "type": "object"
+                },
+                "WorkUnit": {
+                  "description": "One Region in one file, filled by exactly one Writer.",
+                  "properties": {
+                    "acceptance_criteria": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "context": {
+                      "description": "The Context Pack: everything the Writer is allowed to know.",
+                      "items": {
+                        "$ref": "#/$defs/Snippet"
+                      },
+                      "type": "array"
+                    },
+                    "file": {
+                      "description": "Path of the file holding the Region, relative to the worktree root.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "$ref": "#/$defs/WorkUnitId"
+                    },
+                    "spec": {
+                      "type": "string"
+                    },
+                    "test_filter": {
+                      "description": "Substituted into `checks.unit_filtered` to run only this Work Unit's tests.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "file",
+                    "spec",
+                    "context",
+                    "acceptance_criteria",
+                    "test_filter"
+                  ],
+                  "type": "object"
+                },
+                "WorkUnitId": {
+                  "description": "Identifies a Work Unit within a Session. Shown and used in Markers as `WU-<n>`.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "description": "The Scaffolder's rework of failed Work Units, submitted with `submit_revision`.",
+              "properties": {
+                "diagnosis": {
+                  "description": "Why the work failed, and what this Revision changes so it passes.",
+                  "type": "string"
+                },
+                "shared_change": {
+                  "description": "Set, with no Work Units, when the fix needs a signature or type that other Work Units\ndepend on: it names that change, and the failure goes to the Planner instead.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "work_units": {
+                  "description": "The Work Units to write again, in order, each with its Region marked again. A revised\nWork Unit keeps its ID; a new one, e.g. from a split, takes an ID no Work Unit has used.\nEmpty when `shared_change` is set.",
+                  "items": {
+                    "$ref": "#/$defs/WorkUnit"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "diagnosis",
+                "work_units"
+              ],
+              "type": "object"
+            }
+          }
+        ],
+        "tool_choice": "Auto",
+        "temperature": 0.3,
+        "seed": null,
+        "max_tokens": null,
+        "require_parameters": false,
+        "cache_transcript": true
+      },
+      "response": {
+        "Ok": {
+          "id": "gen-claude-sonnet-5.5",
+          "model": "anthropic/claude-sonnet-5.5",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call-0",
+              "name": "write_file",
+              "arguments": "{\"path\": \"src/lib.rs\", \"content\": \"//! Small helpers for working with the words in a text.\\n\\n/// Counts the words in `text`, splitting on whitespace.\\npub fn word_count(text: &str) -> usize {\\n    text.split_whitespace().count()\\n}\\n\\n/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\\n/// `text` has no words.\\npub fn longest_word(text: &str) -> Option<&str> {\\n    // ARBOR:BEGIN WU-1\\n    todo!()\\n    // ARBOR:END WU-1\\n}\\n\\n#[cfg(test)]\\nmod tests {\\n    use super::*;\\n\\n    #[test]\\n    fn counts_words_separated_by_any_whitespace() {\\n        assert_eq!(word_count(\\\"one two\\\\tthree\\\\nfour\\\"), 4);\\n    }\\n}\\n\\n#[cfg(test)]\\nmod longest_word_tests {\\n    use super::*;\\n\\n    #[test]\\n    fn finds_the_longest_word() {\\n        assert_eq!(longest_word(\\\"a quick fox\\\"), Some(\\\"quick\\\"));\\n    }\\n\\n    #[test]\\n    fn has_none_without_words() {\\n        assert_eq!(longest_word(\\\" \\\\n\\\\t\\\"), None);\\n    }\\n\\n    #[test]\\n    fn keeps_the_first_of_tied_words() {\\n        assert_eq!(longest_word(\\\"cat dog\\\"), Some(\\\"cat\\\"));\\n    }\\n}\\n\"}"
+            }
+          ],
+          "finish_reason": "ToolCalls",
+          "usage": {
+            "input_tokens": 9000,
+            "output_tokens": 900,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0.04
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "model": "anthropic/claude-sonnet-5.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "text": "# Role\n\nYou are the Scaffolder, the middle of Arbor's three Tiers (Planner, Scaffolder, Writer). You turn one Task of an approved Plan into a Skeleton, its tests, and Work Units. A Writer, a cheap model with no tools, then fills each Work Unit's Region using only the Context Pack you give it.\n\n# Inputs\n\n- The project's Conventions, when it has any, follow these instructions. They are the project's own guidance; follow them where they apply.\n- Then come the Request, the Plan, and the Task to scaffold.\n- You can read the repository with `read_file`, `list_dir`, `glob` and `grep`, change it with `write_file` and `edit_file`, and run the project's Checks with `run_checks`.\n\n# Output contract\n\n1. Write the Skeleton and the tests into the worktree with `write_file` and `edit_file`.\n2. Run the Scaffold Check with `run_checks` and fix the Skeleton until it builds.\n3. Finish by calling `submit_work_units` exactly once. Each Work Unit names its file, a spec, its Context Pack, acceptance criteria, and a test filter. Arbor then checks every Work Unit: its estimated size against the Writer Cap (with a 10% margin), its Markers, and finally the Scaffold Check. Any problem comes back to you as the tool result, with each Work Unit's size when one is over the cap; trim or split it, fix the rest, then call it again. If the arguments don't parse, that error comes back the same way. After 3 failed attempts the run is handed to the Human Operator.\n\nWhen the inputs end with a Revision section, the Task's Work Units were already written or tried and something failed; this run is a Revision instead:\n\n1. Diagnose why from what the Revision section shows, reading the code as it is now.\n2. Each Work Unit's Markers were removed when it passed. For every Work Unit you revise, put a Marker pair back around its Region, with a Placeholder between them, and fix the Skeleton or tests if they are at fault. A Work Unit whose Writer failed still has its Markers.\n3. Finish by calling `submit_revision` exactly once with your diagnosis and only the Work Units to write again, each one complete. A revised Work Unit keeps its ID. A new one, e.g. from a split, is numbered from the ID Arbor gives you. Arbor checks them as it checks `submit_work_units`.\n\nA Revision must make a real change: more or better Context Pack snippets, tighter acceptance criteria, a fixed Skeleton, types or tests, or a split into smaller Work Units. One that only rewords the spec is rejected and still counts toward the limit of 2 Revisions. A later Revision must take a different approach from the earlier ones. When a single Work Unit failed, revise only that Work Unit, or split it, in its own file. If the fix needs a signature or type that other Work Units depend on, don't make it: call `submit_revision` with `shared_change` naming the change and no Work Units, and the failure goes to the Planner.\n\n# Rules\n\n- The Writer Cap is 8000 tokens: the most a Writer may be given for one Work Unit. A Work Unit over the cap fails the Scaffold Check. Nothing is cut silently.\n- A Work Unit is one function or Region. Aim for at most about 60 lines of Writer output, and split anything bigger.\n- Write every type, signature and import yourself, so Writers only fill bodies.\n- Bracket each Region with Marker comments carrying its Work Unit ID, in the language's comment syntax, e.g. `// ARBOR:BEGIN WU-7` and `// ARBOR:END WU-7`. Put each Marker on a line of its own. Each Work Unit gets exactly one pair, in its own file only; Regions never nest or overlap. The Placeholder between them must compile, using the language's idiom (e.g. `todo!()` in Rust).\n- Write real, complete tests now. Keep them compact and table-driven where the language allows. Writers never write or edit tests.\n- Give each Work Unit a test filter that selects only its tests.\n- The Writer returns its code between the 2 lines just above the BEGIN Marker and the 2 lines just below the END Marker, copied unchanged, so every Context Pack must show the Region with its Markers and those lines. Leave at least 2 lines between one Region's END Marker and the next Region's BEGIN Marker: an earlier Writer removes its Markers, so a Marker in another Region's context lines would no longer match the file.\n- Assume the Writer knows nothing beyond its Context Pack. Mark the snippets it can't work without as `required`, and the rest as `helpful`. List the `required` snippets first; they are packed first.\n- Clarification Mode is Ask: whenever something about the Task is unclear, ask the Human Operator before you submit. Put all your questions in one plain-text reply instead of calling `submit_work_units`; the answers come back to you.\n",
+                "cache": false
+              },
+              {
+                "text": "# Conventions\n\n<file path=\"README.md\">\n# wordy\n\nSmall helpers for working with the words in a text. Every function takes `&str` and splits words\non whitespace. Tests sit in a `#[cfg(test)]` module next to the code they test.\n</file>\n",
+                "cache": true
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "# Request\n\nAdd a `longest_word` function to wordy that returns the longest word in a text, or `None` when the text has no words. When several words are equally long, return the first.\n\n# Plan\n\nGoal: wordy can find the longest word in a text.\n\nConstraints:\n- Keep the public API to plain functions that take `&str`.\n\nTasks:\n1. Add longest_word\n\n# Task to scaffold: Add longest_word\n\nAdd `pub fn longest_word(text: &str) -> Option<&str>` to src/lib.rs. It returns the first of the longest whitespace-separated words, or `None` for text without words. Test it in its own test module.\n\n# Revision 1\n\nThe Writer failed WU-1.\nNo Writer could fill it: its Region is missing or broken. WU-1: ARBOR:END on line 12 has no ARBOR:BEGIN\n\nMark the Region again with exactly one BEGIN and one END Marker for WU-1, with its Placeholder between them. The Work Unit's file as Arbor found it:\n\n````text\n//! Small helpers for working with the words in a text.\n\n/// Counts the words in `text`, splitting on whitespace.\npub fn word_count(text: &str) -> usize {\n    text.split_whitespace().count()\n}\n\n/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\n/// `text` has no words.\npub fn longest_word(text: &str) -> Option<&str> {\n    todo!()\n    // ARBOR:END WU-1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn counts_words_separated_by_any_whitespace() {\n        assert_eq!(word_count(\"one two\\tthree\\nfour\"), 4);\n    }\n}\n\n#[cfg(test)]\nmod longest_word_tests {\n    use super::*;\n\n    #[test]\n    fn finds_the_longest_word() {\n        assert_eq!(longest_word(\"a quick fox\"), Some(\"quick\"));\n    }\n\n    #[test]\n    fn has_none_without_words() {\n        assert_eq!(longest_word(\" \\n\\t\"), None);\n    }\n\n    #[test]\n    fn keeps_the_first_of_tied_words() {\n        assert_eq!(longest_word(\"cat dog\"), Some(\"cat\"));\n    }\n}\n\n````\n\n## Task diff\n\n````diff\ndiff --git a/src/lib.rs b/src/lib.rs\nindex 0b68aba..b470d04 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -5,6 +5,13 @@ pub fn word_count(text: &str) -> usize {\n     text.split_whitespace().count()\n }\n \n+/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\n+/// `text` has no words.\n+pub fn longest_word(text: &str) -> Option<&str> {\n+    todo!()\n+    // ARBOR:END WU-1\n+}\n+\n #[cfg(test)]\n mod tests {\n     use super::*;\n@@ -14,3 +21,23 @@ mod tests {\n         assert_eq!(word_count(\"one two\\tthree\\nfour\"), 4);\n     }\n }\n+\n+#[cfg(test)]\n+mod longest_word_tests {\n+    use super::*;\n+\n+    #[test]\n+    fn finds_the_longest_word() {\n+        assert_eq!(longest_word(\"a quick fox\"), Some(\"quick\"));\n+    }\n+\n+    #[test]\n+    fn has_none_without_words() {\n+        assert_eq!(longest_word(\" \\n\\t\"), None);\n+    }\n+\n+    #[test]\n+    fn keeps_the_first_of_tied_words() {\n+        assert_eq!(longest_word(\"cat dog\"), Some(\"cat\"));\n+    }\n+}\n\n````\n\n## The Task's Work Units\n\n### WU-1 in `src/lib.rs`\n\nSpec: Return the longest whitespace-separated word in `text`. On a tie, return the first of the longest words; for text without words, return `None`.\n\nTest filter: `longest_word_tests`\n- Acceptance criterion: longest_word(\"a quick fox\") is Some(\"quick\")\n- Acceptance criterion: longest_word of whitespace only is None\n- Acceptance criterion: longest_word(\"cat dog\") is Some(\"cat\")\n",
+                "cache": false
+              },
+              {
+                "text": "A revised Work Unit keeps its ID. Number any new Work Unit from WU-2 upwards.",
+                "cache": false
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call-0",
+                "name": "write_file",
+                "arguments": "{\"path\": \"src/lib.rs\", \"content\": \"//! Small helpers for working with the words in a text.\\n\\n/// Counts the words in `text`, splitting on whitespace.\\npub fn word_count(text: &str) -> usize {\\n    text.split_whitespace().count()\\n}\\n\\n/// The longest whitespace-separated word in `text`, the first of them on a tie, or `None` when\\n/// `text` has no words.\\npub fn longest_word(text: &str) -> Option<&str> {\\n    // ARBOR:BEGIN WU-1\\n    todo!()\\n    // ARBOR:END WU-1\\n}\\n\\n#[cfg(test)]\\nmod tests {\\n    use super::*;\\n\\n    #[test]\\n    fn counts_words_separated_by_any_whitespace() {\\n        assert_eq!(word_count(\\\"one two\\\\tthree\\\\nfour\\\"), 4);\\n    }\\n}\\n\\n#[cfg(test)]\\nmod longest_word_tests {\\n    use super::*;\\n\\n    #[test]\\n    fn finds_the_longest_word() {\\n        assert_eq!(longest_word(\\\"a quick fox\\\"), Some(\\\"quick\\\"));\\n    }\\n\\n    #[test]\\n    fn has_none_without_words() {\\n        assert_eq!(longest_word(\\\" \\\\n\\\\t\\\"), None);\\n    }\\n\\n    #[test]\\n    fn keeps_the_first_of_tied_words() {\\n        assert_eq!(longest_word(\\\"cat dog\\\"), Some(\\\"cat\\\"));\\n    }\\n}\\n\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call-0",
+            "content": "Wrote 997 bytes to src/lib.rs."
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "Read a text file with numbered lines, at most 400 lines at a time. Use offset and limit to page through longer files.",
+            "parameters": {
+              "properties": {
+                "limit": {
+                  "description": "How many lines to read, at most 400. Defaults to 400.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "The 1-based line to start at. Defaults to 1.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "list_dir",
+            "description": "List a directory's entries. Directories end with /. Files excluded by .gitignore are left out.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "glob",
+            "description": "Find files whose paths match a glob, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "Directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A glob such as `**/*.rs`, matched against paths relative to `path`. `*` doesn't cross `/`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "grep",
+            "description": "Search file contents for a regular expression. Returns path:line: text for each matching line, skipping files excluded by .gitignore. Results are capped.",
+            "parameters": {
+              "properties": {
+                "case_insensitive": {
+                  "description": "Ignore case. Defaults to false.",
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "glob": {
+                  "description": "Only search files whose path matches this glob, e.g. `*.rs`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "description": "File or directory to search, relative to the worktree root. Defaults to the root.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "A regular expression (Rust `regex` syntax), matched against each line.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "write_file",
+            "description": "Create or overwrite a file in the worktree with the given content.",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "The whole new content of the file.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Path relative to the worktree root. Missing parent directories are created.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "edit_file",
+            "description": "Replace one exact snippet in a file. The snippet must occur exactly once.",
+            "parameters": {
+              "properties": {
+                "new_string": {
+                  "description": "The text to put in its place.",
+                  "type": "string"
+                },
+                "old_string": {
+                  "description": "The exact text to replace. It must occur exactly once in the file.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Path relative to the worktree root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "old_string",
+                "new_string"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "run_checks",
+            "description": "Run one of the project's configured checks in the worktree and return its exit code and output. scaffold verifies the build; unit runs all tests; unit_filtered runs the tests matching filter.",
+            "parameters": {
+              "$defs": {
+                "CheckName": {
+                  "oneOf": [
+                    {
+                      "const": "scaffold",
+                      "description": "Verifies that the Skeleton builds.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unit",
+                      "description": "Builds and runs all tests.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unit_filtered",
+                      "description": "Builds and runs only the tests that match `filter`.",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "properties": {
+                "check": {
+                  "$ref": "#/$defs/CheckName",
+                  "description": "Which configured check to run."
+                },
+                "filter": {
+                  "description": "The test filter. Required for `unit_filtered`, ignored otherwise.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "check"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "submit_revision",
+            "description": "Submit the Revision: your diagnosis of why the work failed, and the Work Units to write again with their Regions marked again. Arbor checks them as it checks `submit_work_units`; any problem comes back to you to fix before submitting again. If the fix needs a signature or type other Work Units depend on, set `shared_change` instead and leave `work_units` empty.",
+            "parameters": {
+              "$defs": {
+                "Priority": {
+                  "description": "`Required` snippets are packed before `Helpful` ones.",
+                  "enum": [
+                    "required",
+                    "helpful"
+                  ],
+                  "type": "string"
+                },
+                "Snippet": {
+                  "description": "One entry of a Context Pack.",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "priority": {
+                      "$ref": "#/$defs/Priority"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "text",
+                    "priority"
+                  ],
+                  "type": "object"
+                },
+                "WorkUnit": {
+                  "description": "One Region in one file, filled by exactly one Writer.",
+                  "properties": {
+                    "acceptance_criteria": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "context": {
+                      "description": "The Context Pack: everything the Writer is allowed to know.",
+                      "items": {
+                        "$ref": "#/$defs/Snippet"
+                      },
+                      "type": "array"
+                    },
+                    "file": {
+                      "description": "Path of the file holding the Region, relative to the worktree root.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "$ref": "#/$defs/WorkUnitId"
+                    },
+                    "spec": {
+                      "type": "string"
+                    },
+                    "test_filter": {
+                      "description": "Substituted into `checks.unit_filtered` to run only this Work Unit's tests.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "file",
+                    "spec",
+                    "context",
+                    "acceptance_criteria",
+                    "test_filter"
+                  ],
+                  "type": "object"
+                },
+                "WorkUnitId": {
+                  "description": "Identifies a Work Unit within a Session. Shown and used in Markers as `WU-<n>`.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "description": "The Scaffolder's rework of failed Work Units, submitted with `submit_revision`.",
+              "properties": {
+                "diagnosis": {
+                  "description": "Why the work failed, and what this Revision changes so it passes.",
+                  "type": "string"
+                },
+                "shared_change": {
+                  "description": "Set, with no Work Units, when the fix needs a signature or type that other Work Units\ndepend on: it names that change, and the failure goes to the Planner instead.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "work_units": {
+                  "description": "The Work Units to write again, in order, each with its Region marked again. A revised\nWork Unit keeps its ID; a new one, e.g. from a split, takes an ID no Work Unit has used.\nEmpty when `shared_change` is set.",
+                  "items": {
+                    "$ref": "#/$defs/WorkUnit"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "diagnosis",
+                "work_units"
+              ],
+              "type": "object"
+            }
+          }
+        ],
+        "tool_choice": "Auto",
+        "temperature": 0.3,
+        "seed": null,
+        "max_tokens": null,
+        "require_parameters": false,
+        "cache_transcript": true
+      },
+      "response": {
+        "Ok": {
+          "id": "gen-claude-sonnet-5.5",
+          "model": "anthropic/claude-sonnet-5.5",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call-0",
+              "name": "submit_revision",
+              "arguments": "{\"diagnosis\": \"WU-1's BEGIN Marker was deleted from src/lib.rs after the Skeleton was committed. Writing the Skeleton's src/lib.rs again marks the Region again; the Work Unit itself was fine.\", \"work_units\": [{\"id\": 1, \"file\": \"src/lib.rs\", \"spec\": \"Return the longest whitespace-separated word in `text`. On a tie, return the first of the longest words; for text without words, return `None`.\", \"context\": [], \"acceptance_criteria\": [\"longest_word(\\\"a quick fox\\\") is Some(\\\"quick\\\")\", \"longest_word of whitespace only is None\", \"longest_word(\\\"cat dog\\\") is Some(\\\"cat\\\")\"], \"test_filter\": \"longest_word_tests\"}]}"
+            }
+          ],
+          "finish_reason": "ToolCalls",
+          "usage": {
+            "input_tokens": 9000,
+            "output_tokens": 900,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0.04
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "model": "anthropic/claude-haiku-5.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "text": "# Role\n\nYou are the Writer, the lowest of Arbor's three Tiers (Planner, Scaffolder, Writer). You fill exactly one Region of code: the span between a Work Unit's Markers, which currently holds a Placeholder. The Scaffolder has already written the types, signatures, imports and tests.\n\n# Inputs\n\nThe Work Unit comes next: the file holding the Region, a spec, acceptance criteria, and the Context Pack. The Context Pack is everything you are allowed to know. You have no tools and can't read anything else.\n\n# Output contract\n\nReply with exactly one fenced block and nothing else, in one of two forms.\n\nCode, fenced with the file's language (e.g. ```` ```rust ````): the 2 lines just above the BEGIN Marker line, unchanged; then your code for the Region; then the 2 lines just below the END Marker line, unchanged. Leave out the Marker lines themselves. Blank lines count as context lines. Only where the file has fewer than 2 lines above the BEGIN Marker or below the END Marker, send the lines it has. Arbor checks the context lines against the file, then puts your code between the Markers. If your code holds a line made of backticks indented by 3 spaces or fewer, fence the block with more backticks than that line has, e.g. ````` ````rust `````.\n\nOr, if the Context Pack lacks something you need, a block fenced as ```` ```missing ```` that lists what is missing, one item per line, e.g. the definition of a type or the signature of a function.\n\nAny other reply is rejected and costs a retry. So does code that fails the Checks. Either way, Arbor tells you why, and you reply again with a new block.\n\n# Rules\n\n- Replace the Placeholder with a real implementation that meets the spec and the acceptance criteria.\n- Change nothing outside the Region: no signatures, imports, tests or Markers.\n- Use only what the Context Pack shows. Never guess at a name, field or signature you can't see; send a `missing` block instead.\n",
+                "cache": true
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "# Work Unit WU-1\n\nFile: `src/lib.rs`\n\n## Spec\n\nReturn the longest whitespace-separated word in `text`. On a tie, return the first of the longest words; for text without words, return `None`.\n\n## Acceptance criteria\n\n- longest_word(\"a quick fox\") is Some(\"quick\")\n- longest_word of whitespace only is None\n- longest_word(\"cat dog\") is Some(\"cat\")\n\n## Context Pack\n",
+                "cache": false
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "tool_choice": null,
+        "temperature": 0.0,
+        "seed": null,
+        "max_tokens": null,
+        "require_parameters": true,
+        "cache_transcript": false
+      },
+      "response": {
+        "Ok": {
+          "id": "gen-claude-haiku-5.5",
+          "model": "anthropic/claude-haiku-5.5",
+          "content": "```rust\n/// `text` has no words.\npub fn longest_word(text: &str) -> Option<&str> {\n    let mut longest: Option<&str> = None;\n    for word in text.split_whitespace() {\n        match longest {\n            Some(current) if current.len() >= word.len() => {}\n            _ => longest = Some(word),\n        }\n    }\n    longest\n}\n\n```",
+          "tool_calls": [],
+          "finish_reason": "Stop",
+          "usage": {
+            "input_tokens": 600,
+            "output_tokens": 120,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0.0012
+          }
+        }
+      }
+    }
+  ],
+  "models": [
+    {
+      "id": "anthropic/claude-opus-5.5",
+      "context_length": 200000,
+      "supported_parameters": [
+        "temperature",
+        "tools",
+        "tool_choice"
+      ],
+      "pricing": {
+        "prompt": 5e-6,
+        "completion": 0.000025,
+        "cache_read": 5e-7
+      }
+    },
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "context_length": 200000,
+      "supported_parameters": [
+        "temperature",
+        "tools",
+        "tool_choice"
+      ],
+      "pricing": {
+        "prompt": 3e-6,
+        "completion": 0.000015,
+        "cache_read": 3e-7
+      }
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "context_length": 200000,
+      "supported_parameters": [
+        "temperature",
+        "tools",
+        "tool_choice"
+      ],
+      "pricing": {
+        "prompt": 1e-6,
+        "completion": 5e-6,
+        "cache_read": 1e-7
+      }
+    }
+  ]
+}
