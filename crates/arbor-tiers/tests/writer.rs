@@ -171,6 +171,21 @@ async fn a_passing_reply_is_spliced_stripped_and_committed() {
 }
 
 #[tokio::test]
+async fn the_caller_hears_when_the_spliced_code_goes_to_the_checks() {
+    let dir = repo();
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, checks());
+    let mut checks_started = 0;
+
+    writer
+        .attempt_reporting_checks(&client, &mut || checks_started += 1)
+        .await
+        .unwrap();
+
+    assert_eq!(checks_started, 1);
+}
+
+#[tokio::test]
 async fn the_call_is_deterministic_and_sees_only_the_prompt() {
     let dir = repo();
     let client = QueueClient::new([text(GOOD)]);

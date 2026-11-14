@@ -4,9 +4,10 @@
 //! could decide, such as an escalation Checkpoint or a Tier's clarifying questions.
 
 use std::fmt;
+use std::io::Write;
 
 use arbor_config::Config;
-use arbor_core::{Effect, Event, Request, RevisionCause, Session, Task, Tier, WorkUnitId};
+use arbor_core::{Effect, Event, EventLog, Request, RevisionCause, Session, Task, Tier, WorkUnitId};
 use arbor_git::{CommitId, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
 use arbor_prompts::{
@@ -107,6 +108,8 @@ pub struct Autopilot<'a> {
     prompts: Prompts,
     /// The commit of the Work Unit that passed and waits for `WorkUnitCommitted`.
     passed_commit: Option<CommitId>,
+    /// Where each event is written before anyone is told of it (ADR-0004).
+    event_log: Option<EventLog<Box<dyn Write + 'a>>>,
     observer: Option<Box<dyn FnMut(AutopilotUpdate) + 'a>>,
 }
 
@@ -132,8 +135,16 @@ impl<'a> Autopilot<'a> {
             conventions,
             prompts,
             passed_commit: None,
+            event_log: None,
             observer: None,
         })
+    }
+
+    /// Writes each event to `event_file` as it is applied. A failed write ends the run, since a log
+    /// with a gap can't be replayed.
+    pub fn log_events_to(mut self, event_file: impl Write + 'a) -> Self {
+        self.event_log = Some(EventLog::new(Box::new(event_file)));
+        self
     }
 
     /// Calls `observer` with each update as the run goes, e.g. to show it live.
@@ -278,6 +289,11 @@ impl<'a> Autopilot<'a> {
             .session
             .apply(&event)
             .map_err(failed("applying an event"))?;
+        if let Some(event_log) = &mut self.event_log {
+            event_log
+                .append(&event)
+                .map_err(failed("writing the event log"))?;
+        }
         self.events.push(event.clone());
         self.notify(AutopilotUpdate::Event(event));
         Ok(effects)
@@ -471,8 +487,16 @@ impl<'a> Autopilot<'a> {
                 Some(&role.model),
                 format!("Writing {id}, attempt {attempt_number}"),
             );
+            let client = self.client;
+            let mut checks_started = || {
+                self.working(
+                    None,
+                    None,
+                    format!("Checking {id}, attempt {attempt_number}"),
+                );
+            };
             let attempt = writer
-                .attempt(self.client)
+                .attempt_reporting_checks(client, &mut checks_started)
                 .await
                 .map_err(failed("running the Writer"))?;
             if let Some(run) = self.writer_runs.last_mut() {

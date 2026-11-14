@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use arbor_config::{
     API_KEY_ENV, ClarificationMode, Config, Platform, resolve_api_key, user_config_path,
 };
-use arbor_core::{EventLog, Request};
+use arbor_core::Request;
 use arbor_git::{Repo, SessionBranch};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{Autopilot, AutopilotUpdate, SessionEnd};
@@ -276,17 +276,15 @@ fn drive(
         session_dir: session_dir.clone(),
     });
 
-    let mut event_log = EventLog::new(event_file);
     let client = OpenRouterClient::new(api_key);
     let observer_sender = sender.clone();
     let autopilot = Autopilot::new(&worktree, &mainline, &client, config);
     let mut autopilot = match autopilot {
-        Ok(autopilot) => autopilot.on_update(move |update| {
-            if let AutopilotUpdate::Event(event) = &update {
-                let _ = event_log.append(event);
-            }
-            let _ = observer_sender.send(DriverMessage::Update(update));
-        }),
+        Ok(autopilot) => autopilot
+            .log_events_to(event_file)
+            .on_update(move |update| {
+                let _ = observer_sender.send(DriverMessage::Update(update));
+            }),
         Err(err) => return failed(err.to_string()),
     };
     let runtime = match tokio::runtime::Builder::new_current_thread()
