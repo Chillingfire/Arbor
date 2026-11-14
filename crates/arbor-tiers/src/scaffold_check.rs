@@ -4,10 +4,11 @@ use std::path::{Component, Path, PathBuf};
 
 use arbor_config::Checks;
 use arbor_core::{WorkUnit, WorkUnitId};
+use arbor_git::Repo;
 use arbor_prompts::estimate_tokens;
 use arbor_tools::{Tools, Toolset};
 
-use crate::markers::{MarkerError, Markers};
+use crate::markers::{MarkerError, Markers, is_comment_less, is_marker_line};
 
 /// Added to the estimated Writer input because the token estimate is rough.
 pub const WRITER_CAP_MARGIN_PERCENT: u64 = 10;
@@ -95,6 +96,13 @@ pub fn revision_field_problems(
                 unit.file
             ));
         }
+        if is_comment_less(&unit.file) {
+            problems.push(format!(
+                "{id}: {} can't hold a Marker because its format has no comments. Write that \
+                 file yourself as part of the Skeleton and don't make it a Work Unit",
+                unit.file
+            ));
+        }
         if unit.spec.trim().is_empty() {
             problems.push(format!("{id} has no spec"));
         }
@@ -148,6 +156,34 @@ fn marker_problems_keeping(
     problems.extend(strays.into_iter().map(|id| {
         format!("{file}: {id} has a Region here, but no submitted Work Unit names this file")
     }));
+    problems
+}
+
+/// Marker lines in the changed files whose format has no comments, where a Marker would change
+/// what the file means.
+pub fn comment_less_marker_problems(
+    changed_files: &[String],
+    read_file: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for file in changed_files.iter().filter(|file| is_comment_less(file)) {
+        let Some(file_text) = read_file(file) else {
+            continue;
+        };
+        problems.extend(
+            file_text
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| is_marker_line(line))
+                .map(|(index, _)| {
+                    format!(
+                        "{file}: line {} holds a Marker, but this format has no comments. Remove \
+                         it and write the change yourself",
+                        index + 1
+                    )
+                }),
+        );
+    }
     problems
 }
 
@@ -217,6 +253,7 @@ impl ScaffoldCheck {
                 Err(err) => problems.push(format!("{file} can't be read: {err}")),
             }
         }
+        problems.extend(self.stray_comment_less_markers());
         let report = writer_cap_report(units, self.cap_tokens);
         if problems.is_empty() && report.is_none() {
             return Ok(());
@@ -231,6 +268,23 @@ impl ScaffoldCheck {
             message.push_str(&report);
         }
         Err(message)
+    }
+
+    /// The Skeleton isn't committed until it is approved, so the files to scan are the
+    /// worktree's uncommitted ones.
+    fn stray_comment_less_markers(&self) -> Vec<String> {
+        let changed_files =
+            match Repo::open(&self.worktree).and_then(|repo| repo.uncommitted_changes()) {
+                Ok(changed_files) => changed_files,
+                Err(err) => {
+                    return vec![format!(
+                        "the worktree's changed files can't be listed: {err}"
+                    )];
+                }
+            };
+        comment_less_marker_problems(&changed_files, |file| {
+            std::fs::read_to_string(self.worktree.join(file)).ok()
+        })
     }
 
     pub async fn run(&self, units: &[WorkUnit]) -> Result<(), String> {

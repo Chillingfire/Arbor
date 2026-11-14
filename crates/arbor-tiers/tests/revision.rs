@@ -11,7 +11,7 @@ use arbor_tiers::{
     Outcome, REWORDING_ONLY, RevisionRun, SUBMIT_REVISION, changes_outside_regions,
     changes_work_units, review_revision, revision_field_problems,
 };
-use common::{QueueClient, calls, model, tool_results};
+use common::{QueueClient, calls, git_dir, model, tool_results};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -228,7 +228,7 @@ fn marking_a_region_again_is_not_a_change_but_the_skeleton_is() {
 }
 
 fn worktree() -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/lib.rs"), FILLED).unwrap();
     dir

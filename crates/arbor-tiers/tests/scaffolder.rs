@@ -8,7 +8,7 @@ use arbor_tiers::{
     NO_SCAFFOLD_CHECK, Outcome, SUBMIT_WORK_UNITS, ScaffolderRun, TurnError, UnsupportedModel,
     WorkUnits,
 };
-use common::{QueueClient, calls, model, text, tool_results};
+use common::{QueueClient, calls, git_dir, model, text, tool_results};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -85,7 +85,7 @@ fn run<'a>(
 
 #[tokio::test]
 async fn the_scaffolder_writes_the_skeleton_then_submits_work_units() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     let prompt = prompt(&dir, ClarificationMode::Assume);
     let mut scaffolder = run(
         &dir,
@@ -136,7 +136,7 @@ async fn the_scaffolder_writes_the_skeleton_then_submits_work_units() {
 
 #[tokio::test]
 async fn the_opening_message_names_the_first_work_unit_id() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     let prompt = prompt(&dir, ClarificationMode::Assume);
     let scaffolder = run(
         &dir,
@@ -163,7 +163,7 @@ async fn the_opening_message_names_the_first_work_unit_id() {
 
 #[tokio::test]
 async fn a_rerun_after_rejection_sees_the_feedback_and_revises_the_skeleton_in_place() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/lib.rs"), SKELETON).unwrap();
     let prompt = prompt(&dir, ClarificationMode::Assume);
@@ -203,7 +203,7 @@ async fn a_rerun_after_rejection_sees_the_feedback_and_revises_the_skeleton_in_p
 
 #[tokio::test]
 async fn an_over_cap_work_unit_goes_back_with_exact_sizes() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/lib.rs"), SKELETON).unwrap();
     let prompt = prompt(&dir, ClarificationMode::Assume);
@@ -234,7 +234,7 @@ async fn an_over_cap_work_unit_goes_back_with_exact_sizes() {
 
 #[tokio::test]
 async fn a_failing_scaffold_check_is_retried_then_escalates_to_the_checkpoint() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     let prompt = prompt(&dir, ClarificationMode::Assume);
     let mut scaffolder = run(
         &dir,
@@ -281,7 +281,7 @@ async fn a_failing_scaffold_check_is_retried_then_escalates_to_the_checkpoint() 
 
 #[tokio::test]
 async fn in_ask_mode_the_scaffolder_asks_once_then_submits() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/lib.rs"), SKELETON).unwrap();
     let prompt = prompt(&dir, ClarificationMode::Ask);
@@ -315,7 +315,7 @@ async fn in_ask_mode_the_scaffolder_asks_once_then_submits() {
 
 #[test]
 fn a_scaffolder_model_without_tool_calling_is_rejected() {
-    let dir = TempDir::new().unwrap();
+    let dir = git_dir();
     let prompt = prompt(&dir, ClarificationMode::Assume);
     let started = run(
         &dir,
