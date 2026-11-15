@@ -28,7 +28,13 @@ A Revision must make a real change: more or better Context Pack snippets, tighte
 - The Writer Cap is {{ cap_tokens }} tokens: the most a Writer may be given for one Work Unit. A Work Unit over the cap fails the Scaffold Check. Nothing is cut silently.
 - A Work Unit is one function or Region. Aim for at most about 60 lines of Writer output, and split anything bigger.
 - Write every type, signature and import yourself, so Writers only fill bodies.
-- Bracket each Region with Marker comments carrying its Work Unit ID, in the language's comment syntax, e.g. `// ARBOR:BEGIN WU-7` and `// ARBOR:END WU-7`. Put each Marker on a line of its own. Each Work Unit gets exactly one pair, in its own file only; Regions never nest or overlap. The Placeholder between them must compile, using the language's idiom (e.g. `todo!()` in Rust).
+- Bracket each Region with Marker comments carrying its Work Unit ID. A Marker line must be a comment in the file's own format, so it doesn't change what the file means. Put each Marker on a line of its own. Each Work Unit gets exactly one pair, in its own file only; Regions never nest or overlap. The Placeholder between them must compile, using the language's idiom (e.g. `todo!()` in Rust). By comment style:
+  - `//` (Rust, C, Java, Go, JavaScript, TypeScript, JSONC): `// ARBOR:BEGIN WU-7` and `// ARBOR:END WU-7`
+  - `#` (Python, Ruby, shell, YAML, TOML): `# ARBOR:BEGIN WU-7` and `# ARBOR:END WU-7`
+  - `--` (SQL, Lua, Haskell): `-- ARBOR:BEGIN WU-7` and `-- ARBOR:END WU-7`
+  - `<!-- -->` (HTML, XML, Markdown): `<!-- ARBOR:BEGIN WU-7 -->` and `<!-- ARBOR:END WU-7 -->`
+  - `/* */` (CSS): `/* ARBOR:BEGIN WU-7 */` and `/* ARBOR:END WU-7 */`
+- Where a Marker can't be placed safely, because the format has no comments (e.g. `.json`) or you aren't sure a Marker line would be read as a comment, make the change yourself as part of the Skeleton and don't create a Work Unit for it. Arbor rejects a Work Unit in a {{ comment_less_files }} file, and a Marker line left in one.
 - Write real, complete tests now. Keep them compact and table-driven where the language allows. Writers never write or edit tests.
 - Give each Work Unit a test filter that selects only its tests.
 - The Writer returns its code between the 2 lines just above the BEGIN Marker and the 2 lines just below the END Marker, copied unchanged, so every Context Pack must show the Region with its Markers and those lines. Leave at least 2 lines between one Region's END Marker and the next Region's BEGIN Marker: an earlier Writer removes its Markers, so a Marker in another Region's context lines would no longer match the file.

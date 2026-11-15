@@ -1,10 +1,12 @@
 use arbor_config::Checks;
 use arbor_core::{Priority, Snippet, WorkUnit, WorkUnitId};
 use arbor_tiers::{
-    NO_SCAFFOLD_CHECK, ScaffoldCheck, field_problems, marker_problems, writer_cap_report,
-    writer_input_tokens,
+    NO_SCAFFOLD_CHECK, ScaffoldCheck, comment_less_marker_problems, field_problems,
+    marker_problems, writer_cap_report, writer_input_tokens,
 };
 use tempfile::TempDir;
+
+mod common;
 
 fn unit(id: u32, file: &str) -> WorkUnit {
     WorkUnit {
@@ -29,7 +31,7 @@ const SKELETON: &str = "pub fn add(a: i32, b: i32) -> i32 {\n    // ARBOR:BEGIN 
                         todo!()\n    // ARBOR:END WU-1\n}\n";
 
 fn worktree(files: &[(&str, &str)]) -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = common::git_dir();
     for (path, text) in files {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -146,6 +148,68 @@ fn review_reads_each_work_units_file_and_combines_every_problem() {
     );
 }
 
+const YAML_SKELETON: &str = "steps:\n  # ARBOR:BEGIN WU-1\n  - todo\n  # ARBOR:END WU-1\n";
+
+#[test]
+fn a_json_work_unit_is_rejected_and_a_yaml_one_with_hash_markers_is_accepted() {
+    let dir = worktree(&[
+        ("config.json", "{}\n"),
+        ("ci.yaml", YAML_SKELETON),
+        (
+            "settings.jsonc",
+            "{\n  // ARBOR:BEGIN WU-3\n  // ARBOR:END WU-3\n}\n",
+        ),
+    ]);
+    let check = check(&dir, None);
+
+    assert_eq!(check.review(&[unit(1, "ci.yaml")]), Ok(()));
+    assert_eq!(check.review(&[unit(3, "settings.jsonc")]), Ok(()));
+    let rejection = check.review(&[unit(2, "config.json")]).unwrap_err();
+    assert!(
+        rejection.contains(
+            "- WU-2: config.json can't hold a Marker because its format has no comments. Write \
+             that file yourself as part of the Skeleton and don't make it a Work Unit"
+        ),
+        "{rejection}"
+    );
+}
+
+#[test]
+fn a_marker_line_in_a_changed_json_file_is_reported_with_its_line() {
+    let dir = worktree(&[
+        ("src/lib.rs", SKELETON),
+        (
+            "package.json",
+            "{\n  // ARBOR:BEGIN WU-2\n  \"name\": \"x\"\n}\n",
+        ),
+    ]);
+
+    let rejection = check(&dir, None)
+        .review(&[unit(1, "src/lib.rs")])
+        .unwrap_err();
+
+    assert_eq!(
+        rejection,
+        "the Work Units were not accepted.\n\n- package.json: line 2 holds a Marker, but this \
+         format has no comments. Remove it and write the change yourself"
+    );
+}
+
+#[test]
+fn only_comment_less_files_are_scanned_for_marker_lines() {
+    let files = ["src/lib.rs".to_owned(), "data/Fixture.JSON".to_owned()];
+    let problems = comment_less_marker_problems(&files, |_| {
+        Some("[\n  1,\n// ARBOR:END WU-4\n]\n".to_owned())
+    });
+    assert_eq!(
+        problems,
+        [
+            "data/Fixture.JSON: line 3 holds a Marker, but this format has no comments. Remove it \
+          and write the change yourself"
+        ]
+    );
+}
+
 #[tokio::test]
 async fn without_a_scaffold_check_only_the_review_runs_and_a_warning_is_offered() {
     let dir = worktree(&[("src/lib.rs", SKELETON)]);
@@ -177,4 +241,16 @@ async fn the_scaffold_check_runs_after_a_clean_review() {
         error.starts_with("the Work Units were not accepted."),
         "the check doesn't run while the review fails: {error}"
     );
+}
+
+#[test]
+fn marker_text_inside_a_json_string_is_data_not_a_marker() {
+    let files = ["tests/fixtures/prompt.json".to_owned()];
+    let fixture = r#"{
+  "text": "Bracket it with // ARBOR:BEGIN WU-7 and // ARBOR:END WU-7",
+  "quoted": "a \"quote\" then ARBOR:END WU-7"
+}
+"#;
+    let problems = comment_less_marker_problems(&files, |_| Some(fixture.to_owned()));
+    assert_eq!(problems, Vec::<String>::new());
 }
