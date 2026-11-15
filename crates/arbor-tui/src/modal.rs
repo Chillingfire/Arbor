@@ -10,6 +10,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
+use std::cell::Cell;
 
 use crate::ui::{ACCENT, BAR, FAINT, MUTED, YELLOW};
 
@@ -38,6 +39,68 @@ pub struct CheckpointModal {
     pub feedback: Option<String>,
     /// At the Budget Checkpoint, the new cap in dollars as typed. It starts at double the old cap.
     pub budget_cap_text: String,
+    /// Whether the first digit or point replaces the suggested cap instead of adding to it.
+    pub budget_cap_suggested: bool,
+    pub scroll: ModalScroll,
+}
+
+/// How far a modal that doesn't fit the terminal is scrolled. By default it follows the selected
+/// row or the typing cursor; PgUp and PgDn take over until the next other key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModalScroll {
+    /// The first wrapped row shown, as of the last draw.
+    top: Cell<usize>,
+    following: bool,
+}
+
+impl Default for ModalScroll {
+    fn default() -> Self {
+        Self {
+            top: Cell::new(0),
+            following: true,
+        }
+    }
+}
+
+/// Wrapped rows that PgUp and PgDn move.
+const SCROLL_PAGE: usize = 5;
+
+impl ModalScroll {
+    /// Whether the key was a scroll key. Any other key puts the view back on what it follows.
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        let top = self.top.get();
+        match key.code {
+            KeyCode::PageUp => self.top.set(top.saturating_sub(SCROLL_PAGE)),
+            KeyCode::PageDown => self.top.set(top + SCROLL_PAGE),
+            _ => {
+                self.following = true;
+                return false;
+            }
+        }
+        self.following = false;
+        true
+    }
+
+    /// The first row to show of `total_rows`, with `focus` the rows from the first to the last
+    /// that must stay in view while following.
+    fn visible_top(
+        &self,
+        total_rows: usize,
+        visible_rows: usize,
+        focus: Option<(usize, usize)>,
+    ) -> usize {
+        let mut top = self.top.get();
+        if let (true, Some((focus_start, focus_end))) = (self.following, focus) {
+            if focus_start < top {
+                top = focus_start;
+            } else if focus_end > top + visible_rows {
+                top = focus_end - visible_rows;
+            }
+        }
+        let top = top.min(total_rows.saturating_sub(visible_rows));
+        self.top.set(top);
+        top
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +115,7 @@ pub struct QuestionsModal {
     pub tier: Tier,
     pub questions: String,
     pub answers: String,
+    pub scroll: ModalScroll,
 }
 
 impl Modal {
@@ -70,6 +134,8 @@ impl Modal {
             selected_row: 0,
             feedback: None,
             budget_cap_text,
+            budget_cap_suggested: true,
+            scroll: ModalScroll::default(),
         })
     }
 
@@ -78,6 +144,7 @@ impl Modal {
             tier,
             questions,
             answers: String::new(),
+            scroll: ModalScroll::default(),
         })
     }
 
@@ -113,6 +180,9 @@ fn proposed_tasks(checkpoint: &Checkpoint) -> Option<&[Task]> {
 
 impl CheckpointModal {
     fn handle_key(&mut self, key: KeyEvent) -> Option<ModalOutcome> {
+        if self.scroll.handle_key(key) {
+            return None;
+        }
         match self.checkpoint {
             Checkpoint::Escalation { may_replan, .. } => return escalation_key(key, may_replan),
             Checkpoint::Markers { .. } => return markers_key(key),
@@ -194,15 +264,20 @@ impl CheckpointModal {
 }
 
 impl CheckpointModal {
-    /// Digits and a point edit the new cap; Enter sends it once it is above what was spent.
+    /// Digits and a point edit the new cap, the first replacing the suggested one; Enter sends it
+    /// once it is above what was spent.
     fn budget_key(&mut self, key: KeyEvent, spent: Usd) -> Option<ModalOutcome> {
         let decision = match key.code {
             KeyCode::Esc => return Some(ModalOutcome::Hide),
             KeyCode::Char(typed_char) if typed_char.is_ascii_digit() || typed_char == '.' => {
+                if std::mem::take(&mut self.budget_cap_suggested) {
+                    self.budget_cap_text.clear();
+                }
                 self.budget_cap_text.push(typed_char);
                 return None;
             }
             KeyCode::Backspace => {
+                self.budget_cap_suggested = false;
                 self.budget_cap_text.pop();
                 return None;
             }
@@ -251,6 +326,9 @@ fn escalation_key(key: KeyEvent, may_replan: bool) -> Option<ModalOutcome> {
 
 impl QuestionsModal {
     fn handle_key(&mut self, key: KeyEvent) -> Option<ModalOutcome> {
+        if self.scroll.handle_key(key) {
+            return None;
+        }
         match edit_text(&mut self.answers, key) {
             TextEdit::Send => Some(ModalOutcome::Answered(std::mem::take(&mut self.answers))),
             TextEdit::Leave => Some(ModalOutcome::Hide),
@@ -287,22 +365,33 @@ fn edit_text(typed: &mut String, key: KeyEvent) -> TextEdit {
 }
 
 pub(crate) fn draw_modal(frame: &mut Frame, modal: &Modal) {
-    let (title, lines, hint_pairs) = match modal {
+    let (title, content, hint_pairs, scroll) = match modal {
         Modal::Checkpoint(checkpoint_modal) => (
             checkpoint_title(&checkpoint_modal.checkpoint),
-            checkpoint_lines(checkpoint_modal),
+            checkpoint_content(checkpoint_modal),
             checkpoint_hints(checkpoint_modal),
+            &checkpoint_modal.scroll,
         ),
         Modal::Questions(questions_modal) => (
             format!("The {:?} asks", questions_modal.tier),
-            question_lines(questions_modal),
+            question_content(questions_modal),
             TYPING_HINTS,
+            &questions_modal.scroll,
         ),
     };
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(100);
-    let wanted_height = u16::try_from(lines.len() + 4).unwrap_or(u16::MAX);
+    let text_width = width.saturating_sub(BORDER_AND_PADDING_COLUMNS);
+    let wrapped_rows = wrapped_row_count(&content.lines, text_width);
+    let wanted_height = u16::try_from(wrapped_rows + 2).unwrap_or(u16::MAX);
     let height = wanted_height.min(area.height.saturating_sub(2)).max(3);
+    let visible_rows = usize::from(height - 2);
+    let focus = content.focus.map(|focus_line| {
+        let rows_before = wrapped_row_count(&content.lines[..focus_line], text_width);
+        let rows_through = wrapped_row_count(&content.lines[..=focus_line], text_width);
+        (rows_before, rows_through)
+    });
+    let top = scroll.visible_top(wrapped_rows, visible_rows, focus);
     let popup = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -314,7 +403,7 @@ pub(crate) fn draw_modal(frame: &mut Frame, modal: &Modal) {
         hint_spans.push(Span::styled(format!("{keys} "), Style::new().fg(ACCENT)));
         hint_spans.push(Span::styled(format!("{action}  "), Style::new().fg(MUTED)));
     }
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(YELLOW))
         .title(Span::styled(
@@ -324,13 +413,39 @@ pub(crate) fn draw_modal(frame: &mut Frame, modal: &Modal) {
         .title_bottom(Line::from(hint_spans).alignment(Alignment::Right))
         .padding(Padding::horizontal(1))
         .style(Style::new().bg(BAR));
+    let (more_above, more_below) = (top > 0, top + visible_rows < wrapped_rows);
+    if more_above || more_below {
+        let arrows = format!(
+            " {}PgUp/PgDn{} ",
+            if more_above { "▲ " } else { "" },
+            if more_below { " ▼" } else { "" }
+        );
+        block =
+            block.title(Line::styled(arrows, Style::new().fg(ACCENT)).alignment(Alignment::Right));
+    }
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(content.lines)
             .block(block)
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((u16::try_from(top).unwrap_or(u16::MAX), 0)),
         popup,
     );
+}
+
+/// The border takes a column on each side, and so does the padding.
+const BORDER_AND_PADDING_COLUMNS: u16 = 4;
+
+fn wrapped_row_count(lines: &[Line<'static>], text_width: u16) -> usize {
+    Paragraph::new(lines.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(text_width)
+}
+
+/// What a modal shows, and the line that must stay in view as the Operator selects or types.
+struct ModalContent {
+    lines: Vec<Line<'static>>,
+    focus: Option<usize>,
 }
 
 const TYPING_HINTS: &[(&str, &str)] = &[
@@ -393,7 +508,8 @@ fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> &'static [(&'static s
     }
 }
 
-fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
+fn checkpoint_content(checkpoint_modal: &CheckpointModal) -> ModalContent {
+    let mut focus = None;
     let mut lines = match &checkpoint_modal.checkpoint {
         Checkpoint::Plan { plan } => {
             let mut lines = vec![labelled("Goal", &plan.goal)];
@@ -401,6 +517,7 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
                 lines.push(constraint_line(constraint));
             }
             lines.push(Line::default());
+            focus = Some(lines.len() + 1 + checkpoint_modal.selected_row);
             lines.extend(task_lines(checkpoint_modal, &plan.tasks, "Plan"));
             lines
         }
@@ -410,6 +527,7 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
                 "These Tasks replace the failed one, which starts again from its first commit.",
                 Style::new().fg(MUTED),
             ));
+            focus = Some(lines.len() + 1 + checkpoint_modal.selected_row);
             lines.extend(task_lines(checkpoint_modal, &replan.tasks, "Replan"));
             lines
         }
@@ -421,7 +539,9 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
         } => escalation_lines(cause, *may_replan, failed_fix.as_deref()),
         Checkpoint::Markers { remaining } => marker_lines(remaining),
         Checkpoint::Budget { cap, spent } => {
-            budget_lines(*cap, *spent, &checkpoint_modal.budget_cap_text)
+            let lines = budget_lines(*cap, *spent, &checkpoint_modal.budget_cap_text);
+            focus = Some(BUDGET_CAP_LINE);
+            lines
         }
         Checkpoint::Scaffold { work_units, .. } => {
             let mut lines = vec![Line::styled(
@@ -467,8 +587,9 @@ fn checkpoint_lines(checkpoint_modal: &CheckpointModal) -> Vec<Line<'static>> {
             Style::new().fg(MUTED),
         ));
         lines.extend(typed_lines(feedback));
+        focus = Some(lines.len() - 1);
     }
-    lines
+    ModalContent { lines, focus }
 }
 
 fn task_lines(
@@ -583,6 +704,8 @@ fn marker_lines(remaining: &[LeftoverMarker]) -> Vec<Line<'static>> {
     lines
 }
 
+const BUDGET_CAP_LINE: usize = 2;
+
 fn budget_lines(cap: Usd, spent: Usd, budget_cap_text: &str) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::raw(format!(
@@ -623,7 +746,7 @@ fn output_tail(check_output: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn question_lines(questions_modal: &QuestionsModal) -> Vec<Line<'static>> {
+fn question_content(questions_modal: &QuestionsModal) -> ModalContent {
     let mut lines: Vec<Line<'static>> = questions_modal
         .questions
         .lines()
@@ -632,7 +755,8 @@ fn question_lines(questions_modal: &QuestionsModal) -> Vec<Line<'static>> {
     lines.push(Line::default());
     lines.push(Line::styled("Your answers", Style::new().fg(MUTED)));
     lines.extend(typed_lines(&questions_modal.answers));
-    lines
+    let focus = Some(lines.len() - 1);
+    ModalContent { lines, focus }
 }
 
 fn labelled(name: &str, labelled_text: &str) -> Line<'static> {

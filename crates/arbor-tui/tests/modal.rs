@@ -45,13 +45,17 @@ fn type_text(ui_state: &mut UiState, typed: &str) {
 }
 
 fn screen(ui_state: &UiState) -> String {
+    screen_with_rows(ui_state, 34)
+}
+
+fn screen_with_rows(ui_state: &UiState, rows: u16) -> String {
     let status = StatusInfo {
         models: ["opus".to_owned(), "sonnet".to_owned(), "haiku".to_owned()],
         clarification_mode: ClarificationMode::Ask,
         branch: None,
         activity: None,
     };
-    let mut terminal = Terminal::new(TestBackend::new(110, 34)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(110, rows)).unwrap();
     terminal
         .draw(|frame| draw(frame, &SessionView::new(), ui_state, &status))
         .unwrap();
@@ -311,4 +315,82 @@ fn leftover_markers_are_listed_and_approved_removed_or_stopped_at() {
             KeyOutcome::Decided(decision)
         );
     }
+}
+
+#[test]
+fn the_first_digit_of_a_new_cap_replaces_the_suggested_one() {
+    let mut ui_state = opened(budget());
+    type_text(&mut ui_state, "25");
+
+    assert!(screen(&ui_state).contains("New cap  $25"));
+    assert_eq!(
+        press(&mut ui_state, KeyCode::Enter),
+        KeyOutcome::Decided(Decision::SetBudgetCap(Some(Usd::from_dollars(25.0))))
+    );
+}
+
+fn long_plan() -> Plan {
+    let mut plan = plan();
+    plan.constraints = (1..=6)
+        .map(|number| {
+            format!(
+                "Constraint {number}: {}",
+                "keeps the change small ".repeat(8)
+            )
+        })
+        .collect();
+    plan.tasks = (1..=12)
+        .map(|number| Task {
+            title: format!("Task number {number}"),
+            description: String::new(),
+        })
+        .collect();
+    plan
+}
+
+#[test]
+fn a_plan_taller_than_the_terminal_keeps_the_selected_task_in_view() {
+    let mut ui_state = opened(Modal::checkpoint(Checkpoint::Plan { plan: long_plan() }));
+    assert!(screen(&ui_state).contains("Task number 1 "));
+    assert!(!screen(&ui_state).contains("Task number 12"));
+
+    for _ in 0..11 {
+        press(&mut ui_state, KeyCode::Char('j'));
+    }
+    assert!(screen(&ui_state).contains("Task number 12"));
+
+    for _ in 0..11 {
+        press(&mut ui_state, KeyCode::Char('k'));
+    }
+    assert!(screen(&ui_state).contains("Task number 1 "));
+}
+
+#[test]
+fn page_keys_scroll_an_escalation_whose_options_are_below_the_terminal() {
+    let failed_fix = (1..=8)
+        .map(|number| format!("error number {number}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut ui_state = opened(escalation(true, Some(&failed_fix)));
+    assert!(!screen_with_rows(&ui_state, 16).contains("Stop here"));
+    assert!(screen_with_rows(&ui_state, 16).contains("PgUp/PgDn"));
+
+    for _ in 0..4 {
+        press(&mut ui_state, KeyCode::PageDown);
+    }
+    assert!(screen_with_rows(&ui_state, 16).contains("Stop here"));
+
+    for _ in 0..4 {
+        press(&mut ui_state, KeyCode::PageUp);
+    }
+    assert!(!screen_with_rows(&ui_state, 16).contains("Stop here"));
+}
+
+#[test]
+fn long_feedback_scrolls_so_what_is_typed_stays_visible() {
+    let mut ui_state = opened(Modal::checkpoint(Checkpoint::Plan { plan: long_plan() }));
+    press(&mut ui_state, KeyCode::Char('r'));
+    type_text(&mut ui_state, "too many Tasks here");
+
+    assert!(screen_with_rows(&ui_state, 16).contains("too many Tasks here"));
 }
