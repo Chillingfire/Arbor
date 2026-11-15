@@ -23,6 +23,5 @@ tokio = { version = "1", features = ["process", "time"] }
 which = "8"
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

@@ -6,7 +6,7 @@ mod detect;
 mod files;
 mod paths;
 
-pub use api_key::{API_KEY_ENV, ApiKey, KeySource, resolve_api_key};
+pub use api_key::{API_KEY_ENV, ApiKey, KeySource, load_api_key, resolve_api_key};
 pub use config::{
     Checks, ClarificationMode, Config, ConfigError, ConfigFile, FILTER_PLACEHOLDER, RoleConfig,
     Roles,

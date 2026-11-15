@@ -81,6 +81,11 @@ impl Template {
             Self::CheckProposal => &["detection", "tried_checks"],
         }
     }
+
+    /// Every variable the template may use.
+    fn variables(self) -> Vec<&'static str> {
+        [self.static_variables(), self.input_variables()].concat()
+    }
 }
 
 impl fmt::Display for Template {
@@ -216,9 +221,7 @@ impl fmt::Display for PromptError {
                 "{template} template {} uses unknown variables: {}. It may use: {}",
                 path.display(),
                 variables.join(", "),
-                [template.static_variables(), template.input_variables()]
-                    .concat()
-                    .join(", ")
+                template.variables().join(", ")
             ),
             Self::NotStatic { template, path } => write!(
                 f,
@@ -256,37 +259,33 @@ pub struct Prompts {
 impl Prompts {
     /// The templates compiled into Arbor.
     pub fn builtin() -> Self {
-        let mut env = environment();
-        let mut paths = HashMap::new();
-        for template in Template::ALL {
-            let path = builtin_path(template);
-            add(&mut env, template, template.builtin_template(), &path)
-                .expect("built-in templates are valid");
-            paths.insert(template, path);
-        }
-        Self { env, paths }
+        Self::with_overrides(None).expect("built-in templates are valid")
     }
 
     /// The built-in templates, each replaced by `.arbor/prompts/<name>.md` under `project_root`
     /// where that file exists.
     pub fn load(project_root: &Path) -> Result<Self, PromptError> {
+        Self::with_overrides(Some(&project_root.join(PROMPTS_DIR)))
+    }
+
+    fn with_overrides(overrides_dir: Option<&Path>) -> Result<Self, PromptError> {
         let mut env = environment();
         let mut paths = HashMap::new();
         for template in Template::ALL {
-            let path = project_root
-                .join(PROMPTS_DIR)
-                .join(format!("{}.md", template.name()));
-            let path = match fs::read_to_string(&path) {
-                Ok(source) => {
+            let overridden = match overrides_dir {
+                Some(dir) => read_override(dir, template)?,
+                None => None,
+            };
+            let path = match overridden {
+                Some((source, path)) => {
                     add(&mut env, template, &source, &path)?;
                     path
                 }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                None => {
                     let path = builtin_path(template);
                     add(&mut env, template, template.builtin_template(), &path)?;
                     path
                 }
-                Err(source) => return Err(PromptError::Io { path, source }),
             };
             paths.insert(template, path);
         }
@@ -376,6 +375,16 @@ fn environment() -> Environment<'static> {
     env
 }
 
+/// The override's text and path, or `None` when the project doesn't override the template.
+fn read_override(dir: &Path, template: Template) -> Result<Option<(String, PathBuf)>, PromptError> {
+    let path = dir.join(format!("{}.md", template.name()));
+    match fs::read_to_string(&path) {
+        Ok(source) => Ok(Some((source, path))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(PromptError::Io { path, source }),
+    }
+}
+
 fn builtin_path(template: Template) -> PathBuf {
     PathBuf::from(format!("(built-in) {}.md", template.name()))
 }
@@ -399,7 +408,7 @@ fn add(
 
     let compiled = env.get_template(template.name()).map_err(template_error)?;
     let globals: Vec<&str> = env.globals().map(|(name, _)| name).collect();
-    let known = [template.static_variables(), template.input_variables()].concat();
+    let known = template.variables();
     let mut unknown: Vec<String> = compiled
         .undeclared_variables(false)
         .into_iter()
@@ -557,7 +566,7 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
         ("revision", Value::from(Serde(revision))),
         ("replan", Value::from(Serde(replan))),
     ];
-    let known = [template.static_variables(), template.input_variables()].concat();
+    let known = template.variables();
     all.into_iter()
         .filter(|(name, _)| known.contains(name))
         .collect()

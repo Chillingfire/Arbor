@@ -13,7 +13,10 @@ impl Config {
     /// Loads the user config at `user_path` (if any) and `arbor.toml` in `project_root`. Missing
     /// files count as empty.
     pub fn load(user_path: Option<&Path>, project_root: &Path) -> Result<Self, ConfigError> {
-        let user = user_path.map(read_optional).transpose()?.flatten();
+        let user = match user_path {
+            Some(path) => read_optional(path)?,
+            None => None,
+        };
         let project = read_optional(&project_root.join(PROJECT_CONFIG_FILE))?;
         Self::from_toml(user.as_deref(), project.as_deref())
     }

@@ -79,22 +79,22 @@ impl Tools {
     /// The tools this Tier may call.
     pub fn definitions(&self) -> Vec<ToolDef> {
         let mut definitions = vec![
-            definition::<read::ReadFileArgs>(
+            tool_definition::<read::ReadFileArgs>(
                 "read_file",
                 "Read a text file with numbered lines, at most 400 lines at a time. Use offset \
                  and limit to page through longer files.",
             ),
-            definition::<read::ListDirArgs>(
+            tool_definition::<read::ListDirArgs>(
                 "list_dir",
                 "List a directory's entries. Directories end with /. Files excluded by \
                  .gitignore are left out.",
             ),
-            definition::<search::GlobArgs>(
+            tool_definition::<search::GlobArgs>(
                 "glob",
                 "Find files whose paths match a glob, skipping files excluded by .gitignore. \
                  Results are capped.",
             ),
-            definition::<search::GrepArgs>(
+            tool_definition::<search::GrepArgs>(
                 "grep",
                 "Search file contents for a regular expression. Returns path:line: text for \
                  each matching line, skipping files excluded by .gitignore. Results are capped.",
@@ -102,15 +102,15 @@ impl Tools {
         ];
         if self.toolset == Toolset::Scaffolder {
             definitions.extend([
-                definition::<write::WriteFileArgs>(
+                tool_definition::<write::WriteFileArgs>(
                     "write_file",
                     "Create or overwrite a file in the worktree with the given content.",
                 ),
-                definition::<write::EditFileArgs>(
+                tool_definition::<write::EditFileArgs>(
                     "edit_file",
                     "Replace one exact snippet in a file. The snippet must occur exactly once.",
                 ),
-                definition::<checks::RunChecksArgs>(
+                tool_definition::<checks::RunChecksArgs>(
                     "run_checks",
                     "Run one of the project's configured checks in the worktree and return its \
                      exit code and output. scaffold verifies the build; unit runs all tests; \
@@ -124,29 +124,35 @@ impl Tools {
     /// Runs a tool the model called. `arguments` is the JSON text the model wrote. Failures,
     /// including refusals, come back as error output for the model rather than as `Err`.
     pub async fn call(&self, name: &str, arguments: &str) -> ToolOutput {
+        if self.toolset == Toolset::Planner && SCAFFOLDER_ONLY.contains(&name) {
+            return ToolOutput::error(format!(
+                "{name} is not available to the Planner, which only reads"
+            ));
+        }
+        if name == "run_checks" {
+            return self.run_checks(arguments).await;
+        }
         let worktree = &self.worktree;
         let tool_result = match name {
             "read_file" => parse(name, arguments).and_then(|args| read::read_file(worktree, args)),
             "list_dir" => parse(name, arguments).and_then(|args| read::list_dir(worktree, args)),
             "glob" => parse(name, arguments).and_then(|args| search::glob(worktree, args)),
             "grep" => parse(name, arguments).and_then(|args| search::grep(worktree, args)),
-            _ if self.toolset == Toolset::Planner && SCAFFOLDER_ONLY.contains(&name) => Err(
-                format!("{name} is not available to the Planner, which only reads"),
-            ),
             "write_file" => {
                 parse(name, arguments).and_then(|args| write::write_file(worktree, args))
             }
             "edit_file" => parse(name, arguments).and_then(|args| write::edit_file(worktree, args)),
-            "run_checks" => {
-                let check_result = match parse(name, arguments) {
-                    Ok(args) => checks::run_checks(worktree, &self.checks, args).await,
-                    Err(message) => Err(message),
-                };
-                return check_result.unwrap_or_else(ToolOutput::error);
-            }
             _ => Err(format!("unknown tool {name}")),
         };
         tool_result.map_or_else(ToolOutput::error, ToolOutput::success)
+    }
+
+    async fn run_checks(&self, arguments: &str) -> ToolOutput {
+        let check_result = match parse("run_checks", arguments) {
+            Ok(args) => checks::run_checks(&self.worktree, &self.checks, args).await,
+            Err(message) => Err(message),
+        };
+        check_result.unwrap_or_else(ToolOutput::error)
     }
 }
 
@@ -166,7 +172,7 @@ impl ToolOutput {
     }
 }
 
-fn definition<T: JsonSchema>(name: &str, description: &str) -> ToolDef {
+pub fn tool_definition<T: JsonSchema>(name: &str, description: &str) -> ToolDef {
     let mut parameters =
         serde_json::to_value(schemars::schema_for!(T)).expect("a JSON Schema serializes to JSON");
     if let Some(object) = parameters.as_object_mut() {
