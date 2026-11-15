@@ -368,6 +368,7 @@ async fn a_missing_response_finishes_the_writer_without_touching_the_file() {
             id: WorkUnitId(1),
             attempts: vec![],
             missing_response: Some(vec!["the Number type".into(), "what sub returns".into()]),
+            broken_region: None,
         })
     );
 }
@@ -448,19 +449,103 @@ async fn without_a_unit_filtered_template_only_the_build_is_checked() {
     assert!(file(&dir).contains("return a * b"));
 }
 
+/// The Writer's failure for its broken Region, checking that it ended the Writer, used no attempt
+/// and told the Revision what was wrong.
+fn broken_region_failure(writer: &Writer) -> arbor_core::BrokenRegion {
+    assert!(writer.is_finished());
+    assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
+    let failure = writer
+        .work_unit_failure()
+        .expect("a broken Region fails the Work Unit");
+    assert!(failure.attempts.is_empty());
+    failure.broken_region.expect("the failure says what broke")
+}
+
 #[tokio::test]
-async fn a_file_without_the_region_is_an_error_not_an_attempt() {
+async fn a_deleted_begin_marker_fails_the_work_unit_before_any_model_call() {
     let dir = repo();
-    fs::write(dir.path().join("calc.py"), FILLED).unwrap();
+    let without_begin = SKELETON.replace("    # ARBOR:BEGIN WU-1\n", "");
+    fs::write(dir.path().join("calc.py"), &without_begin).unwrap();
     let client = QueueClient::new([text(GOOD)]);
     let mut writer = writer(&dir, checks());
+
     let err = writer.attempt(&client).await.unwrap_err();
+
+    assert!(matches!(err.error, WriterError::RegionBroken { .. }));
+    assert_eq!(err.usage, None);
+    assert!(client.requests().is_empty());
+    let broken = broken_region_failure(&writer);
     assert_eq!(
-        err.to_string(),
-        "calc.py doesn't hold exactly one Region for WU-1"
+        broken.problem,
+        "WU-1: ARBOR:END on line 5 has no ARBOR:BEGIN"
     );
-    assert_eq!(err.usage.map(|usage| usage.input_tokens), Some(100));
-    assert_eq!(writer.attempts_left(), MAX_WRITER_ATTEMPTS);
+    assert_eq!(broken.file_text, without_begin);
+}
+
+#[tokio::test]
+async fn a_duplicated_region_fails_the_work_unit_before_any_model_call() {
+    let dir = repo();
+    let duplicated = format!(
+        "{SKELETON}\ndef mul(a, b):\n    # ARBOR:BEGIN WU-1\n    raise NotImplementedError\n    \
+         # ARBOR:END WU-1\n"
+    );
+    fs::write(dir.path().join("calc.py"), &duplicated).unwrap();
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, checks());
+
+    writer.attempt(&client).await.unwrap_err();
+
+    assert!(client.requests().is_empty());
+    let broken = broken_region_failure(&writer);
+    assert_eq!(
+        broken.problem,
+        "WU-1 has more than one Region, on lines 4, 12"
+    );
+}
+
+#[tokio::test]
+async fn a_check_that_rewrites_a_marker_line_still_commits_the_code_that_passed() {
+    let dir = repo();
+    let path = dir.path();
+    // A "formatter" Check: checking out this branch's calc.py drops the END Marker.
+    let formatted = SKELETON
+        .replace("    raise NotImplementedError\n", "    return a + b\n")
+        .replace("    # ARBOR:END WU-1\n", "");
+    git(path, &["switch", "--quiet", "-c", "formatted"]);
+    fs::write(path.join("calc.py"), formatted).unwrap();
+    git(path, &["commit", "--quiet", "--all", "-m", "Format"]);
+    git(path, &["switch", "--quiet", "main"]);
+    let formatting = Checks {
+        scaffold: Some("git checkout formatted -- calc.py".into()),
+        ..checks()
+    };
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, formatting);
+
+    let attempt = writer.attempt(&client).await.unwrap();
+
+    assert!(
+        matches!(attempt.outcome, AttemptOutcome::Passed { .. }),
+        "{:?}",
+        attempt.outcome
+    );
+    assert_eq!(file(&dir), FILLED);
+}
+
+#[tokio::test]
+async fn a_deleted_file_is_a_broken_region_found_before_any_model_call() {
+    let dir = repo();
+    fs::remove_file(dir.path().join("calc.py")).unwrap();
+    let client = QueueClient::new([text(GOOD)]);
+    let mut writer = writer(&dir, checks());
+
+    let err = writer.attempt(&client).await.unwrap_err();
+
+    assert!(matches!(err.error, WriterError::RegionBroken { .. }));
+    assert!(client.requests().is_empty());
+    let broken = broken_region_failure(&writer);
+    assert_eq!(broken.problem, "calc.py is gone");
+    assert_eq!(broken.file_text, "");
 }
 
 #[test]

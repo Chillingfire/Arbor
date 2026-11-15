@@ -2,8 +2,8 @@ mod common;
 
 use arbor_config::{Checks, ClarificationMode};
 use arbor_core::{
-    Event, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task,
-    WorkUnit, WorkUnitFailure, WorkUnitId,
+    BrokenRegion, Event, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet,
+    Task, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use arbor_llm::Message;
 use arbor_prompts::{Conventions, Prompt, Prompts, RevisionInputs, ScaffolderInputs};
@@ -121,6 +121,7 @@ fn writer_failed_on_wu_4() -> RevisionCause {
         id: WorkUnitId(4),
         attempts: vec![],
         missing_response: Some(vec!["the i32 overflow rules".into()]),
+        broken_region: None,
     })
 }
 
@@ -364,7 +365,13 @@ fn a_revision_that_only_rewords_is_rejected_and_a_new_test_file_is_a_change() {
     let task_work_units = [unit(4, "Add the numbers."), unit(5, "Subtract.")];
     let reworded = revision("Say it more plainly", &[4]);
 
-    let reviewed = review_revision(dir.path(), &task_work_units, reworded.clone()).unwrap();
+    let reviewed = review_revision(
+        dir.path(),
+        &task_work_units,
+        &writer_failed_on_wu_4(),
+        reworded.clone(),
+    )
+    .unwrap();
     assert_eq!(
         reviewed,
         Event::RevisionRejected {
@@ -375,6 +382,74 @@ fn a_revision_that_only_rewords_is_rejected_and_a_new_test_file_is_a_change() {
 
     std::fs::create_dir(dir.path().join("tests")).unwrap();
     std::fs::write(dir.path().join("tests/add.rs"), "#[test]\nfn adds() {}\n").unwrap();
-    let reviewed = review_revision(dir.path(), &task_work_units, reworded.clone()).unwrap();
+    let reviewed = review_revision(
+        dir.path(),
+        &task_work_units,
+        &writer_failed_on_wu_4(),
+        reworded.clone(),
+    )
+    .unwrap();
     assert_eq!(reviewed, Event::RevisionSubmitted { revision: reworded });
+}
+
+#[test]
+fn a_revision_of_a_broken_region_counts_once_the_region_is_marked_again() {
+    let dir = repo_with_failed_region();
+    let task_work_units = [unit(4, "Add the numbers."), unit(5, "Subtract.")];
+    let broken_file = TWO_MARKED.replace("    // ARBOR:BEGIN WU-4\n", "");
+    let broken = RevisionCause::WorkUnitFailed(WorkUnitFailure {
+        id: WorkUnitId(4),
+        attempts: vec![],
+        missing_response: None,
+        broken_region: Some(BrokenRegion {
+            problem: "WU-4: ARBOR:END on line 2 has no ARBOR:BEGIN".into(),
+            file_text: broken_file.clone(),
+        }),
+    });
+    let marked_again = revision("Put WU-4's BEGIN Marker back", &[4]);
+
+    let reviewed =
+        review_revision(dir.path(), &task_work_units, &broken, marked_again.clone()).unwrap();
+    assert_eq!(
+        reviewed,
+        Event::RevisionSubmitted {
+            revision: marked_again.clone()
+        }
+    );
+
+    std::fs::write(dir.path().join("src/lib.rs"), &broken_file).unwrap();
+    git(
+        dir.path(),
+        &["commit", "--quiet", "--all", "-m", "Lose WU-4's BEGIN"],
+    );
+    let reviewed =
+        review_revision(dir.path(), &task_work_units, &broken, marked_again.clone()).unwrap();
+    assert!(
+        matches!(reviewed, Event::RevisionRejected { .. }),
+        "{reviewed:?}"
+    );
+}
+
+#[test]
+fn an_intact_region_that_was_never_broken_on_disk_isnt_counted_as_mended() {
+    let dir = repo_with_failed_region();
+    let task_work_units = [unit(4, "Add the numbers."), unit(5, "Subtract.")];
+    let intact_file = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    let unchanged = RevisionCause::WorkUnitFailed(WorkUnitFailure {
+        id: WorkUnitId(4),
+        attempts: vec![],
+        missing_response: None,
+        broken_region: Some(BrokenRegion {
+            problem: "WU-4 has more than one Region, on lines 2, 9".into(),
+            file_text: intact_file,
+        }),
+    });
+    let no_op = revision("Mark WU-4 again", &[4]);
+
+    let reviewed = review_revision(dir.path(), &task_work_units, &unchanged, no_op).unwrap();
+
+    assert!(
+        matches!(reviewed, Event::RevisionRejected { .. }),
+        "{reviewed:?}"
+    );
 }

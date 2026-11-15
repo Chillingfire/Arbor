@@ -1,8 +1,8 @@
 mod common;
 
 use arbor_core::{
-    ApplyError, Effect, Event, FailedAttempt, MAX_REVISIONS, Phase, Revision, RevisionCause,
-    Session, WorkUnitFailure, WorkUnitId,
+    ApplyError, BrokenRegion, Effect, Event, FailedAttempt, MAX_REVISIONS, Phase, Revision,
+    RevisionCause, Session, WorkUnitFailure, WorkUnitId,
 };
 use common::{plan, request, work_unit};
 
@@ -55,6 +55,7 @@ fn retries_used_up(id: u32) -> WorkUnitFailure {
             })
             .collect(),
         missing_response: None,
+        broken_region: None,
     }
 }
 
@@ -63,6 +64,7 @@ fn missing_response(id: u32) -> WorkUnitFailure {
         id: WorkUnitId(id),
         attempts: vec![],
         missing_response: Some(vec!["the Config type".into()]),
+        broken_region: None,
     }
 }
 
@@ -180,6 +182,38 @@ fn after_two_revisions_of_a_work_unit_the_human_operator_decides() {
         apply_all(&mut session, &accepted(&[1]));
     }
     let failure = retries_used_up(1);
+    let effects = session.apply(&failed(&failure)).unwrap();
+    assert_eq!(
+        effects,
+        [Effect::ShowEscalationCheckpoint {
+            task: 0,
+            cause: RevisionCause::WorkUnitFailed(failure),
+        }]
+    );
+}
+
+fn broken_region(id: u32) -> WorkUnitFailure {
+    WorkUnitFailure {
+        id: WorkUnitId(id),
+        attempts: vec![],
+        missing_response: None,
+        broken_region: Some(BrokenRegion {
+            problem: format!("WU-{id} has more than one Region, on lines 4, 12"),
+            file_text: "fn f() {}
+"
+            .into(),
+        }),
+    }
+}
+
+#[test]
+fn a_region_still_broken_after_two_revisions_goes_to_the_human_operator() {
+    let mut session = writing();
+    for _ in 0..MAX_REVISIONS {
+        session.apply(&failed(&broken_region(1))).unwrap();
+        apply_all(&mut session, &accepted(&[1]));
+    }
+    let failure = broken_region(1);
     let effects = session.apply(&failed(&failure)).unwrap();
     assert_eq!(
         effects,
