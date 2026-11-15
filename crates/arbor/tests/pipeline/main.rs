@@ -82,6 +82,16 @@ const HAND_WRITTEN_BODY: &str = "    text.split_whitespace()
         })
 ";
 
+/// A hand-written body that also pastes in the Markers of a Work Unit that isn't being fixed.
+const STRAY_MARKERS_AND_BODY: &str = "    // ARBOR:BEGIN WU-9
+    // ARBOR:END WU-9
+    text.split_whitespace()
+        .fold(None, |longest: Option<&str>, word| match longest {
+            Some(current) if current.len() >= word.len() => Some(current),
+            _ => Some(word),
+        })
+";
+
 /// Runs the Session for the Request to its end, approving every Checkpoint as it is.
 async fn run_session<'a>(sample: &'a SampleRepo, client: &'a FixtureClient) -> Autopilot<'a> {
     let (pipeline, end) = run_with_operator(sample, client, None).await;
@@ -445,15 +455,48 @@ async fn a_replan_resets_the_task_and_scaffolds_its_replacement() {
 }
 
 #[tokio::test]
-async fn markers_left_by_a_fix_by_hand_wait_at_the_marker_checkpoint_until_removed() {
+async fn a_fix_by_hand_that_keeps_the_regions_markers_has_them_removed() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation");
+    let operator = ScriptedOperator::new(|checkpoint| {
+        if let Checkpoint::Escalation { .. } = checkpoint {
+            let library = sample.read("src/lib.rs");
+            let fixed = library.replace("    todo!()\n", HAND_WRITTEN_BODY);
+            sample.write("src/lib.rs", &fixed);
+            return Decision::Fixed;
+        }
+        Decision::Approve
+    });
+    let shown = operator.shown.clone();
+    let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
+
+    client.finish();
+    assert_eq!(end, SessionEnd::Finished);
+    assert_replays(&pipeline);
+    assert!(
+        !shown
+            .borrow()
+            .iter()
+            .any(|checkpoint| matches!(checkpoint, Checkpoint::Markers { .. }))
+    );
+    let library = sample.read("src/lib.rs");
+    assert!(library.contains(HAND_WRITTEN_BODY), "{library}");
+    assert!(!library.contains("ARBOR:"), "{library}");
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [SKELETON_COMMIT, arbor_tiers::TASK_FIX_SUBJECT]
+    );
+}
+
+#[tokio::test]
+async fn markers_a_fix_by_hand_adds_wait_at_the_marker_checkpoint_until_removed() {
     let sample = SampleRepo::new(FEATURE);
     let client = FixtureClient::new("escalation");
     let operator = ScriptedOperator::new(|checkpoint| {
         let library = sample.read("src/lib.rs");
         match checkpoint {
-            // The fix keeps the Region's Markers around the new body.
             Checkpoint::Escalation { .. } => {
-                let fixed = library.replace("    todo!()\n", HAND_WRITTEN_BODY);
+                let fixed = library.replace(SKELETON_REGION, STRAY_MARKERS_AND_BODY);
                 sample.write("src/lib.rs", &fixed);
             }
             Checkpoint::Markers { .. } => {

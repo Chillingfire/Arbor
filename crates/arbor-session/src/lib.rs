@@ -23,7 +23,7 @@ use arbor_tiers::{
     Agent, Attempt, AttemptOutcome, MARKER_FIX_SUBJECT, Outcome, PlannerRun, Rejection, ReplanRun,
     RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, WriterRun, check_markers, check_operator_fix,
     commit_operator_fix, commit_revision, commit_skeleton, discard_revision, reset_task,
-    review_revision, run_task_check, task_diff,
+    review_revision, run_task_check, strip_work_unit_markers, task_diff,
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
@@ -119,6 +119,9 @@ pub struct Autopilot<'a> {
     prompts: Prompts,
     /// The commit of the Work Unit that passed and waits for `WorkUnitCommitted`.
     passed_commit: Option<CommitId>,
+    /// Set when a Task fixed by hand has just passed `checks.unit`, which `RunTaskChecks` would
+    /// run again on the same commit.
+    task_fix_checked: bool,
     /// Where each event is written before anyone is told of it (ADR-0004).
     event_log: Option<EventLog<Box<dyn Write + 'a>>>,
     observer: Option<Box<dyn FnMut(AutopilotUpdate) + 'a>>,
@@ -147,6 +150,7 @@ impl<'a> Autopilot<'a> {
             conventions,
             prompts,
             passed_commit: None,
+            task_fix_checked: false,
             event_log: None,
             observer: None,
             operator: Box::new(ApproveEverything),
@@ -286,6 +290,9 @@ impl<'a> Autopilot<'a> {
                     commit: commit.as_str().to_owned(),
                 }]
             }
+            Effect::RunTaskChecks { .. } if std::mem::take(&mut self.task_fix_checked) => {
+                vec![Event::TaskChecksPassed]
+            }
             Effect::RunTaskChecks { .. } => {
                 self.working(None, None, "Running the Task's Unit Check".to_owned());
                 let task_check = run_task_check(self.worktree.path(), &self.config.checks).await;
@@ -312,7 +319,7 @@ impl<'a> Autopilot<'a> {
             Effect::ShowMarkerCheckpoint { remaining } => {
                 return self.checkpoint(Checkpoint::Markers { remaining }).await;
             }
-            Effect::ShowBudgetCheckpoint => vec![self.budget_checkpoint().await],
+            Effect::ShowBudgetCheckpoint => vec![self.budget_checkpoint().await?],
             Effect::EndSession if *self.session.phase() == Phase::Stopped => {
                 return Ok(Step::End(SessionEnd::StoppedAtBudget));
             }
@@ -373,7 +380,10 @@ impl<'a> Autopilot<'a> {
                 }
                 Decision::Fixed => match self.check_fix(&cause).await? {
                     Some(check_output) => failed_fix = Some(check_output),
-                    None => return Ok(Step::Events(vec![self.commit_fix()?])),
+                    None => {
+                        self.task_fix_checked = cause.work_unit().is_none();
+                        return Ok(Step::Events(vec![self.commit_fix(&cause)?]));
+                    }
                 },
                 decision => return Err(misplaced(&checkpoint, &decision)),
             }
@@ -396,7 +406,14 @@ impl<'a> Autopilot<'a> {
         .map_err(failed("checking the fix"))
     }
 
-    fn commit_fix(&self) -> Result<Event, AutopilotError> {
+    /// Commits the fix by hand. The Work Unit it fixes loses its Markers, as when a Writer's code
+    /// passes, so the Operator needn't remove them to get past the Marker Checkpoint.
+    fn commit_fix(&self, cause: &RevisionCause) -> Result<Event, AutopilotError> {
+        if let Some(id) = cause.work_unit() {
+            let work_unit = self.work_unit(id)?;
+            strip_work_unit_markers(self.worktree.path(), &work_unit.file, id)
+                .map_err(failed("removing the fixed Work Unit's Markers"))?;
+        }
         let message = CommitMessage::new(TASK_FIX_SUBJECT).map_err(failed("committing the fix"))?;
         commit_operator_fix(self.worktree, &message).map_err(failed("committing the fix"))
     }
@@ -417,7 +434,7 @@ impl<'a> Autopilot<'a> {
 
     /// Asks the Operator at the Budget Checkpoint until they set a cap above what the Session has
     /// spent, or stop. Returns `BudgetCapSet` or `SessionStopped`.
-    async fn budget_checkpoint(&mut self) -> Event {
+    async fn budget_checkpoint(&mut self) -> Result<Event, AutopilotError> {
         let spent = self.session.usage().total().cost;
         let cap = self.session.budget_cap().unwrap_or(spent);
         loop {
@@ -426,10 +443,11 @@ impl<'a> Autopilot<'a> {
                 Decision::SetBudgetCap(new_cap)
                     if new_cap.is_none_or(|new_cap| new_cap > spent) =>
                 {
-                    return Event::BudgetCapSet { cap: new_cap };
+                    return Ok(Event::BudgetCapSet { cap: new_cap });
                 }
-                Decision::Stop => return Event::SessionStopped,
-                _ => {}
+                Decision::SetBudgetCap(_) => {}
+                Decision::Stop => return Ok(Event::SessionStopped),
+                decision => return Err(misplaced(&checkpoint, &decision)),
             }
         }
     }
@@ -441,7 +459,7 @@ impl<'a> Autopilot<'a> {
         if !self.session.is_at_budget_checkpoint() {
             return Ok(None);
         }
-        let decided = self.budget_checkpoint().await;
+        let decided = self.budget_checkpoint().await?;
         let stopped = decided == Event::SessionStopped;
         self.apply(decided)?;
         Ok(stopped.then_some(SessionEnd::StoppedAtBudget))

@@ -9,7 +9,7 @@ use arbor_core::{CommitOrigin, Event, LeftoverMarker, SessionCommit, WorkUnitId}
 use arbor_git::{CommitMessage, Mainline, Repo, SessionBranch, Worktree};
 use arbor_tiers::{
     MARKER_FIX_SUBJECT, NO_UNIT_CHECK, check_markers, commit_operator_fix, leftover_markers,
-    reset_task, run_task_check, task_check_warning, task_diff,
+    reset_task, run_task_check, strip_work_unit_markers, task_check_warning, task_diff,
 };
 use tempfile::{TempDir, tempdir};
 
@@ -293,4 +293,21 @@ async fn without_a_unit_check_the_task_passes_with_a_warning() {
             .await
             .is_err()
     );
+}
+
+#[test]
+fn a_fixed_work_units_markers_are_stripped_and_other_markers_stay() {
+    let session = Session::new();
+    session.write(
+        "calc.py",
+        "# ARBOR:BEGIN WU-1\nreturn 1\n# ARBOR:END WU-1\n# ARBOR:BEGIN WU-2\npass\n# ARBOR:END WU-2\n",
+    );
+
+    strip_work_unit_markers(session.worktree.path(), "calc.py", WorkUnitId(1)).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(session.worktree.path().join("calc.py")).unwrap(),
+        "return 1\n# ARBOR:BEGIN WU-2\npass\n# ARBOR:END WU-2\n"
+    );
+    strip_work_unit_markers(session.worktree.path(), "calc.py", WorkUnitId(1)).unwrap();
 }

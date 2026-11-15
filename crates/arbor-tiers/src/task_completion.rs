@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use arbor_config::Checks;
-use arbor_core::{Event, LeftoverMarker, SessionCommit};
+use arbor_core::{Event, LeftoverMarker, SessionCommit, WorkUnitId};
 use arbor_git::{CommitId, CommitMessage, GitError, Mainline, Worktree};
 use arbor_tools::{CheckName, run_check};
 
-use crate::markers::is_well_formed_marker;
+use crate::markers::{Markers, is_well_formed_marker, strip};
 
 pub const NO_UNIT_CHECK: &str = "No unit check is configured in arbor.toml, so Arbor can't run \
                                  the Task's tests. Skipping it.";
@@ -69,6 +69,16 @@ pub fn commit_operator_fix(
     Ok(Event::OperatorFixed {
         commit: commit.map(|hash| hash.as_str().to_owned()),
     })
+}
+
+/// Removes the Region Markers of `id` from `file`, if the Human Operator's fix left them there.
+pub fn strip_work_unit_markers(worktree: &Path, file: &str, id: WorkUnitId) -> Result<(), String> {
+    let path = worktree.join(file);
+    let source = std::fs::read_to_string(&path).map_err(|error| format!("{file}: {error}"))?;
+    let Some(region) = Markers::parse(&source).region(id).copied() else {
+        return Ok(());
+    };
+    std::fs::write(&path, strip(&source, &region)).map_err(|error| format!("{file}: {error}"))
 }
 
 /// Runs the Checks a fix by hand must pass at an Escalation Checkpoint, and returns the output of

@@ -476,3 +476,23 @@ async fn stopping_at_the_budget_checkpoint_ends_the_session_before_the_next_call
     assert_eq!(autopilot.events().last(), Some(&Event::SessionStopped));
     assert_eq!(model.requests.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn a_decision_that_does_not_fit_the_budget_checkpoint_is_an_error_not_a_second_question() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let model = ScriptedModel::new([read_readme(), submitted_plan(&two_task_plan())]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::Approve].into(),
+        ..ScriptedOperator::default()
+    };
+    let shown = operator.shown.clone();
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, capped_config(&worktree))
+        .unwrap()
+        .with_operator(operator);
+
+    let err = autopilot.run(request()).await.unwrap_err();
+
+    assert!(err.message.contains("Approve"), "{err}");
+    assert_eq!(shown.borrow().len(), 1);
+}
