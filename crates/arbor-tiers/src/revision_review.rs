@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use arbor_core::{Event, Revision, WorkUnit};
+use arbor_core::{Event, Revision, RevisionCause, WorkUnit};
 use arbor_git::{GitError, Repo, Worktree};
 
 use crate::markers::{Markers, is_marker_line};
@@ -16,13 +16,16 @@ pub const REWORDING_ONLY: &str = "the Revision changed no Context Pack, acceptan
 
 /// Returns `RevisionSubmitted`, or `RevisionRejected` for a Revision that only rewords.
 /// `task_work_units` are the Task's Work Units before the Revision, i.e. `Session::work_units`, so
-/// a Revision that repeats the previous one is rejected too.
+/// a Revision that repeats the previous one is rejected too. A Revision of a broken Region counts
+/// once it marks the Region again, which may be all it needs to do.
 pub fn review_revision(
     worktree: &Path,
     task_work_units: &[WorkUnit],
+    cause: &RevisionCause,
     revision: Revision,
 ) -> Result<Event, GitError> {
     if revision.shared_change.is_some()
+        || mends_broken_region(worktree, task_work_units, cause)
         || changes_work_units(task_work_units, &revision)
         || worktree_changed_outside_regions(worktree)?
     {
@@ -32,6 +35,31 @@ pub fn review_revision(
         revision,
         reason: REWORDING_ONLY.to_owned(),
     })
+}
+
+fn mends_broken_region(
+    worktree: &Path,
+    task_work_units: &[WorkUnit],
+    cause: &RevisionCause,
+) -> bool {
+    let RevisionCause::WorkUnitFailed(failure) = cause else {
+        return false;
+    };
+    let Some(broken) = &failure.broken_region else {
+        return false;
+    };
+    let Some(unit) = task_work_units.iter().find(|unit| unit.id == failure.id) else {
+        return false;
+    };
+    let Ok(file_text) = fs::read_to_string(worktree.join(&unit.file)) else {
+        return false;
+    };
+    // An intact Region that differs from the broken file the Writer found is one the Revision
+    // mended, not one that was intact all along.
+    file_text != broken.file_text
+        && Markers::parse(&file_text)
+            .problems_for(failure.id)
+            .is_empty()
 }
 
 /// A spec change alone doesn't count: Arbor can't tell a tighter spec from a reworded one.

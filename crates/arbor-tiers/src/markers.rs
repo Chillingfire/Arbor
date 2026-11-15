@@ -14,6 +14,20 @@ pub const END: &str = "ARBOR:END";
 /// Lines of context a Writer echoes on each side of its code (ADR-0002).
 pub const CONTEXT_LINES: usize = 2;
 
+pub use arbor_prompts::COMMENT_LESS_EXTENSIONS;
+
+/// Whether `file`'s format has no comments, judged by its extension.
+pub fn is_comment_less(file: &str) -> bool {
+    std::path::Path::new(file)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            COMMENT_LESS_EXTENSIONS
+                .iter()
+                .any(|comment_less| extension.eq_ignore_ascii_case(comment_less))
+        })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerKind {
     Begin,
@@ -292,6 +306,19 @@ impl Markers {
             }
         }
         errors
+    }
+
+    /// What is wrong with `id`'s Markers. Malformed Markers count only when `id` has no Region,
+    /// since a damaged BEGIN or END may then be its own.
+    pub fn problems_for(&self, id: WorkUnitId) -> Vec<MarkerError> {
+        let has_region = self.regions.iter().any(|region| region.id == id);
+        self.check(&[id])
+            .into_iter()
+            .filter(|error| {
+                error.concerns(id)
+                    || (!has_region && matches!(error, MarkerError::Malformed { .. }))
+            })
+            .collect()
     }
 
     fn find_close_regions(&mut self) {

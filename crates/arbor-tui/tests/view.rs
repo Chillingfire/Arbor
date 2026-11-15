@@ -2,7 +2,7 @@ use arbor_config::ClarificationMode;
 use arbor_core::{Event, Plan, Request, Task, Tier, Usage, Usd, WorkUnit, WorkUnitId};
 use arbor_tui::{
     Confirmation, Focus, KeyOutcome, LogEntry, ReplyOutcome, SessionView, Status, StatusInfo, Tone,
-    TreeNode, UiState, WriterReplyRecord, draw, tree_nodes,
+    TreeNode, UiState, WriterReplyRecord, describe, draw, tree_nodes,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -128,6 +128,26 @@ fn the_log_describes_each_event_in_one_line_with_its_tier_and_tone() {
         }),
         "{:?}",
         view.log()
+    );
+}
+
+#[test]
+fn a_broken_region_is_described_by_its_problem_not_as_failed_attempts() {
+    let broken = Event::WorkUnitFailed {
+        failure: arbor_core::WorkUnitFailure {
+            id: WorkUnitId(4),
+            attempts: Vec::new(),
+            missing_response: None,
+            broken_region: Some(arbor_core::BrokenRegion {
+                problem: "WU-4: ARBOR:END on line 5 has no ARBOR:BEGIN".to_owned(),
+                file_text: String::new(),
+            }),
+        },
+    };
+
+    assert_eq!(
+        describe(&broken),
+        "WU-4's Region is broken: WU-4: ARBOR:END on line 5 has no ARBOR:BEGIN"
     );
 }
 
@@ -260,6 +280,7 @@ fn the_transcript_tab_shows_failed_replies_from_the_log_and_the_diff_tab_the_com
                 error: "expected 2".to_owned(),
             }],
             missing_response: None,
+            broken_region: None,
         },
     });
     let view = SessionView::from_events(&failing).unwrap();

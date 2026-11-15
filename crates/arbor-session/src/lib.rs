@@ -20,10 +20,11 @@ use arbor_prompts::{
     WriterInputs,
 };
 use arbor_tiers::{
-    Agent, Attempt, AttemptOutcome, MARKER_FIX_SUBJECT, Outcome, PlannerRun, Rejection, ReplanRun,
-    RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, WriterRun, check_markers, check_operator_fix,
-    commit_operator_fix, commit_revision, commit_skeleton, discard_revision, reset_task,
-    review_revision, run_task_check, strip_work_unit_markers, task_diff,
+    Agent, Attempt, AttemptError, AttemptOutcome, MARKER_FIX_SUBJECT, Outcome, PlannerRun,
+    Rejection, ReplanRun, RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, Writer, WriterError,
+    WriterRun, check_markers, check_operator_fix, commit_operator_fix, commit_revision,
+    commit_skeleton, discard_revision, reset_task, review_revision, run_task_check,
+    strip_work_unit_markers, task_diff,
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
@@ -721,10 +722,13 @@ impl<'a> Autopilot<'a> {
                     format!("Checking {id}, attempt {attempt_number}"),
                 );
             };
-            let attempt = writer
+            let attempt = match writer
                 .attempt_reporting_checks(client, &mut checks_started)
                 .await
-                .map_err(failed("running the Writer"))?;
+            {
+                Ok(attempt) => attempt,
+                Err(err) => return self.region_failure(&writer, err).map(Step::Events),
+            };
             if let Some(run) = self.writer_runs.last_mut() {
                 run.attempts.push(attempt.clone());
             }
@@ -749,6 +753,26 @@ impl<'a> Autopilot<'a> {
                 return Ok(Step::End(end));
             }
         }
+    }
+
+    /// A broken Region ends the Writer with a `WorkUnitFailed` that goes to a Revision; any other
+    /// Writer error ends the run.
+    fn region_failure(
+        &mut self,
+        writer: &Writer,
+        err: AttemptError,
+    ) -> Result<Vec<Event>, AutopilotError> {
+        let (WriterError::RegionBroken { .. }, Some(failure)) =
+            (&err.error, writer.work_unit_failure())
+        else {
+            return Err(failed("running the Writer")(err));
+        };
+        let mut events = vec![Event::WorkUnitFailed { failure }];
+        events.extend(err.usage.map(|usage| Event::UsageRecorded {
+            tier: Tier::Writer,
+            usage,
+        }));
+        Ok(events)
     }
 
     async fn revise(&mut self, task: usize, cause: RevisionCause) -> Result<Step, AutopilotError> {
@@ -807,8 +831,9 @@ impl<'a> Autopilot<'a> {
                 .await?
             {
                 Submitted::Accepted(revision, usage) => {
-                    let reviewed = review_revision(self.worktree.path(), &work_units, revision)
-                        .map_err(failed("reviewing the Revision"))?;
+                    let reviewed =
+                        review_revision(self.worktree.path(), &work_units, &cause, revision)
+                            .map_err(failed("reviewing the Revision"))?;
                     Step::Events(vec![reviewed, usage])
                 }
                 Submitted::Stopped(end) => Step::End(end),

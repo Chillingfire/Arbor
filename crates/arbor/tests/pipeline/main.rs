@@ -6,9 +6,12 @@
 mod fixture_client;
 mod sample_repo;
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use arbor_config::Config;
 use arbor_core::{Effect, Event, Request, RevisionCause, Session, Tier, Usd, WorkUnitId};
-use arbor_llm::{ChatRequest, Message};
+use arbor_llm::{BoxFuture, ChatRequest, ChatResponse, LlmClient, LlmError, Message, ModelInfo};
 use arbor_session::{Autopilot, Checkpoint, Decision, Operator, Pending, SessionEnd};
 use arbor_tiers::{AttemptOutcome, FailureReason};
 use arbor_tools::{CheckName, run_check};
@@ -20,6 +23,9 @@ const REQUEST: &str = "Add a `longest_word` function to wordy that returns the l
                        equally long, return the first.";
 
 const FEATURE: &str = "Add longest_word";
+
+/// The Writer's model in the sample repo's config.
+const WRITER_MODEL: &str = "anthropic/claude-haiku-5.5";
 
 /// The commit of the Skeleton approved at the scaffold Checkpoint, named after the Task.
 const SKELETON_COMMIT: &str = "Add longest_word (structure and tests)";
@@ -535,5 +541,133 @@ async fn markers_a_fix_by_hand_adds_wait_at_the_marker_checkpoint_until_removed(
             arbor_tiers::TASK_FIX_SUBJECT,
             arbor_tiers::MARKER_FIX_SUBJECT
         ]
+    );
+}
+
+/// Breaks the Region in src/lib.rs, as a hand edit in the worktree would, when the Autopilot
+/// looks up the Writer's model: after the Skeleton is committed and before the Writer starts.
+struct BreakingClient<'a> {
+    inner: &'a FixtureClient,
+    library_path: PathBuf,
+    break_region: fn(&str) -> String,
+    broken: AtomicBool,
+}
+
+impl LlmClient for BreakingClient<'_> {
+    fn chat<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> BoxFuture<'a, Result<ChatResponse, LlmError>> {
+        self.inner.chat(request)
+    }
+
+    fn model<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<ModelInfo, LlmError>> {
+        if id == WRITER_MODEL && !self.broken.swap(true, Ordering::SeqCst) {
+            let skeleton = std::fs::read_to_string(&self.library_path).unwrap();
+            std::fs::write(&self.library_path, (self.break_region)(&skeleton)).unwrap();
+        }
+        self.inner.model(id)
+    }
+}
+
+/// Runs the Session for the Request to its end, with `break_region` applied to the committed
+/// Skeleton's src/lib.rs.
+async fn run_session_breaking_the_region(
+    sample: &SampleRepo,
+    client: &FixtureClient,
+    break_region: fn(&str) -> String,
+) -> (Vec<Event>, Session, usize) {
+    let breaking = BreakingClient {
+        inner: client,
+        library_path: sample.path().join("src/lib.rs"),
+        break_region,
+        broken: AtomicBool::new(false),
+    };
+    let config = Config::load(None, sample.path()).unwrap();
+    let mut pipeline =
+        Autopilot::new(&sample.worktree, &sample.mainline, &breaking, config).unwrap();
+    let request = Request {
+        text: REQUEST.to_owned(),
+        issue: None,
+    };
+    assert_eq!(pipeline.run(request).await.unwrap(), SessionEnd::Finished);
+    assert_replays(&pipeline);
+    (
+        pipeline.events().to_vec(),
+        pipeline.session().clone(),
+        pipeline.writer_attempts().len(),
+    )
+}
+
+/// Checks that the broken Region failed its Work Unit with `problem` and no Writer attempt, that
+/// the Revision saw why, and that the Session then wrote the Work Unit as usual.
+fn assert_revised_after_broken_region(
+    sample: &SampleRepo,
+    client: &FixtureClient,
+    (events, session, writer_attempts): (Vec<Event>, Session, usize),
+    problem: &str,
+) {
+    client.finish();
+    assert!(session.is_done());
+    let failure = events
+        .iter()
+        .find_map(|event| match event {
+            Event::WorkUnitFailed { failure } => Some(failure),
+            _ => None,
+        })
+        .expect("the broken Region fails its Work Unit");
+    let broken = failure.broken_region.as_ref().unwrap();
+    assert_eq!(broken.problem, problem);
+    assert!(failure.attempts.is_empty());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::RevisionSubmitted { .. }))
+    );
+    let sent = client.sent();
+    let revision_inputs = last_user_text(&sent[2]);
+    assert!(revision_inputs.contains(problem), "{revision_inputs}");
+    assert_eq!(writer_attempts, 1);
+    let library = sample.read("src/lib.rs");
+    assert!(library.contains(IMPLEMENTATION), "{library}");
+    assert!(!library.contains("ARBOR:"), "{library}");
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [SKELETON_COMMIT, WRITER_COMMIT]
+    );
+    assert_cost(&session, Tier::Writer, 0.0012);
+}
+
+#[tokio::test]
+async fn a_deleted_begin_marker_goes_to_a_revision_that_marks_the_region_again() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("broken_region_deleted_begin");
+    let run = run_session_breaking_the_region(&sample, &client, |skeleton| {
+        skeleton.replace("    // ARBOR:BEGIN WU-1\n", "")
+    })
+    .await;
+
+    assert_revised_after_broken_region(
+        &sample,
+        &client,
+        run,
+        "WU-1: ARBOR:END on line 12 has no ARBOR:BEGIN",
+    );
+}
+
+#[tokio::test]
+async fn a_duplicated_region_goes_to_a_revision_that_leaves_one() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("broken_region_duplicated");
+    let run = run_session_breaking_the_region(&sample, &client, |skeleton| {
+        format!("{skeleton}\n// ARBOR:BEGIN WU-1\n// ARBOR:END WU-1\n")
+    })
+    .await;
+
+    assert_revised_after_broken_region(
+        &sample,
+        &client,
+        run,
+        "WU-1 has more than one Region, on lines 11, 46",
     );
 }

@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use arbor_config::ClarificationMode;
 use arbor_core::{
-    FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound, Snippet, Task,
-    WorkUnit, WorkUnitFailure, WorkUnitId,
+    BrokenRegion, FailedAttempt, Plan, Priority, Request, Revision, RevisionCause, RevisionRound,
+    Snippet, Task, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use minijinja::syntax::SyntaxConfig;
 use minijinja::value::Serde;
@@ -67,7 +67,7 @@ impl Template {
     fn static_variables(self) -> &'static [&'static str] {
         match self {
             Self::Planner => &["clarification_mode"],
-            Self::Scaffolder => &["clarification_mode", "cap_tokens"],
+            Self::Scaffolder => &["clarification_mode", "cap_tokens", "comment_less_files"],
             Self::Writer | Self::CheckProposal => &[],
         }
     }
@@ -109,6 +109,19 @@ pub struct ReplanInputs<'a> {
     /// `Session::revisions`: what the Scaffolder tried.
     pub revisions: &'a [RevisionRound],
     pub task_diff: &'a str,
+}
+
+/// Extensions of file formats without comments, so no Marker can live in them. `.jsonc` and
+/// `.json5` aren't here because they allow comments.
+pub const COMMENT_LESS_EXTENSIONS: &[&str] = &["json"];
+
+/// The comment-less formats as the Scaffolder prompt names them, e.g. `` `.json` ``.
+fn comment_less_files() -> Value {
+    let named: Vec<String> = COMMENT_LESS_EXTENSIONS
+        .iter()
+        .map(|extension| format!("`.{extension}`"))
+        .collect();
+    Value::from(named.join(", "))
 }
 
 /// What the Scaffolder is rendered with. `cap_tokens` is the Writer Cap.
@@ -301,6 +314,7 @@ impl Prompts {
         let context = BTreeMap::from([
             ("clarification_mode", mode(inputs.clarification_mode)),
             ("cap_tokens", Value::from(inputs.cap_tokens)),
+            ("comment_less_files", comment_less_files()),
             ("request", Value::from(Serde(inputs.request))),
             ("plan", Value::from(Serde(inputs.plan))),
             ("task", Value::from(Serde(inputs.task))),
@@ -502,6 +516,10 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
                 error: sample_text("error"),
             }],
             missing_response: Some(vec![sample_text("missing item")]),
+            broken_region: Some(BrokenRegion {
+                problem: sample_text("Marker problem"),
+                file_text: sample_text("file text"),
+            }),
         })
     };
     let earlier = [RevisionRound {
@@ -529,6 +547,7 @@ fn sample(template: Template, seed: u32) -> BTreeMap<&'static str, Value> {
     let all = [
         ("clarification_mode", mode(ClarificationMode::Ask)),
         ("cap_tokens", Value::from(8000)),
+        ("comment_less_files", comment_less_files()),
         ("request", Value::from(Serde(&request))),
         ("plan", Value::from(Serde(&plan))),
         ("task", Value::from(Serde(&task))),

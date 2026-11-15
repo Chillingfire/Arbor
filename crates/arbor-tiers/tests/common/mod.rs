@@ -182,3 +182,15 @@ pub fn last_user_text(messages: &[Message]) -> &str {
         })
         .unwrap()
 }
+
+/// An empty git repository, like the worktree a Scaffolder runs in.
+pub fn git_dir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    assert!(init.success());
+    dir
+}

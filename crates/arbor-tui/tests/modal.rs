@@ -192,6 +192,7 @@ fn escalation(may_replan: bool, failed_fix: Option<&str>) -> Modal {
                 error: "test longest_word_tests::ties ... FAILED".to_owned(),
             }],
             missing_response: None,
+            broken_region: None,
         }),
         may_replan,
         failed_fix: failed_fix.map(str::to_owned),

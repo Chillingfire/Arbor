@@ -34,8 +34,9 @@ pub use revision_review::{
     REWORDING_ONLY, changes_outside_regions, changes_work_units, review_revision,
 };
 pub use scaffold_check::{
-    NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, field_problems, marker_problems,
-    revision_field_problems, writer_cap_report, writer_input_tokens,
+    NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, comment_less_marker_problems,
+    field_problems, marker_problems, revision_field_problems, writer_cap_report,
+    writer_input_tokens,
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
 pub use task_completion::{
