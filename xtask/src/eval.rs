@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arbor_config::{API_KEY_ENV, ClarificationMode, Config, Platform, resolve_api_key};
+use arbor_config::{API_KEY_ENV, ClarificationMode, Config, Platform, load_api_key};
 use arbor_core::{Event, Request, Session, Tier};
 use arbor_git::{Repo, SessionBranch};
 use arbor_llm::OpenRouterClient;
@@ -229,10 +229,7 @@ async fn run_cases(options: &EvalOptions) -> Result<PathBuf, String> {
     }
     let user_config =
         arbor_config::user_config_path(Platform::current(), |name| env::var(name).ok());
-    let user_text = user_config
-        .as_deref()
-        .and_then(|path| fs::read_to_string(path).ok());
-    let api_key = resolve_api_key(env::var(API_KEY_ENV).ok().as_deref(), user_text.as_deref())
+    let api_key = load_api_key(user_config.as_deref())
         .map_err(|err| err.to_string())?
         .ok_or_else(|| format!("set {API_KEY_ENV} or api_key in the user config"))?;
     let client = OpenRouterClient::new(api_key.expose());
@@ -278,16 +275,20 @@ async fn run_cases(options: &EvalOptions) -> Result<PathBuf, String> {
         cases: case_reports,
     };
     print_summary(&report);
+    write_report(&report, options.out.as_deref())
+}
 
-    let report_path = options.out.clone().unwrap_or_else(|| {
+/// Writes to `out`, or by default to `target/eval/eval-<start time>.json`.
+fn write_report(report: &EvalReport, out: Option<&Path>) -> Result<PathBuf, String> {
+    let report_path = out.map(Path::to_path_buf).unwrap_or_else(|| {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../target/eval")
-            .join(format!("eval-{started_unix_secs}.json"))
+            .join(format!("eval-{}.json", report.started_unix_secs))
     });
     if let Some(parent) = report_path.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
     }
-    let report_json = serde_json::to_string_pretty(&report).expect("the report serializes");
+    let report_json = serde_json::to_string_pretty(report).expect("the report serializes");
     fs::write(&report_path, report_json + "\n")
         .map_err(|err| format!("{}: {err}", report_path.display()))?;
     Ok(report_path)

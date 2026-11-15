@@ -10,8 +10,8 @@ use std::io::Write;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, EventLog, Phase, Request, RevisionCause, Session, Task, Tier, Usd, WorkUnit,
-    WorkUnitId,
+    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session, Task, Tier, Usd,
+    WorkUnit, WorkUnitId,
 };
 use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
@@ -241,10 +241,7 @@ impl<'a> Autopilot<'a> {
         let events = match effect {
             Effect::RunPlanner { feedback } => return self.plan(feedback).await,
             Effect::ShowPlanCheckpoint => {
-                let plan = self.session.plan().cloned().ok_or(AutopilotError {
-                    step: "reading the Plan",
-                    message: "the Session has no Plan".to_owned(),
-                })?;
+                let plan = self.session_plan()?.clone();
                 return self.checkpoint(Checkpoint::Plan { plan }).await;
             }
             Effect::RunScaffolder { task, feedback } => return self.scaffold(task, feedback).await,
@@ -517,14 +514,16 @@ impl<'a> Autopilot<'a> {
         })
     }
 
+    /// Not called `plan`: that runs the Planner.
+    fn session_plan(&self) -> Result<&Plan, AutopilotError> {
+        self.session.plan().ok_or(AutopilotError {
+            step: "reading the Plan",
+            message: "the Session has no Plan".to_owned(),
+        })
+    }
+
     fn plan_tasks(&self) -> Result<&[Task], AutopilotError> {
-        match self.session.plan() {
-            Some(plan) => Ok(&plan.tasks),
-            None => Err(AutopilotError {
-                step: "reading the Plan",
-                message: "the Session has no Plan".to_owned(),
-            }),
-        }
+        Ok(&self.session_plan()?.tasks)
     }
 
     fn task(&self, task: usize) -> Result<&Task, AutopilotError> {
@@ -583,17 +582,14 @@ impl<'a> Autopilot<'a> {
         } else {
             "Planning"
         };
-        Ok(
-            match self
-                .submitted(Tier::Planner, &role.model, label, agent)
-                .await?
-            {
-                Submitted::Accepted(plan, usage) => {
-                    Step::Events(vec![Event::PlanSubmitted { plan }, usage])
-                }
-                Submitted::Stopped(end) => Step::End(end),
-            },
-        )
+        let submitted = self
+            .submitted(Tier::Planner, &role.model, label, agent)
+            .await?;
+        let (plan, usage) = match submitted {
+            Submitted::Accepted(plan, usage) => (plan, usage),
+            Submitted::Stopped(end) => return Ok(Step::End(end)),
+        };
+        Ok(Step::Events(vec![Event::PlanSubmitted { plan }, usage]))
     }
 
     /// With `feedback`, the Scaffolder revises the Skeleton the Human Operator rejected, in place.
@@ -603,10 +599,7 @@ impl<'a> Autopilot<'a> {
         feedback: Option<String>,
     ) -> Result<Step, AutopilotError> {
         let request = self.request()?;
-        let plan = self.session.plan().cloned().ok_or(AutopilotError {
-            step: "reading the Plan",
-            message: "the Session has no Plan".to_owned(),
-        })?;
+        let plan = self.session_plan()?.clone();
         let mode = self.config.clarification_mode;
         let cap_tokens = self.config.writer_cap_tokens;
         let inputs = ScaffolderInputs {
@@ -640,23 +633,23 @@ impl<'a> Autopilot<'a> {
         } else {
             ""
         };
-        Ok(
-            match self
-                .submitted(
-                    Tier::Scaffolder,
-                    &role.model,
-                    &format!("Scaffolding Task {}{again}", task + 1),
-                    agent,
-                )
-                .await?
-            {
-                Submitted::Accepted(submitted, usage) => {
-                    let work_units = submitted.work_units;
-                    Step::Events(vec![Event::WorkUnitsSubmitted { work_units }, usage])
-                }
-                Submitted::Stopped(end) => Step::End(end),
-            },
-        )
+        let submitted = self
+            .submitted(
+                Tier::Scaffolder,
+                &role.model,
+                &format!("Scaffolding Task {}{again}", task + 1),
+                agent,
+            )
+            .await?;
+        let (submitted_units, usage) = match submitted {
+            Submitted::Accepted(submitted_units, usage) => (submitted_units, usage),
+            Submitted::Stopped(end) => return Ok(Step::End(end)),
+        };
+        let work_units = submitted_units.work_units;
+        Ok(Step::Events(vec![
+            Event::WorkUnitsSubmitted { work_units },
+            usage,
+        ]))
     }
 
     /// The submission already ran the Scaffold Check; this runs it again for the effect.
@@ -777,10 +770,7 @@ impl<'a> Autopilot<'a> {
 
     async fn revise(&mut self, task: usize, cause: RevisionCause) -> Result<Step, AutopilotError> {
         let request = self.request()?;
-        let plan = self.session.plan().cloned().ok_or(AutopilotError {
-            step: "reading the Plan",
-            message: "the Session has no Plan".to_owned(),
-        })?;
+        let plan = self.session_plan()?.clone();
         let work_units = self.session.work_units().to_vec();
         let earlier = self.session.revisions().to_vec();
         let diff = task_diff(self.worktree, self.session.task_commits())
@@ -820,25 +810,21 @@ impl<'a> Autopilot<'a> {
         }
         .start()
         .map_err(failed("starting the Revision"))?;
-        Ok(
-            match self
-                .submitted(
-                    Tier::Scaffolder,
-                    &role.model,
-                    &format!("Revising Task {}", task + 1),
-                    agent,
-                )
-                .await?
-            {
-                Submitted::Accepted(revision, usage) => {
-                    let reviewed =
-                        review_revision(self.worktree.path(), &work_units, &cause, revision)
-                            .map_err(failed("reviewing the Revision"))?;
-                    Step::Events(vec![reviewed, usage])
-                }
-                Submitted::Stopped(end) => Step::End(end),
-            },
-        )
+        let submitted = self
+            .submitted(
+                Tier::Scaffolder,
+                &role.model,
+                &format!("Revising Task {}", task + 1),
+                agent,
+            )
+            .await?;
+        let (revision, usage) = match submitted {
+            Submitted::Accepted(revision, usage) => (revision, usage),
+            Submitted::Stopped(end) => return Ok(Step::End(end)),
+        };
+        let reviewed = review_revision(self.worktree.path(), &work_units, &cause, revision)
+            .map_err(failed("reviewing the Revision"))?;
+        Ok(Step::Events(vec![reviewed, usage]))
     }
 
     /// The Planner reworks the failed Task from its failure chain. With `feedback`, the Human
@@ -850,10 +836,7 @@ impl<'a> Autopilot<'a> {
         feedback: Option<String>,
     ) -> Result<Step, AutopilotError> {
         let request = self.request()?;
-        let plan = self.session.plan().cloned().ok_or(AutopilotError {
-            step: "reading the Plan",
-            message: "the Session has no Plan".to_owned(),
-        })?;
+        let plan = self.session_plan()?.clone();
         let revisions = self.session.revisions().to_vec();
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
@@ -890,17 +873,14 @@ impl<'a> Autopilot<'a> {
             ""
         };
         let label = format!("Replanning Task {}{again}", task + 1);
-        Ok(
-            match self
-                .submitted(Tier::Planner, &role.model, &label, agent)
-                .await?
-            {
-                Submitted::Accepted(replan, usage) => {
-                    Step::Events(vec![Event::ReplanSubmitted { replan }, usage])
-                }
-                Submitted::Stopped(end) => Step::End(end),
-            },
-        )
+        let submitted = self
+            .submitted(Tier::Planner, &role.model, &label, agent)
+            .await?;
+        let (replan, usage) = match submitted {
+            Submitted::Accepted(replan, usage) => (replan, usage),
+            Submitted::Stopped(end) => return Ok(Step::End(end)),
+        };
+        Ok(Step::Events(vec![Event::ReplanSubmitted { replan }, usage]))
     }
 
     /// Takes turns until the agent submits or stops. A submission comes with the

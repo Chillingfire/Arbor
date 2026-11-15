@@ -12,7 +12,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, resolve_api_key, user_config_path};
+use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
 use arbor_core::{Effect, Phase, Request, Tier};
 use arbor_git::{Repo, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
@@ -112,11 +112,7 @@ struct Project {
 impl Project {
     /// Read again for each Session, so a key set after a failed start is picked up.
     fn api_key(&self) -> Result<Option<String>, ConfigError> {
-        let user_text = self
-            .user_config
-            .as_ref()
-            .and_then(|path| fs::read_to_string(path).ok());
-        let api_key = resolve_api_key(env::var(API_KEY_ENV).ok().as_deref(), user_text.as_deref())?;
+        let api_key = load_api_key(self.user_config.as_deref())?;
         Ok(api_key.map(|key| key.expose().to_owned()))
     }
 }
@@ -400,36 +396,34 @@ fn drive(
     sender: &Sender<DriverMessage>,
     cancelled: oneshot::Receiver<()>,
 ) -> DriverMessage {
-    let failed = |message: String| DriverMessage::Ended(message, Tone::Failure);
-    let repo = match Repo::open(root) {
-        Ok(repo) => repo,
-        Err(err) => return failed(format!("Could not open the repository: {err}")),
-    };
-    let mainline = match repo.mainline(config.mainline.as_deref()) {
-        Ok(mainline) => mainline,
-        Err(err) => return failed(format!("Could not find the mainline: {err}")),
-    };
-    let branch = match free_branch(&repo, &request.text) {
-        Ok(branch) => branch,
-        Err(message) => return failed(message),
-    };
+    try_drive(root, config, api_key, request, sender, cancelled)
+        .unwrap_or_else(|message| DriverMessage::Ended(message, Tone::Failure))
+}
+
+/// `Err` holds the message for a Session that couldn't start.
+fn try_drive(
+    root: &Path,
+    config: Config,
+    api_key: &str,
+    request: Request,
+    sender: &Sender<DriverMessage>,
+    cancelled: oneshot::Receiver<()>,
+) -> Result<DriverMessage, String> {
+    let repo = Repo::open(root).map_err(|err| format!("Could not open the repository: {err}"))?;
+    let mainline = repo
+        .mainline(config.mainline.as_deref())
+        .map_err(|err| format!("Could not find the mainline: {err}"))?;
+    let branch = free_branch(&repo, &request.text)?;
     let session_dir = root.join(SESSIONS_DIR).join(session_id(&branch));
-    if let Err(message) = exclude_sessions(&repo) {
-        return failed(format!(
-            "Could not keep {SESSIONS_DIR} out of git: {message}"
-        ));
-    }
-    if let Err(err) = fs::create_dir_all(&session_dir) {
-        return failed(format!("Could not create {}: {err}", session_dir.display()));
-    }
-    let worktree = match repo.create_worktree(&mainline, &branch, &session_dir.join("worktree")) {
-        Ok(worktree) => worktree,
-        Err(err) => return failed(format!("Could not create the Session worktree: {err}")),
-    };
-    let event_file = match fs::File::create(session_dir.join("events.jsonl")) {
-        Ok(event_file) => event_file,
-        Err(err) => return failed(format!("Could not create the event log: {err}")),
-    };
+    exclude_sessions(&repo)
+        .map_err(|message| format!("Could not keep {SESSIONS_DIR} out of git: {message}"))?;
+    fs::create_dir_all(&session_dir)
+        .map_err(|err| format!("Could not create {}: {err}", session_dir.display()))?;
+    let worktree = repo
+        .create_worktree(&mainline, &branch, &session_dir.join("worktree"))
+        .map_err(|err| format!("Could not create the Session worktree: {err}"))?;
+    let event_file = fs::File::create(session_dir.join("events.jsonl"))
+        .map_err(|err| format!("Could not create the event log: {err}"))?;
     let _ = sender.send(DriverMessage::Started {
         branch: branch.as_str().to_owned(),
         session_dir: session_dir.clone(),
@@ -440,23 +434,17 @@ fn drive(
     let operator = ScreenOperator {
         sender: sender.clone(),
     };
-    let autopilot = Autopilot::new(&worktree, &mainline, &client, config);
-    let mut autopilot = match autopilot {
-        Ok(autopilot) => autopilot
-            .with_operator(operator)
-            .log_events_to(event_file)
-            .on_update(move |update| {
-                let _ = observer_sender.send(DriverMessage::Update(update));
-            }),
-        Err(err) => return failed(err.to_string()),
-    };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &client, config)
+        .map_err(|err| err.to_string())?
+        .with_operator(operator)
+        .log_events_to(event_file)
+        .on_update(move |update| {
+            let _ = observer_sender.send(DriverMessage::Update(update));
+        });
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => return failed(format!("Could not start the async runtime: {err}")),
-    };
+        .map_err(|err| format!("Could not start the async runtime: {err}"))?;
     // Dropping the run future at a cancel kills a running Check (`kill_on_drop`); the worktree is
     // put back after that, below.
     let session_end = runtime.block_on(async {
@@ -465,10 +453,10 @@ fn drive(
             _ = cancelled => None,
         }
     });
-    match session_end {
+    Ok(match session_end {
         Some(session_end) => ending(session_end),
         None => cancelled_ending(autopilot.session().phase(), &worktree),
-    }
+    })
 }
 
 /// After a cancel, puts the worktree back to its last commit when the cancelled step had written
@@ -504,33 +492,32 @@ fn cancelled_ending(phase: &Phase, worktree: &Worktree) -> DriverMessage {
 }
 
 fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> DriverMessage {
-    match session_end {
-        Ok(SessionEnd::Finished) => {
-            DriverMessage::Ended("Session finished.".to_owned(), Tone::Success)
-        }
-        Ok(SessionEnd::NeedsOperator(effect)) => DriverMessage::Ended(
+    let (message, tone) = match session_end {
+        Ok(SessionEnd::Finished) => ("Session finished.".to_owned(), Tone::Success),
+        Ok(SessionEnd::NeedsOperator(effect)) => (
             format!(
                 "Stopped at {}. The branch and worktree are kept.",
                 operator_step(&effect)
             ),
             Tone::Operator,
         ),
-        Ok(SessionEnd::StoppedAtBudget) => DriverMessage::Ended(
+        Ok(SessionEnd::StoppedAtBudget) => (
             "Stopped at the Budget Cap. The branch and worktree are kept.".to_owned(),
             Tone::Operator,
         ),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
-            DriverMessage::Ended(format!("Stopped: the {tier:?} {reason}"), Tone::Failure)
+            (format!("Stopped: the {tier:?} {reason}"), Tone::Failure)
         }
-        Ok(SessionEnd::ScaffoldChecksFailed { check_output }) => DriverMessage::Ended(
+        Ok(SessionEnd::ScaffoldChecksFailed { check_output }) => (
             format!(
                 "Stopped: the Scaffold Check failed: {}",
                 check_output.lines().last().unwrap_or_default()
             ),
             Tone::Failure,
         ),
-        Err(err) => DriverMessage::Ended(format!("Stopped: {err}"), Tone::Failure),
-    }
+        Err(err) => (format!("Stopped: {err}"), Tone::Failure),
+    };
+    DriverMessage::Ended(message, tone)
 }
 
 /// The event log line for the Human Operator's decision at a Checkpoint.
