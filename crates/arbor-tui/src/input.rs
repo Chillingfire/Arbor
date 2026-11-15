@@ -224,9 +224,7 @@ impl UiState {
             Focus::Prompt => {}
         }
     }
-}
 
-impl UiState {
     /// The first entry shown when the log follows new events.
     fn newest_log_top(&self, view: &SessionView) -> usize {
         view.log().len().saturating_sub(self.log_rows.get().max(1))

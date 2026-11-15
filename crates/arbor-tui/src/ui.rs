@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use arbor_config::ClarificationMode;
-use arbor_core::{ASSUMPTION_PREFIX, Phase, Tier};
+use arbor_core::{ASSUMPTION_PREFIX, Phase, Plan, Tier, WorkUnit};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -20,8 +20,8 @@ use ratatui::widgets::{
 
 use crate::modal::{Modal, draw_modal};
 use crate::view::{
-    LogEntry, ReplyOutcome, SessionView, Status, Tone, WorkUnitView, first_line, phase_task, short,
-    tokens,
+    LogEntry, ReplyOutcome, SessionView, Status, TaskView, Tone, WorkUnitView, first_line,
+    phase_task, short, tokens,
 };
 
 pub(crate) const ACCENT: Color = Color::Rgb(122, 162, 247);
@@ -273,42 +273,10 @@ fn draw_header(frame: &mut Frame, area: Rect, view: &SessionView, status: &Statu
 
     let mut right = Vec::new();
     if let Some(activity) = &status.activity {
-        let frame_index = (activity.elapsed.as_millis() / 100) as usize % SPINNER.len();
-        let color = activity.tier.map_or(YELLOW, tier_color);
-        right.push(Span::styled(
-            format!("{} ", SPINNER[frame_index]),
-            Style::new().fg(color).bold(),
-        ));
-        if let Some(tier) = activity.tier {
-            right.push(Span::styled(
-                format!("{} ", tier_name(tier)),
-                Style::new().fg(color).bold(),
-            ));
-        }
-        if let Some(model) = &activity.model {
-            right.push(Span::styled(
-                format!("{} · ", short_model(model)),
-                Style::new().fg(MUTED),
-            ));
-        }
-        right.push(Span::raw(format!("{} ", activity.label)));
-        right.push(Span::styled(
-            format!("{}s   ", activity.elapsed.as_secs()),
-            Style::new().fg(MUTED),
-        ));
+        right.extend(activity_spans(activity));
     }
     if !work_unit_statuses.is_empty() {
-        let bar_width = 12;
-        let filled = done * bar_width / work_unit_statuses.len();
-        right.push(Span::styled("▰".repeat(filled), Style::new().fg(GREEN)));
-        right.push(Span::styled(
-            "▱".repeat(bar_width - filled),
-            Style::new().fg(FAINT),
-        ));
-        right.push(Span::styled(
-            format!(" {done}/{} Work Units ", work_unit_statuses.len()),
-            Style::new().fg(MUTED),
-        ));
+        right.extend(progress_spans(done, work_unit_statuses.len()));
     }
     let right = Line::from(right);
     let right_width = u16::try_from(right.width()).unwrap_or(u16::MAX);
@@ -324,6 +292,46 @@ fn draw_header(frame: &mut Frame, area: Rect, view: &SessionView, status: &Statu
     frame.render_widget(Paragraph::new(right), right_area);
 }
 
+fn activity_spans(activity: &RunningActivity) -> Vec<Span<'static>> {
+    let frame_index = (activity.elapsed.as_millis() / 100) as usize % SPINNER.len();
+    let color = activity.tier.map_or(YELLOW, tier_color);
+    let mut spans = vec![Span::styled(
+        format!("{} ", SPINNER[frame_index]),
+        Style::new().fg(color).bold(),
+    )];
+    if let Some(tier) = activity.tier {
+        spans.push(Span::styled(
+            format!("{} ", tier_name(tier)),
+            Style::new().fg(color).bold(),
+        ));
+    }
+    if let Some(model) = &activity.model {
+        spans.push(Span::styled(
+            format!("{} · ", short_model(model)),
+            Style::new().fg(MUTED),
+        ));
+    }
+    spans.push(Span::raw(format!("{} ", activity.label)));
+    spans.push(Span::styled(
+        format!("{}s   ", activity.elapsed.as_secs()),
+        Style::new().fg(MUTED),
+    ));
+    spans
+}
+
+fn progress_spans(done: usize, total: usize) -> Vec<Span<'static>> {
+    let bar_width = 12;
+    let filled = done * bar_width / total;
+    vec![
+        Span::styled("▰".repeat(filled), Style::new().fg(GREEN)),
+        Span::styled("▱".repeat(bar_width - filled), Style::new().fg(FAINT)),
+        Span::styled(
+            format!(" {done}/{total} Work Units "),
+            Style::new().fg(MUTED),
+        ),
+    ]
+}
+
 fn draw_tree(
     frame: &mut Frame,
     area: Rect,
@@ -334,69 +342,28 @@ fn draw_tree(
     let focused = ui_state.focus == Focus::Tree;
     let block = pane(pane_title("Plan", focused), focused);
     let Some(plan) = view.plan() else {
-        let waiting =
-            Paragraph::new(Line::styled("No Plan yet.", Style::new().fg(MUTED))).block(block);
+        let waiting = Paragraph::new(muted_line("No Plan yet.")).block(block);
         frame.render_widget(waiting, area);
         return;
     };
-    let guide = |text: &str| Span::styled(text.to_owned(), Style::new().fg(FAINT));
     let task_count = view.tasks().len();
     let items: Vec<ListItem> = nodes
         .iter()
         .map(|node| match *node {
-            TreeNode::Plan => ListItem::new(Line::from(vec![
-                Span::styled("◆ ", Style::new().fg(ACCENT)),
-                Span::raw(plan.goal.clone()).bold(),
-            ])),
-            TreeNode::Task(task) => {
-                let task_view = &view.tasks()[task];
-                let branch = if task + 1 == task_count {
-                    "└─ "
-                } else {
-                    "├─ "
-                };
-                let title_style = match task_view.status {
-                    Status::Active => Style::new().bold(),
-                    Status::Pending => Style::new().fg(MUTED),
-                    _ => Style::new(),
-                };
-                let mut spans = vec![
-                    guide(branch),
-                    status_icon(task_view.status),
-                    Span::styled(
-                        format!(" {}. {}", task + 1, task_view.task.title),
-                        title_style,
-                    ),
-                ];
-                if ui_state.collapsed.contains(&task) && !task_view.work_units.is_empty() {
-                    spans.push(Span::styled(
-                        format!("  ▸ {} hidden", task_view.work_units.len()),
-                        Style::new().fg(FAINT),
-                    ));
-                }
-                ListItem::new(Line::from(spans))
-            }
+            TreeNode::Plan => plan_row(plan),
+            TreeNode::Task(task) => task_row(
+                task,
+                &view.tasks()[task],
+                task + 1 == task_count,
+                ui_state.collapsed.contains(&task),
+            ),
             TreeNode::WorkUnit { task, unit } => {
                 let task_view = &view.tasks()[task];
-                let work_unit_view = &task_view.work_units[unit];
-                let work_unit = &work_unit_view.work_unit;
-                let trunk = if task + 1 == task_count {
-                    "   "
-                } else {
-                    "│  "
-                };
-                let branch = if unit + 1 == task_view.work_units.len() {
-                    "└─ "
-                } else {
-                    "├─ "
-                };
-                ListItem::new(Line::from(vec![
-                    guide(trunk),
-                    guide(branch),
-                    status_icon(work_unit_view.status),
-                    Span::styled(format!(" {}", work_unit.id), Style::new().bold()),
-                    Span::styled(format!("  {}", work_unit.file), Style::new().fg(MUTED)),
-                ]))
+                work_unit_row(
+                    &task_view.work_units[unit],
+                    task + 1 == task_count,
+                    unit + 1 == task_view.work_units.len(),
+                )
             }
         })
         .collect();
@@ -412,6 +379,65 @@ fn draw_tree(
     let mut list_state =
         ListState::default().with_selected(Some(selected_row(nodes, ui_state.selected)));
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn guide(tree_lines: &str) -> Span<'static> {
+    Span::styled(tree_lines.to_owned(), Style::new().fg(FAINT))
+}
+
+fn tree_branch(is_last: bool) -> &'static str {
+    if is_last { "└─ " } else { "├─ " }
+}
+
+fn plan_row(plan: &Plan) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::styled("◆ ", Style::new().fg(ACCENT)),
+        Span::raw(plan.goal.clone()).bold(),
+    ]))
+}
+
+fn task_row(
+    task: usize,
+    task_view: &TaskView,
+    is_last_task: bool,
+    is_collapsed: bool,
+) -> ListItem<'static> {
+    let title_style = match task_view.status {
+        Status::Active => Style::new().bold(),
+        Status::Pending => Style::new().fg(MUTED),
+        _ => Style::new(),
+    };
+    let mut spans = vec![
+        guide(tree_branch(is_last_task)),
+        status_icon(task_view.status),
+        Span::styled(
+            format!(" {}. {}", task + 1, task_view.task.title),
+            title_style,
+        ),
+    ];
+    if is_collapsed && !task_view.work_units.is_empty() {
+        spans.push(Span::styled(
+            format!("  ▸ {} hidden", task_view.work_units.len()),
+            Style::new().fg(FAINT),
+        ));
+    }
+    ListItem::new(Line::from(spans))
+}
+
+fn work_unit_row(
+    work_unit_view: &WorkUnitView,
+    is_last_task: bool,
+    is_last_unit: bool,
+) -> ListItem<'static> {
+    let work_unit = &work_unit_view.work_unit;
+    let trunk = if is_last_task { "   " } else { "│  " };
+    ListItem::new(Line::from(vec![
+        guide(trunk),
+        guide(tree_branch(is_last_unit)),
+        status_icon(work_unit_view.status),
+        Span::styled(format!(" {}", work_unit.id), Style::new().bold()),
+        Span::styled(format!("  {}", work_unit.file), Style::new().fg(MUTED)),
+    ]))
 }
 
 fn heading(text: &str) -> Line<'static> {
@@ -453,120 +479,28 @@ fn draw_detail(
     ui_state: &UiState,
 ) {
     let focused = ui_state.focus == Focus::Detail;
-    let mut lines: Vec<Line> = Vec::new();
-    let title = match node {
-        None => {
-            match view.session().request() {
-                Some(request) => {
-                    lines.push(heading("Request"));
-                    lines.extend(request.text.lines().map(|line| Line::raw(line.to_owned())));
-                }
-                None => {
-                    lines.push(Line::styled(
-                        "Type a Request in the prompt below to start a Session.",
-                        Style::new().fg(MUTED),
-                    ));
-                }
-            }
-            pane_title("Detail", focused)
-        }
+    let (title, lines) = match node {
+        None => (pane_title("Detail", focused), request_lines(view)),
         Some(TreeNode::Plan) => {
             let plan = view
                 .plan()
                 .expect("the tree has a Plan row only with a Plan");
-            lines.push(heading("Goal"));
-            lines.push(Line::raw(plan.goal.clone()));
-            if !plan.constraints.is_empty() {
-                lines.push(Line::default());
-                lines.push(heading("Constraints"));
-                lines.extend(plan.constraints.iter().map(|constraint| {
-                    match constraint.strip_prefix(ASSUMPTION_PREFIX) {
-                        Some(assumption) => Line::from(vec![
-                            Span::styled("▲ ", Style::new().fg(YELLOW)),
-                            Span::styled("Assumption", Style::new().fg(YELLOW).bold()),
-                            Span::raw(assumption.to_owned()),
-                        ]),
-                        None => Line::from(vec![
-                            Span::styled("• ", Style::new().fg(MUTED)),
-                            Span::raw(constraint.clone()),
-                        ]),
-                    }
-                }));
-            }
-            pane_title("Plan", focused)
+            (pane_title("Plan", focused), plan_lines(plan))
         }
         Some(TreeNode::Task(task)) => {
             let task_view = &view.tasks()[task];
-            lines.push(heading("Description"));
-            lines.extend(
-                task_view
-                    .task
-                    .description
-                    .lines()
-                    .map(|line| Line::raw(line.to_owned())),
-            );
-            lines.push(Line::default());
-            lines.push(Line::from(vec![
-                label("Units"),
-                Span::raw(task_view.work_units.len().to_string()),
-            ]));
-            pane_title(
-                &format!("Task {}: {}", task + 1, task_view.task.title),
-                focused,
-            )
+            let title = format!("Task {}: {}", task + 1, task_view.task.title);
+            (pane_title(&title, focused), task_lines(task_view))
         }
         Some(TreeNode::WorkUnit { task, unit }) => {
             let work_unit_view = &view.tasks()[task].work_units[unit];
-            let work_unit = &work_unit_view.work_unit;
-            match ui_state.detail_tab {
-                DetailTab::Spec => {
-                    lines.push(Line::from(vec![
-                        label("File"),
-                        Span::raw(work_unit.file.clone()),
-                    ]));
-                    lines.push(Line::from(vec![
-                        label("Tests"),
-                        Span::raw(work_unit.test_filter.clone()),
-                    ]));
-                    lines.push(Line::default());
-                    lines.push(heading("Spec"));
-                    lines.extend(
-                        work_unit
-                            .spec
-                            .lines()
-                            .map(|line| Line::raw(line.to_owned())),
-                    );
-                    if !work_unit.acceptance_criteria.is_empty() {
-                        lines.push(Line::default());
-                        lines.push(heading("Acceptance criteria"));
-                        lines.extend(work_unit.acceptance_criteria.iter().map(|criterion| {
-                            Line::from(vec![
-                                Span::styled("☐ ", Style::new().fg(MUTED)),
-                                Span::raw(criterion.clone()),
-                            ])
-                        }));
-                    }
-                    lines.push(Line::default());
-                    lines.push(heading("Context Pack"));
-                    lines.extend(work_unit.context.iter().map(|snippet| {
-                        Line::from(vec![
-                            Span::styled("• ", Style::new().fg(MUTED)),
-                            Span::raw(snippet.path.clone()),
-                            Span::styled(
-                                format!(
-                                    "  {:?} · {} lines",
-                                    snippet.priority,
-                                    snippet.text.lines().count()
-                                ),
-                                Style::new().fg(MUTED),
-                            ),
-                        ])
-                    }));
-                }
-                DetailTab::Transcript => transcript_lines(work_unit_view, &mut lines),
-                DetailTab::Diff => diff_lines(work_unit_view, &mut lines),
-            }
-            tabs_title(&work_unit.id.to_string(), ui_state.detail_tab, focused)
+            let lines = match ui_state.detail_tab {
+                DetailTab::Spec => spec_lines(&work_unit_view.work_unit),
+                DetailTab::Transcript => transcript_lines(work_unit_view),
+                DetailTab::Diff => diff_lines(work_unit_view),
+            };
+            let title = work_unit_view.work_unit.id.to_string();
+            (tabs_title(&title, ui_state.detail_tab, focused), lines)
         }
     };
     let line_count = u16::try_from(lines.len()).unwrap_or(u16::MAX);
@@ -579,18 +513,127 @@ fn draw_detail(
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(detail, area);
-    if line_count > visible_rows {
-        let mut scrollbar_state = ScrollbarState::new(usize::from(line_count - visible_rows))
-            .position(usize::from(scroll));
-        frame.render_stateful_widget(
-            pane_scrollbar(focused),
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
+    draw_scrollbar(
+        frame,
+        area,
+        focused,
+        usize::from(scroll_limit),
+        usize::from(scroll),
+    );
+}
+
+fn request_lines(view: &SessionView) -> Vec<Line<'static>> {
+    let Some(request) = view.session().request() else {
+        return vec![muted_line(
+            "Type a Request in the prompt below to start a Session.",
+        )];
+    };
+    let mut lines = vec![heading("Request")];
+    lines.extend(text_lines(&request.text));
+    lines
+}
+
+fn plan_lines(plan: &Plan) -> Vec<Line<'static>> {
+    let mut lines = vec![heading("Goal"), Line::raw(plan.goal.clone())];
+    if !plan.constraints.is_empty() {
+        lines.push(Line::default());
+        lines.push(heading("Constraints"));
+        lines.extend(plan.constraints.iter().map(|constraint| {
+            match constraint.strip_prefix(ASSUMPTION_PREFIX) {
+                Some(assumption) => Line::from(vec![
+                    Span::styled("▲ ", Style::new().fg(YELLOW)),
+                    Span::styled("Assumption", Style::new().fg(YELLOW).bold()),
+                    Span::raw(assumption.to_owned()),
+                ]),
+                None => Line::from(vec![
+                    Span::styled("• ", Style::new().fg(MUTED)),
+                    Span::raw(constraint.clone()),
+                ]),
+            }
+        }));
     }
+    lines
+}
+
+fn task_lines(task_view: &TaskView) -> Vec<Line<'static>> {
+    let mut lines = vec![heading("Description")];
+    lines.extend(text_lines(&task_view.task.description));
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        label("Units"),
+        Span::raw(task_view.work_units.len().to_string()),
+    ]));
+    lines
+}
+
+fn spec_lines(work_unit: &WorkUnit) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![label("File"), Span::raw(work_unit.file.clone())]),
+        Line::from(vec![
+            label("Tests"),
+            Span::raw(work_unit.test_filter.clone()),
+        ]),
+        Line::default(),
+        heading("Spec"),
+    ];
+    lines.extend(text_lines(&work_unit.spec));
+    if !work_unit.acceptance_criteria.is_empty() {
+        lines.push(Line::default());
+        lines.push(heading("Acceptance criteria"));
+        lines.extend(work_unit.acceptance_criteria.iter().map(|criterion| {
+            Line::from(vec![
+                Span::styled("☐ ", Style::new().fg(MUTED)),
+                Span::raw(criterion.clone()),
+            ])
+        }));
+    }
+    lines.push(Line::default());
+    lines.push(heading("Context Pack"));
+    lines.extend(work_unit.context.iter().map(|snippet| {
+        Line::from(vec![
+            Span::styled("• ", Style::new().fg(MUTED)),
+            Span::raw(snippet.path.clone()),
+            Span::styled(
+                format!(
+                    "  {:?} · {} lines",
+                    snippet.priority,
+                    snippet.text.lines().count()
+                ),
+                Style::new().fg(MUTED),
+            ),
+        ])
+    }));
+    lines
+}
+
+fn muted_line(message: &'static str) -> Line<'static> {
+    Line::styled(message, Style::new().fg(MUTED))
+}
+
+fn text_lines(shown_text: &str) -> impl Iterator<Item = Line<'static>> + '_ {
+    shown_text.lines().map(|line| Line::raw(line.to_owned()))
+}
+
+/// Draws nothing when everything fits.
+fn draw_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    focused: bool,
+    scroll_limit: usize,
+    position: usize,
+) {
+    if scroll_limit == 0 {
+        return;
+    }
+    let mut scrollbar_state = ScrollbarState::new(scroll_limit).position(position);
+    frame.render_stateful_widget(
+        pane_scrollbar(focused),
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
 }
 
 fn pane_scrollbar(focused: bool) -> Scrollbar<'static> {
@@ -609,14 +652,11 @@ fn code_line(text: &str) -> Line<'static> {
     ])
 }
 
-fn transcript_lines(work_unit_view: &WorkUnitView, lines: &mut Vec<Line<'static>>) {
+fn transcript_lines(work_unit_view: &WorkUnitView) -> Vec<Line<'static>> {
     if work_unit_view.transcript.is_empty() {
-        lines.push(Line::styled(
-            "The Writer hasn't replied yet.",
-            Style::new().fg(MUTED),
-        ));
-        return;
+        return vec![muted_line("The Writer hasn't replied yet.")];
     }
+    let mut lines = Vec::new();
     for (attempt_index, record) in work_unit_view.transcript.iter().enumerate() {
         if attempt_index > 0 {
             lines.push(Line::default());
@@ -660,27 +700,23 @@ fn transcript_lines(work_unit_view: &WorkUnitView, lines: &mut Vec<Line<'static>
             }
         }
     }
+    lines
 }
 
-fn diff_lines(work_unit_view: &WorkUnitView, lines: &mut Vec<Line<'static>>) {
+fn diff_lines(work_unit_view: &WorkUnitView) -> Vec<Line<'static>> {
     let Some(commit) = &work_unit_view.commit else {
-        lines.push(Line::styled(
-            "Nothing committed for this Work Unit yet.",
-            Style::new().fg(MUTED),
-        ));
-        return;
+        return vec![muted_line("Nothing committed for this Work Unit yet.")];
     };
-    lines.push(Line::from(vec![
-        label("Commit"),
-        Span::styled(short(commit).to_owned(), Style::new().fg(YELLOW)),
-    ]));
-    lines.push(Line::default());
+    let mut lines = vec![
+        Line::from(vec![
+            label("Commit"),
+            Span::styled(short(commit).to_owned(), Style::new().fg(YELLOW)),
+        ]),
+        Line::default(),
+    ];
     let Some(diff) = &work_unit_view.diff else {
-        lines.push(Line::styled(
-            "The diff hasn't been read yet.",
-            Style::new().fg(MUTED),
-        ));
-        return;
+        lines.push(muted_line("The diff hasn't been read yet."));
+        return lines;
     };
     lines.extend(diff.lines().map(|diff_line| {
         let style = if diff_line.starts_with("+++") || diff_line.starts_with("---") {
@@ -698,6 +734,7 @@ fn diff_lines(work_unit_view: &WorkUnitView, lines: &mut Vec<Line<'static>>) {
         };
         Line::styled(diff_line.to_owned(), style)
     }));
+    lines
 }
 
 fn log_line(number: usize, entry: &LogEntry) -> Line<'static> {
@@ -754,18 +791,7 @@ fn draw_log(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiStat
     )
     .title_top(Line::from(following).alignment(Alignment::Right));
     frame.render_widget(Paragraph::new(lines).block(block), area);
-
-    if log.len() > visible_rows {
-        let mut scrollbar_state = ScrollbarState::new(newest_start).position(start);
-        frame.render_stateful_widget(
-            pane_scrollbar(focused),
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
+    draw_scrollbar(frame, area, focused, newest_start, start);
 }
 
 fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiState) {
@@ -773,33 +799,6 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     let title = match view.session().phase() {
         Phase::NotStarted => "Request",
         _ => "Prompt",
-    };
-    let hint_pairs: &[(&str, &str)] = match ui_state.focus {
-        Focus::Tree => &[
-            ("Tab", "focus"),
-            ("↑↓", "move"),
-            ("←→", "fold"),
-            ("/", "prompt"),
-            ("q", "quit"),
-        ],
-        Focus::Detail => &[
-            ("Tab", "focus"),
-            ("↑↓", "scroll"),
-            ("←→", "tabs"),
-            ("q", "quit"),
-        ],
-        Focus::Log => &[
-            ("Tab", "focus"),
-            ("↑↓ PgUp PgDn", "scroll"),
-            ("End", "follow"),
-            ("q", "quit"),
-        ],
-        Focus::Prompt => &[
-            ("Enter", "send"),
-            ("Alt+Enter", "new line"),
-            ("Esc", "leave"),
-            ("Tab", "focus"),
-        ],
     };
     let mut hint_spans = vec![Span::raw(" ")];
     if ui_state.modal.is_some() && ui_state.modal_hidden && !focused {
@@ -809,7 +808,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
             Style::new().fg(YELLOW),
         ));
     }
-    for (keys, action) in hint_pairs {
+    for (keys, action) in key_hints(ui_state.focus) {
         hint_spans.push(Span::styled(format!("{keys} "), Style::new().fg(ACCENT)));
         hint_spans.push(Span::styled(format!("{action}  "), Style::new().fg(MUTED)));
     }
@@ -838,6 +837,36 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     frame.render_widget(Paragraph::new(content).block(block), area);
     if focused {
         frame.set_cursor_position((area.x + text_start + shown_width, area.y + 1));
+    }
+}
+
+fn key_hints(focus: Focus) -> &'static [(&'static str, &'static str)] {
+    match focus {
+        Focus::Tree => &[
+            ("Tab", "focus"),
+            ("↑↓", "move"),
+            ("←→", "fold"),
+            ("/", "prompt"),
+            ("q", "quit"),
+        ],
+        Focus::Detail => &[
+            ("Tab", "focus"),
+            ("↑↓", "scroll"),
+            ("←→", "tabs"),
+            ("q", "quit"),
+        ],
+        Focus::Log => &[
+            ("Tab", "focus"),
+            ("↑↓ PgUp PgDn", "scroll"),
+            ("End", "follow"),
+            ("q", "quit"),
+        ],
+        Focus::Prompt => &[
+            ("Enter", "send"),
+            ("Alt+Enter", "new line"),
+            ("Esc", "leave"),
+            ("Tab", "focus"),
+        ],
     }
 }
 
