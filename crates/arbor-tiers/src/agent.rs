@@ -6,7 +6,7 @@ use arbor_llm::{
     BoxFuture, ChatRequest, ContentPart, LlmClient, LlmError, Message, ModelInfo, ToolCall,
     ToolChoice, ToolDef,
 };
-use arbor_tools::Tools;
+use arbor_tools::{Tools, tool_definition};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
@@ -17,6 +17,15 @@ pub const SUBMIT_NOW_PERCENT: u64 = 80;
 /// Checks what the schema can't. An `Err` goes back to the model.
 pub type Validate<T> =
     Box<dyn for<'a> Fn(&'a T) -> BoxFuture<'a, Result<(), String>> + Send + Sync>;
+
+/// `Ok` when there are no problems, otherwise `<verdict>: <problem>; <problem>`.
+pub(crate) fn reject_if_any(verdict: &str, problems: Vec<String>) -> Result<(), String> {
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{verdict}: {}", problems.join("; ")))
+    }
+}
 
 /// The tool that ends an agentic run. Its parameter schema is generated from `T`.
 pub struct Submission<T> {
@@ -76,12 +85,14 @@ impl fmt::Display for UnsupportedModel {
 
 impl std::error::Error for UnsupportedModel {}
 
-pub fn require_tool_calling(tier: Tier, model: &ModelInfo) -> Result<(), UnsupportedModel> {
-    if model
-        .supported_parameters
+pub(crate) fn supports(supported_parameters: &[String], parameter: &str) -> bool {
+    supported_parameters
         .iter()
-        .any(|parameter| parameter == "tools")
-    {
+        .any(|supported| supported == parameter)
+}
+
+pub fn require_tool_calling(tier: Tier, model: &ModelInfo) -> Result<(), UnsupportedModel> {
+    if supports(&model.supported_parameters, "tools") {
         Ok(())
     } else {
         Err(UnsupportedModel {
@@ -169,11 +180,10 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
     ) -> Result<Self, UnsupportedModel> {
         require_tool_calling(settings.tier, &settings.model)?;
         let mut definitions = tools.definitions();
-        definitions.push(ToolDef {
-            name: submission.name.to_owned(),
-            description: submission.description.to_owned(),
-            parameters: parameters::<T>(),
-        });
+        definitions.push(tool_definition::<T>(
+            submission.name,
+            submission.description,
+        ));
         Ok(Self {
             settings,
             submission,
@@ -286,25 +296,12 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
         let mut submitted = None;
         let mut failed = false;
         for call in calls {
-            let tool_result = if call.name != self.submission.name && self.budget_used_up() {
-                format!(
-                    "Error: the tool-call budget of {} is used up; call `{}` now.",
-                    self.tool_call_budget.unwrap_or_default(),
-                    self.submission.name
-                )
-            } else if call.name != self.submission.name {
-                self.tool_calls_made += 1;
-                let tool_output = self.tools.call(&call.name, &call.arguments).await;
-                if tool_output.is_error {
-                    format!("Error: {}", tool_output.text)
-                } else {
-                    tool_output.text
-                }
+            let tool_result = if call.name != self.submission.name {
+                self.run_tool(call).await
             } else if submitted.is_some() {
                 "Ignored: a submission was already accepted.".to_owned()
             } else {
-                let parsed = self.parse(&call.arguments).await;
-                match parsed {
+                match self.parse(&call.arguments).await {
                     Ok(parsed_submission) => {
                         submitted = Some(parsed_submission);
                         "Submitted.".to_owned()
@@ -338,6 +335,24 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
             ));
         }
         None
+    }
+
+    /// Runs a tool other than the submit tool and returns what the model sees.
+    async fn run_tool(&mut self, call: &ToolCall) -> String {
+        if self.budget_used_up() {
+            return format!(
+                "Error: the tool-call budget of {} is used up; call `{}` now.",
+                self.tool_call_budget.unwrap_or_default(),
+                self.submission.name
+            );
+        }
+        self.tool_calls_made += 1;
+        let tool_output = self.tools.call(&call.name, &call.arguments).await;
+        if tool_output.is_error {
+            format!("Error: {}", tool_output.text)
+        } else {
+            tool_output.text
+        }
     }
 
     async fn parse(&self, arguments: &str) -> Result<T, String> {
@@ -380,14 +395,12 @@ impl<T: DeserializeOwned + JsonSchema> Agent<T> {
     }
 }
 
-fn parameters<T: JsonSchema>() -> serde_json::Value {
-    let mut schema =
-        serde_json::to_value(schemars::schema_for!(T)).expect("a JSON Schema serializes to JSON");
-    if let Some(object) = schema.as_object_mut() {
-        object.remove("$schema");
-        object.remove("title");
-    }
-    schema
+/// Adds a part to the inputs message that ends every prompt.
+pub(crate) fn append_input(messages: &mut [Message], input_text: String) {
+    let Some(Message::User { content }) = messages.last_mut() else {
+        unreachable!("a prompt ends with its inputs");
+    };
+    content.push(ContentPart::text(input_text));
 }
 
 pub fn core_usage(usage: &arbor_llm::Usage) -> Usage {

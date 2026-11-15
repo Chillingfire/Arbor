@@ -1,10 +1,12 @@
 use arbor_config::ClarificationMode;
-use arbor_core::{Plan, Tier};
-use arbor_llm::{ContentPart, Message, ModelInfo};
+use arbor_core::{Plan, Task, Tier};
+use arbor_llm::ModelInfo;
 use arbor_prompts::Prompt;
 use arbor_tools::{Tools, Toolset};
 
-use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
+use crate::agent::{
+    Agent, AgentSettings, Submission, UnsupportedModel, append_input, reject_if_any,
+};
 
 pub const SUBMIT_PLAN: &str = "submit_plan";
 
@@ -33,10 +35,7 @@ impl PlannerRun<'_> {
         assert_eq!(self.tools.toolset(), Toolset::Planner);
         let mut messages = self.prompt.messages();
         if let Some(rejection) = self.rejected {
-            let Some(Message::User { content }) = messages.last_mut() else {
-                unreachable!("a prompt ends with its inputs");
-            };
-            content.push(ContentPart::text(rejection_text(rejection)));
+            append_input(&mut messages, rejection_text(rejection));
         }
         let settings = AgentSettings {
             tier: Tier::Planner,
@@ -65,7 +64,13 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
     if plan.tasks.is_empty() {
         problems.push("there are no Tasks; a Plan needs at least one".to_owned());
     }
-    for (task_number, task) in (1..).zip(&plan.tasks) {
+    problems.extend(task_problems(&plan.tasks));
+    reject_if_any("the Plan is invalid", problems)
+}
+
+pub(crate) fn task_problems(tasks: &[Task]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (task_number, task) in (1..).zip(tasks) {
         if task.title.trim().is_empty() {
             problems.push(format!("Task {task_number} has no title"));
         }
@@ -73,11 +78,7 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
             problems.push(format!("Task {task_number} has no description"));
         }
     }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("the Plan is invalid: {}", problems.join("; ")))
-    }
+    problems
 }
 
 fn rejection_text(rejection: Rejection) -> String {

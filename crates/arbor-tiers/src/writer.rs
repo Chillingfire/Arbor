@@ -12,10 +12,10 @@ use arbor_llm::{ChatRequest, ContentPart, FinishReason, LlmClient, LlmError, Mes
 use arbor_prompts::{Prompt, estimate_tokens};
 use arbor_tools::{CheckName, run_check};
 
-use crate::agent::core_usage;
+use crate::agent::{core_usage, supports};
 use crate::markers::{Markers, Region, splice, strip};
-use crate::reply::{ReplyError, WriterReply, parse_reply};
-use crate::scaffold_check::{with_margin, writer_input_tokens};
+use crate::reply::{CodeReply, ReplyError, WriterReply, parse_reply};
+use crate::writer_cap::{with_margin, writer_input_tokens};
 
 pub const MAX_WRITER_ATTEMPTS: usize = 3;
 
@@ -54,14 +54,8 @@ impl WriterRun<'_> {
             work_unit: self.work_unit.clone(),
             model: self.model,
             temperature: self.temperature,
-            sends_temperature: self
-                .supported_parameters
-                .iter()
-                .any(|parameter| parameter == "temperature"),
-            sends_seed: self
-                .supported_parameters
-                .iter()
-                .any(|parameter| parameter == "seed"),
+            sends_temperature: supports(&self.supported_parameters, "temperature"),
+            sends_seed: supports(&self.supported_parameters, "seed"),
             worktree: self.worktree.to_owned(),
             checks: self.checks,
             cap_tokens: self.cap_tokens,
@@ -348,24 +342,20 @@ impl Writer {
             .map_err(WriterError::Llm)?;
         let usage = core_usage(&chat_response.usage);
         let reply = chat_response.content.unwrap_or_default();
-        let handled = self
+        let outcome = self
             .handle(&reply, &chat_response.finish_reason, checks_started)
-            .await;
-        let handled = handled.map_err(|error| AttemptError {
-            error,
-            usage: Some(usage),
-        })?;
-        let outcome = match handled {
-            Ok(outcome) => outcome,
-            Err(reason) => {
-                let failure = Failure { reply, reason };
-                self.set_retry(&failure);
+            .await
+            .map_err(|error| AttemptError {
+                error,
+                usage: Some(usage),
+            })?;
+        match &outcome {
+            AttemptOutcome::Failed(failure) => {
+                self.set_retry(failure);
                 self.failures.push(failure.clone());
-                AttemptOutcome::Failed(failure)
             }
-        };
-        if let AttemptOutcome::Missing { items } = &outcome {
-            self.missing_response = Some(items.clone());
+            AttemptOutcome::Missing { items } => self.missing_response = Some(items.clone()),
+            AttemptOutcome::Passed { .. } => {}
         }
         self.finished = !matches!(outcome, AttemptOutcome::Failed(_));
         Ok(Attempt {
@@ -380,21 +370,28 @@ impl Writer {
         reply: &str,
         finish: &FinishReason,
         checks_started: &mut dyn FnMut(),
-    ) -> Result<Result<AttemptOutcome, FailureReason>, WriterError> {
+    ) -> Result<AttemptOutcome, WriterError> {
         if *finish == FinishReason::Length {
-            return Ok(Err(FailureReason::Rejected(ReplyError::CutOff)));
+            return Ok(failed(reply, FailureReason::Rejected(ReplyError::CutOff)));
         }
-        let code = match parse_reply(reply) {
-            Err(error) => return Ok(Err(FailureReason::Rejected(error))),
-            Ok(WriterReply::Missing(_)) if !self.missing_response_allowed => {
-                return Ok(Err(FailureReason::Rejected(
-                    ReplyError::MissingResponseUsed,
-                )));
-            }
-            Ok(WriterReply::Missing(items)) => return Ok(Ok(AttemptOutcome::Missing { items })),
-            Ok(WriterReply::Code(code)) => code,
-        };
+        match parse_reply(reply) {
+            Err(error) => Ok(failed(reply, FailureReason::Rejected(error))),
+            Ok(WriterReply::Missing(_)) if !self.missing_response_allowed => Ok(failed(
+                reply,
+                FailureReason::Rejected(ReplyError::MissingResponseUsed),
+            )),
+            Ok(WriterReply::Missing(items)) => Ok(AttemptOutcome::Missing { items }),
+            Ok(WriterReply::Code(code)) => self.fill_region(&code, reply, checks_started).await,
+        }
+    }
 
+    /// Splices the code into the Region, runs the Checks, and commits the code that passes.
+    async fn fill_region(
+        &self,
+        code: &CodeReply,
+        reply: &str,
+        checks_started: &mut dyn FnMut(),
+    ) -> Result<AttemptOutcome, WriterError> {
         let unit = &self.work_unit;
         let path = self.worktree.join(&unit.file);
         let original = read(&path)?;
@@ -404,7 +401,7 @@ impl Writer {
         let after = &lines[region.context_after(lines.len())];
         let body = match code.fit(before, after) {
             Ok(body) => body,
-            Err(error) => return Ok(Err(FailureReason::Rejected(error))),
+            Err(error) => return Ok(failed(reply, FailureReason::Rejected(error))),
         };
 
         let spliced = splice(&original, &region, &body);
@@ -412,15 +409,15 @@ impl Writer {
         checks_started();
         if let Some(output) = restoring(&path, &original, self.run_checks().await)? {
             write(&path, &original)?;
-            return Ok(Err(FailureReason::ChecksFailed { output }));
+            return Ok(failed(reply, FailureReason::ChecksFailed { output }));
         }
         // A Check may rewrite the file, e.g. a formatter that moves a Marker line. What is
         // committed is the spliced code that passed, so that can't break the Region.
         let commit = restoring(&path, &original, self.commit(&path, &spliced))?;
-        Ok(Ok(AttemptOutcome::Passed {
+        Ok(AttemptOutcome::Passed {
             commit,
             reply: reply.to_owned(),
-        }))
+        })
     }
 
     fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {
@@ -497,9 +494,10 @@ impl Writer {
         let id = self.work_unit.id;
         let markers = Markers::parse(file_text);
         let problems = markers.problems_for(id);
-        match markers.region(id) {
-            Some(region) if problems.is_empty() => return Ok(*region),
-            _ => {}
+        if let Some(region) = markers.region(id)
+            && problems.is_empty()
+        {
+            return Ok(*region);
         }
         let problem = problems
             .iter()
@@ -519,6 +517,13 @@ impl Writer {
             }),
         }
     }
+}
+
+fn failed(reply: &str, reason: FailureReason) -> AttemptOutcome {
+    AttemptOutcome::Failed(Failure {
+        reply: reply.to_owned(),
+        reason,
+    })
 }
 
 /// Shortens the Check output first, then leaves out the failed reply, until the retry fits in

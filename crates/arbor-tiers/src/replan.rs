@@ -3,11 +3,14 @@
 
 use arbor_config::ClarificationMode;
 use arbor_core::{Replan, Tier};
-use arbor_llm::{ContentPart, Message, ModelInfo};
+use arbor_llm::ModelInfo;
 use arbor_prompts::Prompt;
 use arbor_tools::{Tools, Toolset};
 
-use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
+use crate::agent::{
+    Agent, AgentSettings, Submission, UnsupportedModel, append_input, reject_if_any,
+};
+use crate::planner::task_problems;
 
 pub const SUBMIT_REPLAN: &str = "submit_replan";
 
@@ -31,13 +34,14 @@ impl ReplanRun<'_> {
         assert_eq!(self.tools.toolset(), Toolset::Planner);
         let mut messages = self.prompt.messages();
         if let Some(feedback) = self.feedback {
-            let Some(Message::User { content }) = messages.last_mut() else {
-                unreachable!("a prompt ends with its inputs");
-            };
-            content.push(ContentPart::text(format!(
-                "# Rejected Replan\n\nThe Human Operator rejected your Replan at the Checkpoint. \
-                 Their feedback:\n\n{feedback}\n\nRevise it, then call `{SUBMIT_REPLAN}` again."
-            )));
+            append_input(
+                &mut messages,
+                format!(
+                    "# Rejected Replan\n\nThe Human Operator rejected your Replan at the \
+                     Checkpoint. Their feedback:\n\n{feedback}\n\nRevise it, then call \
+                     `{SUBMIT_REPLAN}` again."
+                ),
+            );
         }
         let settings = AgentSettings {
             tier: Tier::Planner,
@@ -68,17 +72,6 @@ pub fn validate_replan(replan: &Replan) -> Result<(), String> {
             "there are no Tasks; a Replan replaces the failed Task with at least one".to_owned(),
         );
     }
-    for (index, task) in replan.tasks.iter().enumerate() {
-        if task.title.trim().is_empty() {
-            problems.push(format!("Task {} has no title", index + 1));
-        }
-        if task.description.trim().is_empty() {
-            problems.push(format!("Task {} has no description", index + 1));
-        }
-    }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("the Replan is invalid: {}", problems.join("; ")))
-    }
+    problems.extend(task_problems(&replan.tasks));
+    reject_if_any("the Replan is invalid", problems)
 }

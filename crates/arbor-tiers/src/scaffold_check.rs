@@ -5,66 +5,13 @@ use std::path::{Component, Path, PathBuf};
 use arbor_config::Checks;
 use arbor_core::{WorkUnit, WorkUnitId};
 use arbor_git::Repo;
-use arbor_prompts::estimate_tokens;
-use arbor_tools::{Tools, Toolset};
+use arbor_tools::{CheckName, run_check};
 
 use crate::markers::{MarkerError, Markers, is_comment_less, is_marker_line};
-
-/// Added to the estimated Writer input because the token estimate is rough.
-pub const WRITER_CAP_MARGIN_PERCENT: u64 = 10;
+use crate::writer_cap::writer_cap_report;
 
 pub const NO_SCAFFOLD_CHECK: &str = "No scaffold check is configured in arbor.toml, so Arbor \
                                      can't verify that the Skeleton builds. Skipping it.";
-
-pub fn writer_input_tokens(unit: &WorkUnit) -> u32 {
-    let criteria = unit
-        .acceptance_criteria
-        .iter()
-        .map(|criterion| estimate_tokens(criterion));
-    let snippets = unit
-        .context
-        .iter()
-        .map(|snippet| estimate_tokens(&snippet.path) + estimate_tokens(&snippet.text));
-    let raw: u64 = std::iter::once(estimate_tokens(&unit.spec))
-        .chain(criteria)
-        .chain(snippets)
-        .map(u64::from)
-        .sum();
-    with_margin(raw)
-}
-
-pub(crate) fn with_margin(raw_tokens: u64) -> u32 {
-    let tokens = (raw_tokens * (100 + WRITER_CAP_MARGIN_PERCENT)).div_ceil(100);
-    u32::try_from(tokens).unwrap_or(u32::MAX)
-}
-
-/// `None` if every Work Unit fits the Writer Cap.
-pub fn writer_cap_report(units: &[WorkUnit], cap_tokens: u32) -> Option<String> {
-    let sizes: Vec<(WorkUnitId, u32)> = units
-        .iter()
-        .map(|unit| (unit.id, writer_input_tokens(unit)))
-        .collect();
-    if sizes.iter().all(|&(_, tokens)| tokens <= cap_tokens) {
-        return None;
-    }
-    let cap = thousands(cap_tokens);
-    let lines: Vec<String> = sizes
-        .into_iter()
-        .map(|(id, tokens)| {
-            let over = if tokens > cap_tokens {
-                " — over, trim or split"
-            } else {
-                ""
-            };
-            format!("- {id}: {} / {cap}{over}", thousands(tokens))
-        })
-        .collect();
-    Some(format!(
-        "Estimated Writer input per Work Unit against the Writer Cap, in tokens \
-         ({WRITER_CAP_MARGIN_PERCENT}% margin included):\n{}",
-        lines.join("\n")
-    ))
-}
 
 pub fn field_problems(units: &[WorkUnit], first_id: WorkUnitId) -> Vec<String> {
     revision_field_problems(units, first_id, &[])
@@ -210,7 +157,6 @@ fn is_inside_string(line: &str) -> bool {
 pub struct ScaffoldCheck {
     worktree: PathBuf,
     checks: Checks,
-    tools: Tools,
     cap_tokens: u32,
     first_id: WorkUnitId,
     revisable: Vec<WorkUnitId>,
@@ -224,12 +170,9 @@ impl ScaffoldCheck {
         cap_tokens: u32,
         first_id: WorkUnitId,
     ) -> Self {
-        let worktree = worktree.into();
-        let tools = Tools::new(&worktree, Toolset::Scaffolder, checks.clone());
         Self {
-            worktree,
+            worktree: worktree.into(),
             checks,
-            tools,
             cap_tokens,
             first_id,
             revisable: Vec::new(),
@@ -312,19 +255,17 @@ impl ScaffoldCheck {
         if self.checks.scaffold.is_none() {
             return Ok(());
         }
-        let scaffold_check = self
-            .tools
-            .call("run_checks", r#"{"check":"scaffold"}"#)
-            .await;
-        if scaffold_check.is_error {
-            Err(format!(
-                "the Scaffold Check failed, so the Skeleton doesn't build. Fix it, then submit \
-                 again.\n\n{}",
-                scaffold_check.text
-            ))
-        } else {
-            Ok(())
-        }
+        let scaffold_check =
+            run_check(&self.worktree, &self.checks, CheckName::Scaffold, None).await;
+        let failure_text = match scaffold_check {
+            Ok(check_output) if !check_output.is_error => return Ok(()),
+            Ok(check_output) => check_output.text,
+            Err(could_not_run) => could_not_run,
+        };
+        Err(format!(
+            "the Scaffold Check failed, so the Skeleton doesn't build. Fix it, then submit \
+             again.\n\n{failure_text}"
+        ))
     }
 }
 
@@ -351,16 +292,4 @@ fn bullets(lines: &[String]) -> String {
         .map(|line| format!("- {line}"))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn thousands(number: u32) -> String {
-    let digits = number.to_string();
-    let mut grouped = String::new();
-    for (position, digit) in digits.chars().enumerate() {
-        if position > 0 && (digits.len() - position).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
 }

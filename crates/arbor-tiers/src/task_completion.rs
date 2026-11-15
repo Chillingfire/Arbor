@@ -9,6 +9,7 @@ use arbor_git::{CommitId, CommitMessage, GitError, Mainline, Worktree};
 use arbor_tools::{CheckName, run_check};
 
 use crate::markers::{Markers, is_well_formed_marker, strip};
+use crate::unified_diff::{HunkLineKind, hunk_lines, new_file_path, parse_hunk};
 
 pub const NO_UNIT_CHECK: &str = "No unit check is configured in arbor.toml, so Arbor can't run \
                                  the Task's tests. Skipping it.";
@@ -137,77 +138,17 @@ pub fn leftover_markers(diff: &str) -> Vec<LeftoverMarker> {
         else {
             continue;
         };
-        let added = hunk_added_lines(&mut lines, hunk);
-        leftovers.extend(
-            added
-                .filter(|(_, added_line)| is_well_formed_marker(added_line))
-                .map(|(number, added_line)| LeftoverMarker {
+        for hunk_line in hunk_lines(&mut lines, hunk) {
+            if let HunkLineKind::Added(added_line) = hunk_line.kind
+                && is_well_formed_marker(added_line)
+            {
+                leftovers.push(LeftoverMarker {
                     file: file.clone(),
-                    line: number,
+                    line: hunk.new_start + hunk_line.new_offset,
                     text: added_line.trim().to_owned(),
-                }),
-        );
-    }
-    leftovers
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Hunk {
-    pub(crate) old_lines: usize,
-    pub(crate) new_start: usize,
-    pub(crate) new_lines: usize,
-}
-
-/// Parses the rest of `@@ -1,3 +1,4 @@`, where a missing count means 1.
-pub(crate) fn parse_hunk(header: &str) -> Option<Hunk> {
-    let mut ranges = header.split_whitespace();
-    let (_, old_lines) = parse_range(ranges.next()?.strip_prefix('-')?)?;
-    let (new_start, new_lines) = parse_range(ranges.next()?.strip_prefix('+')?)?;
-    Some(Hunk {
-        old_lines,
-        new_start,
-        new_lines,
-    })
-}
-
-fn parse_range(range: &str) -> Option<(usize, usize)> {
-    match range.split_once(',') {
-        Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
-        None => Some((range.parse().ok()?, 1)),
-    }
-}
-
-/// Consumes exactly the hunk's lines, so an added line that starts with `++` is never taken for
-/// a file header.
-fn hunk_added_lines<'a>(
-    lines: &mut std::str::Lines<'a>,
-    hunk: Hunk,
-) -> impl Iterator<Item = (usize, &'a str)> {
-    let mut added = Vec::new();
-    let (mut old_left, mut new_left) = (hunk.old_lines, hunk.new_lines);
-    let mut number = hunk.new_start;
-    while old_left + new_left > 0 {
-        let Some(line) = lines.next() else { break };
-        match line.as_bytes().first() {
-            Some(b'+') => {
-                added.push((number, &line[1..]));
-                number += 1;
-                new_left = new_left.saturating_sub(1);
-            }
-            Some(b'-') => old_left = old_left.saturating_sub(1),
-            Some(b'\\') => {}
-            _ => {
-                number += 1;
-                old_left = old_left.saturating_sub(1);
-                new_left = new_left.saturating_sub(1);
+                });
             }
         }
     }
-    added.into_iter()
-}
-
-/// `b/src/lib.rs` gives `src/lib.rs`; a deleted file (`/dev/null`) gives `None`.
-pub(crate) fn new_file_path(header: &str) -> Option<String> {
-    let path = header.trim_end().trim_matches('"');
-    path.strip_prefix("b/").map(str::to_owned)
+    leftovers
 }
