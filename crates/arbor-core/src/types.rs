@@ -34,11 +34,33 @@ impl Plan {
     }
 }
 
-fn is_assumption(constraint: &str) -> bool {
+pub fn is_assumption(constraint: &str) -> bool {
     constraint
         .trim_start()
         .get(..ASSUMPTION_PREFIX.len())
         .is_some_and(|start| start.eq_ignore_ascii_case(ASSUMPTION_PREFIX))
+}
+
+/// The assumptions recorded in free text such as a Work Unit's spec: each runs from an
+/// `Assumption:` to the end of its line or the next `Assumption:`.
+pub fn assumptions_in(spec: &str) -> Vec<&str> {
+    let lowered = spec.to_ascii_lowercase();
+    let prefix = ASSUMPTION_PREFIX.to_ascii_lowercase();
+    let starts: Vec<usize> = lowered
+        .match_indices(&prefix)
+        .map(|(start, _)| start)
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, &start)| {
+            let next = starts.get(index + 1).copied().unwrap_or(spec.len());
+            let line_end = spec[start..]
+                .find('\n')
+                .map_or(spec.len(), |end| start + end);
+            spec[start..next.min(line_end)].trim()
+        })
+        .collect()
 }
 
 /// One step of a Plan that leaves the build green and its tests passing.

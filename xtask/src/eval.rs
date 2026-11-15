@@ -388,6 +388,7 @@ async fn run_case(
             escalations.operator_stops = 1;
             (false, format!("stopped for the operator at {effect:?}"))
         }
+        Ok(SessionEnd::StoppedAtBudget) => (false, "stopped at the Budget Cap".to_owned()),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
             escalations.operator_stops = 1;
             (false, format!("the {tier:?} stopped: {reason}"))

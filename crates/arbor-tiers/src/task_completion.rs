@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use arbor_config::Checks;
-use arbor_core::{Event, LeftoverMarker, SessionCommit};
+use arbor_core::{Event, LeftoverMarker, SessionCommit, WorkUnitId};
 use arbor_git::{CommitId, CommitMessage, GitError, Mainline, Worktree};
 use arbor_tools::{CheckName, run_check};
 
-use crate::markers::is_well_formed_marker;
+use crate::markers::{Markers, is_well_formed_marker, strip};
 
 pub const NO_UNIT_CHECK: &str = "No unit check is configured in arbor.toml, so Arbor can't run \
                                  the Task's tests. Skipping it.";
@@ -69,6 +69,48 @@ pub fn commit_operator_fix(
     Ok(Event::OperatorFixed {
         commit: commit.map(|hash| hash.as_str().to_owned()),
     })
+}
+
+/// Removes the Region Markers of `id` from `file`, if the Human Operator's fix left them there.
+pub fn strip_work_unit_markers(worktree: &Path, file: &str, id: WorkUnitId) -> Result<(), String> {
+    let path = worktree.join(file);
+    let source = std::fs::read_to_string(&path).map_err(|error| format!("{file}: {error}"))?;
+    let Some(region) = Markers::parse(&source).region(id).copied() else {
+        return Ok(());
+    };
+    std::fs::write(&path, strip(&source, &region)).map_err(|error| format!("{file}: {error}"))
+}
+
+/// Runs the Checks a fix by hand must pass at an Escalation Checkpoint, and returns the output of
+/// the first that fails. With a `test_filter`, the fix is of one Work Unit, so it passes the same
+/// Checks a Writer's code does: later Work Units' Placeholders would fail the full Unit Check.
+/// Without one, the fix is of a failed Task, so it passes `checks.unit`.
+pub async fn check_operator_fix(
+    worktree: &Path,
+    checks: &Checks,
+    test_filter: Option<&str>,
+) -> Result<Option<String>, String> {
+    let runs = match test_filter {
+        Some(filter) => vec![
+            (CheckName::Scaffold, checks.scaffold.is_some(), None),
+            (
+                CheckName::UnitFiltered,
+                checks.unit_filtered.is_some(),
+                Some(filter),
+            ),
+        ],
+        None => vec![(CheckName::Unit, checks.unit.is_some(), None)],
+    };
+    for (check, configured, filter) in runs {
+        if !configured {
+            continue;
+        }
+        let check_output = run_check(worktree, checks, check, filter).await?;
+        if check_output.is_error {
+            return Ok(Some(check_output.text));
+        }
+    }
+    Ok(None)
 }
 
 /// Looks for Markers in what the Session branch has committed and returns `MarkersChecked`.

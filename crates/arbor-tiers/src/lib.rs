@@ -40,8 +40,9 @@ pub use scaffold_check::{
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
 pub use task_completion::{
-    MARKER_FIX_SUBJECT, NO_UNIT_CHECK, TASK_FIX_SUBJECT, check_markers, commit_operator_fix,
-    leftover_markers, reset_task, run_task_check, task_check_warning, task_diff,
+    MARKER_FIX_SUBJECT, NO_UNIT_CHECK, TASK_FIX_SUBJECT, check_markers, check_operator_fix,
+    commit_operator_fix, leftover_markers, reset_task, run_task_check, strip_work_unit_markers,
+    task_check_warning, task_diff,
 };
 pub use writer::{
     Attempt, AttemptError, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS,

@@ -91,6 +91,10 @@ impl SessionView {
     /// Applies the event to the Session and updates the tree and the event log to match.
     pub fn apply(&mut self, event: &Event) -> Result<(), ApplyError> {
         let task_before = phase_task(self.session.phase());
+        let escalated_unit = match self.session.phase() {
+            Phase::EscalationCheckpoint { cause, .. } => cause.work_unit(),
+            _ => None,
+        };
         self.session.apply(event)?;
         self.log.push(LogEntry {
             text: describe(event),
@@ -112,6 +116,11 @@ impl SessionView {
             Event::WorkUnitFailed { failure } => {
                 self.set_work_unit_status(failure.id, Status::Failed);
                 self.take_failed_replies(failure);
+            }
+            Event::OperatorFixed { .. } => {
+                if let Some(fixed) = escalated_unit {
+                    self.set_work_unit_status(fixed, Status::Done);
+                }
             }
             _ => {}
         }

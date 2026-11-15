@@ -10,9 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use arbor_config::Config;
-use arbor_core::{Event, Request, Session, Tier, Usd, WorkUnitId};
+use arbor_core::{Effect, Event, Request, RevisionCause, Session, Tier, Usd, WorkUnitId};
 use arbor_llm::{BoxFuture, ChatRequest, ChatResponse, LlmClient, LlmError, Message, ModelInfo};
-use arbor_session::{Autopilot, SessionEnd};
+use arbor_session::{Autopilot, Checkpoint, Decision, Operator, Pending, SessionEnd};
 use arbor_tiers::{AttemptOutcome, FailureReason};
 use arbor_tools::{CheckName, run_check};
 use fixture_client::FixtureClient;
@@ -77,16 +77,79 @@ fn assert_cost(session: &Session, tier: Tier, dollars: f64) {
     );
 }
 
+/// The Skeleton's Region in the Work Unit the Escalation scenarios fail.
+const SKELETON_REGION: &str = "    // ARBOR:BEGIN WU-1\n    todo!()\n    // ARBOR:END WU-1\n";
+
+/// The body of [`IMPLEMENTATION`], as the Human Operator types it in place of the Region.
+const HAND_WRITTEN_BODY: &str = "    text.split_whitespace()
+        .fold(None, |longest: Option<&str>, word| match longest {
+            Some(current) if current.len() >= word.len() => Some(current),
+            _ => Some(word),
+        })
+";
+
+/// A hand-written body that also pastes in the Markers of a Work Unit that isn't being fixed.
+const STRAY_MARKERS_AND_BODY: &str = "    // ARBOR:BEGIN WU-9
+    // ARBOR:END WU-9
+    text.split_whitespace()
+        .fold(None, |longest: Option<&str>, word| match longest {
+            Some(current) if current.len() >= word.len() => Some(current),
+            _ => Some(word),
+        })
+";
+
 /// Runs the Session for the Request to its end, approving every Checkpoint as it is.
 async fn run_session<'a>(sample: &'a SampleRepo, client: &'a FixtureClient) -> Autopilot<'a> {
+    let (pipeline, end) = run_with_operator(sample, client, None).await;
+    assert_eq!(end, SessionEnd::Finished);
+    pipeline
+}
+
+/// Runs the Session for the Request until it ends, with `operator` deciding at each Checkpoint,
+/// or approving every Checkpoint as it is when there is none.
+async fn run_with_operator<'a>(
+    sample: &'a SampleRepo,
+    client: &'a FixtureClient,
+    operator: Option<ScriptedOperator<'a>>,
+) -> (Autopilot<'a>, SessionEnd) {
     let config = Config::load(None, sample.path()).unwrap();
     let mut pipeline = Autopilot::new(&sample.worktree, &sample.mainline, client, config).unwrap();
+    if let Some(operator) = operator {
+        pipeline = pipeline.with_operator(operator);
+    }
     let request = Request {
         text: REQUEST.to_owned(),
         issue: None,
     };
-    assert_eq!(pipeline.run(request).await.unwrap(), SessionEnd::Finished);
-    pipeline
+    let end = pipeline.run(request).await.unwrap();
+    (pipeline, end)
+}
+
+/// Decides with `decide`, and keeps every Checkpoint it was shown.
+struct ScriptedOperator<'a> {
+    decide: Box<dyn FnMut(&Checkpoint) -> Decision + 'a>,
+    shown: std::rc::Rc<std::cell::RefCell<Vec<Checkpoint>>>,
+}
+
+impl<'a> ScriptedOperator<'a> {
+    fn new(decide: impl FnMut(&Checkpoint) -> Decision + 'a) -> Self {
+        Self {
+            decide: Box::new(decide),
+            shown: std::rc::Rc::default(),
+        }
+    }
+}
+
+impl Operator for ScriptedOperator<'_> {
+    fn decide<'a>(&'a mut self, checkpoint: &'a Checkpoint) -> Pending<'a, Decision> {
+        self.shown.borrow_mut().push(checkpoint.clone());
+        let decision = (self.decide)(checkpoint);
+        Box::pin(async move { decision })
+    }
+
+    fn answer<'a>(&'a mut self, _tier: Tier, _questions: &'a str) -> Pending<'a, Option<String>> {
+        Box::pin(async { None })
+    }
 }
 
 fn last_user_text(request: &ChatRequest) -> &str {
@@ -283,6 +346,202 @@ async fn revision_rewrites_a_work_unit_after_the_task_checks_fail() {
         ]
     );
     assert_cost(pipeline.session(), Tier::Scaffolder, 0.04 + 0.04);
+}
+
+#[tokio::test]
+async fn an_unattended_session_stops_at_the_escalation_checkpoint() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation");
+    let (pipeline, end) = run_with_operator(&sample, &client, None).await;
+
+    client.finish();
+    let SessionEnd::NeedsOperator(Effect::ShowEscalationCheckpoint { task: 0, cause }) = end else {
+        panic!("expected the Escalation Checkpoint, got {end:?}");
+    };
+    assert_eq!(cause.work_unit(), Some(WorkUnitId(1)));
+    assert_replays(&pipeline);
+    assert_eq!(sample.session_commit_subjects(), [SKELETON_COMMIT]);
+    assert_eq!(sample.uncommitted_changes(), "");
+}
+
+#[tokio::test]
+async fn a_fix_by_hand_is_checked_then_committed_and_the_session_finishes() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation");
+    let operator = ScriptedOperator::new(|checkpoint| {
+        let Checkpoint::Escalation { failed_fix, .. } = checkpoint else {
+            return Decision::Approve;
+        };
+        // The first time, the Human Operator says "fixed" without fixing anything.
+        if failed_fix.is_some() {
+            let library = sample.read("src/lib.rs");
+            sample.write(
+                "src/lib.rs",
+                &library.replace(SKELETON_REGION, HAND_WRITTEN_BODY),
+            );
+        }
+        Decision::Fixed
+    });
+    let shown = operator.shown.clone();
+    let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
+
+    client.finish();
+    assert_eq!(end, SessionEnd::Finished);
+    assert_replays(&pipeline);
+    let escalations: Vec<Option<String>> = shown
+        .borrow()
+        .iter()
+        .filter_map(|checkpoint| match checkpoint {
+            Checkpoint::Escalation {
+                may_replan: true,
+                failed_fix,
+                ..
+            } => Some(failed_fix.clone()),
+            _ => None,
+        })
+        .collect();
+    let [None, Some(failed_fix)] = escalations.as_slice() else {
+        panic!("expected two Escalation Checkpoints, got {escalations:?}");
+    };
+    assert!(failed_fix.contains("not yet implemented"), "{failed_fix}");
+    let library = sample.read("src/lib.rs");
+    assert!(library.contains(HAND_WRITTEN_BODY), "{library}");
+    assert!(!library.contains("ARBOR:"), "{library}");
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [SKELETON_COMMIT, arbor_tiers::TASK_FIX_SUBJECT]
+    );
+    assert_eq!(sample.uncommitted_changes(), "");
+}
+
+#[tokio::test]
+async fn a_replan_resets_the_task_and_scaffolds_its_replacement() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation_replan");
+    let operator = ScriptedOperator::new(|checkpoint| match checkpoint {
+        Checkpoint::Escalation { .. } => Decision::Replan,
+        _ => Decision::Approve,
+    });
+    let shown = operator.shown.clone();
+    let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
+
+    client.finish();
+    assert_eq!(end, SessionEnd::Finished);
+    assert_replays(&pipeline);
+    let replan = shown
+        .borrow()
+        .iter()
+        .find_map(|checkpoint| match checkpoint {
+            Checkpoint::Replan { task: 0, replan } => Some(replan.clone()),
+            _ => None,
+        })
+        .expect("the Replan goes to its Checkpoint");
+    assert_eq!(pipeline.session().plan().unwrap().tasks, replan.tasks);
+    let sent = client.sent();
+    let replan_inputs = last_user_text(&sent[4]);
+    assert!(
+        replan_inputs.contains("take and return owned"),
+        "the Replan sees the shared change: {replan_inputs}"
+    );
+    let failed_cause = pipeline.events().iter().find_map(|event| match event {
+        Event::WorkUnitFailed { failure } => Some(RevisionCause::WorkUnitFailed(failure.clone())),
+        _ => None,
+    });
+    assert_eq!(failed_cause.unwrap().work_unit(), Some(WorkUnitId(1)));
+    assert_eq!(pipeline.session().work_units()[0].id, WorkUnitId(2));
+    let library = sample.read("src/lib.rs");
+    assert!(library.contains(IMPLEMENTATION), "{library}");
+    assert!(!library.contains("ARBOR:"), "{library}");
+    // The reset dropped the first Skeleton's commit.
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [SKELETON_COMMIT, WRITER_COMMIT]
+    );
+    assert_cost(pipeline.session(), Tier::Planner, 0.025 + 0.025);
+}
+
+#[tokio::test]
+async fn a_fix_by_hand_that_keeps_the_regions_markers_has_them_removed() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation");
+    let operator = ScriptedOperator::new(|checkpoint| {
+        if let Checkpoint::Escalation { .. } = checkpoint {
+            let library = sample.read("src/lib.rs");
+            let fixed = library.replace("    todo!()\n", HAND_WRITTEN_BODY);
+            sample.write("src/lib.rs", &fixed);
+            return Decision::Fixed;
+        }
+        Decision::Approve
+    });
+    let shown = operator.shown.clone();
+    let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
+
+    client.finish();
+    assert_eq!(end, SessionEnd::Finished);
+    assert_replays(&pipeline);
+    assert!(
+        !shown
+            .borrow()
+            .iter()
+            .any(|checkpoint| matches!(checkpoint, Checkpoint::Markers { .. }))
+    );
+    let library = sample.read("src/lib.rs");
+    assert!(library.contains(HAND_WRITTEN_BODY), "{library}");
+    assert!(!library.contains("ARBOR:"), "{library}");
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [SKELETON_COMMIT, arbor_tiers::TASK_FIX_SUBJECT]
+    );
+}
+
+#[tokio::test]
+async fn markers_a_fix_by_hand_adds_wait_at_the_marker_checkpoint_until_removed() {
+    let sample = SampleRepo::new(FEATURE);
+    let client = FixtureClient::new("escalation");
+    let operator = ScriptedOperator::new(|checkpoint| {
+        let library = sample.read("src/lib.rs");
+        match checkpoint {
+            Checkpoint::Escalation { .. } => {
+                let fixed = library.replace(SKELETON_REGION, STRAY_MARKERS_AND_BODY);
+                sample.write("src/lib.rs", &fixed);
+            }
+            Checkpoint::Markers { .. } => {
+                let unmarked: String = library
+                    .lines()
+                    .filter(|line| !line.contains("ARBOR:"))
+                    .map(|line| format!("{line}\n"))
+                    .collect();
+                sample.write("src/lib.rs", &unmarked);
+            }
+            _ => return Decision::Approve,
+        }
+        Decision::Fixed
+    });
+    let shown = operator.shown.clone();
+    let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
+
+    client.finish();
+    assert_eq!(end, SessionEnd::Finished);
+    assert_replays(&pipeline);
+    let markers = shown
+        .borrow()
+        .iter()
+        .find_map(|checkpoint| match checkpoint {
+            Checkpoint::Markers { remaining } => Some(remaining.clone()),
+            _ => None,
+        })
+        .expect("the Marker Checkpoint opens");
+    assert_eq!(markers.len(), 2, "{markers:?}");
+    assert!(markers.iter().all(|marker| marker.file == "src/lib.rs"));
+    assert!(!sample.read("src/lib.rs").contains("ARBOR:"));
+    assert_eq!(
+        sample.session_commit_subjects(),
+        [
+            SKELETON_COMMIT,
+            arbor_tiers::TASK_FIX_SUBJECT,
+            arbor_tiers::MARKER_FIX_SUBJECT
+        ]
+    );
 }
 
 /// Breaks the Region in src/lib.rs, as a hand edit in the worktree would, when the Autopilot

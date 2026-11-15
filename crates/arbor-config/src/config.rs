@@ -24,6 +24,8 @@ pub struct Config {
     pub revision_tool_call_budget: u32,
     /// Pause at a Checkpoint after each Revision, not only before the Planner.
     pub revision_checkpoints: bool,
+    /// The Budget Cap each Session starts with, in US dollars. `None` means no cap.
+    pub budget_cap_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +85,7 @@ impl Default for Config {
             retention_days: 30,
             revision_tool_call_budget: 15,
             revision_checkpoints: false,
+            budget_cap_usd: None,
         }
     }
 }
@@ -110,6 +113,10 @@ pub enum ConfigError {
     ApiKeyInProject,
     MissingFilterPlaceholder {
         template: String,
+    },
+    /// The Budget Cap must be a positive amount of dollars.
+    InvalidBudgetCap {
+        budget_cap_usd: f64,
     },
     Io {
         path: PathBuf,
@@ -139,6 +146,10 @@ impl fmt::Display for ConfigError {
                 f,
                 "checks.unit_filtered must contain {FILTER_PLACEHOLDER}: {template:?}"
             ),
+            Self::InvalidBudgetCap { budget_cap_usd } => write!(
+                f,
+                "budget_cap_usd must be a positive number of dollars, not {budget_cap_usd}"
+            ),
         }
     }
 }
@@ -153,6 +164,7 @@ pub(crate) struct UserFile {
     clarification_mode: Option<ClarificationMode>,
     #[serde(default)]
     roles: RolesFile,
+    budget_cap_usd: Option<f64>,
 }
 
 /// The project's `arbor.toml`.
@@ -172,6 +184,7 @@ struct ProjectFile {
     retention_days: Option<u32>,
     #[serde(default)]
     revisions: RevisionsFile,
+    budget_cap_usd: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -301,6 +314,16 @@ impl Config {
         }
         if let Some(checkpoints) = project.revisions.checkpoints {
             config.revision_checkpoints = checkpoints;
+        }
+        // A cloned repo's arbor.toml mustn't loosen the limit on the user's own money.
+        config.budget_cap_usd = match (project.budget_cap_usd, user.budget_cap_usd) {
+            (Some(project_cap), Some(user_cap)) => Some(project_cap.min(user_cap)),
+            (project_cap, user_cap) => project_cap.or(user_cap),
+        };
+        if let Some(budget_cap_usd) = config.budget_cap_usd
+            && !(budget_cap_usd.is_finite() && budget_cap_usd > 0.0)
+        {
+            return Err(ConfigError::InvalidBudgetCap { budget_cap_usd });
         }
         Ok(config)
     }
