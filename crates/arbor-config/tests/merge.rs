@@ -116,13 +116,19 @@ checkpoints = true
 }
 
 #[test]
-fn the_projects_budget_cap_wins_over_the_users() {
-    let config =
+fn the_lower_of_the_users_and_the_projects_budget_cap_applies() {
+    let project_lowers =
         Config::from_toml(Some("budget_cap_usd = 5.0"), Some("budget_cap_usd = 1.5")).unwrap();
-    assert_eq!(config.budget_cap_usd, Some(1.5));
+    assert_eq!(project_lowers.budget_cap_usd, Some(1.5));
+
+    let project_cannot_raise =
+        Config::from_toml(Some("budget_cap_usd = 5.0"), Some("budget_cap_usd = 500.0")).unwrap();
+    assert_eq!(project_cannot_raise.budget_cap_usd, Some(5.0));
 
     let user_only = Config::from_toml(Some("budget_cap_usd = 5.0"), None).unwrap();
     assert_eq!(user_only.budget_cap_usd, Some(5.0));
+    let project_only = Config::from_toml(None, Some("budget_cap_usd = 2.0")).unwrap();
+    assert_eq!(project_only.budget_cap_usd, Some(2.0));
     assert_eq!(Config::default().budget_cap_usd, None);
 }
 

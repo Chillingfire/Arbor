@@ -315,7 +315,11 @@ impl Config {
         if let Some(checkpoints) = project.revisions.checkpoints {
             config.revision_checkpoints = checkpoints;
         }
-        config.budget_cap_usd = project.budget_cap_usd.or(user.budget_cap_usd);
+        // A cloned repo's arbor.toml mustn't loosen the limit on the user's own money.
+        config.budget_cap_usd = match (project.budget_cap_usd, user.budget_cap_usd) {
+            (Some(project_cap), Some(user_cap)) => Some(project_cap.min(user_cap)),
+            (project_cap, user_cap) => project_cap.or(user_cap),
+        };
         if let Some(budget_cap_usd) = config.budget_cap_usd
             && !(budget_cap_usd.is_finite() && budget_cap_usd > 0.0)
         {
