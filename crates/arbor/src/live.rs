@@ -2,6 +2,8 @@
 //! thread with the Autopilot and streams its updates to the screen. At a Checkpoint or a Tier's
 //! questions it waits for the Human Operator's reply from a modal.
 
+mod setup;
+
 use std::env;
 use std::fs;
 use std::io;
@@ -107,18 +109,23 @@ struct Project {
     root: PathBuf,
     config: Config,
     user_config: Option<PathBuf>,
+    /// A key the Operator typed at startup, used ahead of the configured one.
+    typed_api_key: Option<String>,
 }
 
 impl Project {
     /// Read again for each Session, so a key set after a failed start is picked up.
     fn api_key(&self) -> Result<Option<String>, ConfigError> {
+        if let Some(typed_api_key) = &self.typed_api_key {
+            return Ok(Some(typed_api_key.clone()));
+        }
         let api_key = load_api_key(self.user_config.as_deref(), |name| env::var(name).ok())?;
         Ok(api_key.map(|key| key.expose().to_owned()))
     }
 }
 
 pub fn run(initial_request: Option<Request>) -> ExitCode {
-    let project = match load_project() {
+    let mut project = match load_project() {
         Ok(project) => project,
         Err(message) => {
             eprintln!("arbor: {message}");
@@ -139,7 +146,12 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
     let outcome = ratatui::run(|terminal| {
         // The legacy Windows console can't do bracketed paste; there a paste arrives as keys.
         let _ = execute!(io::stdout(), EnableBracketedPaste);
-        let looped = event_loop(terminal, &mut app, &project, initial_request);
+        let looped = match setup::settle(terminal, &mut app, &mut project) {
+            Ok(ControlFlow::Continue(())) => {
+                event_loop(terminal, &mut app, &project, initial_request)
+            }
+            settled => settled.map(drop),
+        };
         let _ = execute!(io::stdout(), DisableBracketedPaste);
         looped
     });
@@ -164,6 +176,7 @@ fn load_project() -> Result<Project, String> {
         root,
         config,
         user_config,
+        typed_api_key: None,
     };
     project.api_key().map_err(|err| err.to_string())?;
     Ok(project)
