@@ -1,7 +1,9 @@
-//! Hand-rolled because Arbor takes one bare subcommand and two options; switch to `clap` once a
-//! subcommand takes arguments.
+//! Hand-rolled because Arbor takes two subcommands and a few options; switch to `clap` if more
+//! arrive.
 
 use std::fmt;
+
+use arbor_git::TreeSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -13,6 +15,15 @@ pub enum Command {
     Issue(u64),
     /// `-` reads the handover from stdin.
     HandoverFile(String),
+    CheckMarkers(CheckMarkers),
+}
+
+/// `arbor check-markers`: lists the Markers in a tree, for git hooks, CI and manual use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckMarkers {
+    pub source: TreeSource,
+    /// The pre-commit hook's exception: a Session worktree's commits hold Markers by design.
+    pub allow_session_worktree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +33,8 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\nusage: arbor [init | --version | --issue <number> | --handover-file <path>]",
+            "{}\nusage: arbor [init | --version | --issue <number> | --handover-file <path>]\n       \
+             arbor check-markers [--staged | --rev <rev>] [--allow-session-worktree]",
             self.0
         )
     }
@@ -43,6 +55,9 @@ where
     }
     if first == "init" {
         return without_more_arguments(remaining_args, Command::Init);
+    }
+    if first == "check-markers" {
+        return parse_check_markers(remaining_args).map(Command::CheckMarkers);
     }
     let (option, inline_value) = match first.split_once('=') {
         Some((option, inline)) => (option.to_owned(), Some(inline.to_owned())),
@@ -73,6 +88,45 @@ where
             "`{option_value}` is not an issue number; give a positive whole number such as 21"
         ))),
     }
+}
+
+fn parse_check_markers(
+    mut remaining_args: impl Iterator<Item = String>,
+) -> Result<CheckMarkers, UsageError> {
+    let mut check = CheckMarkers {
+        source: TreeSource::WorkingTree,
+        allow_session_worktree: false,
+    };
+    let mut source_chosen = false;
+    while let Some(arg) = remaining_args.next() {
+        let source = match arg.as_str() {
+            "--allow-session-worktree" => {
+                check.allow_session_worktree = true;
+                continue;
+            }
+            "--staged" => TreeSource::Staged,
+            "--rev" => TreeSource::Revision(
+                remaining_args
+                    .next()
+                    .ok_or_else(|| UsageError("--rev needs a revision".to_owned()))?,
+            ),
+            _ => match arg.strip_prefix("--rev=") {
+                Some(revision) => TreeSource::Revision(revision.to_owned()),
+                None => return Err(UsageError(format!("unexpected argument `{arg}`"))),
+            },
+        };
+        if source_chosen {
+            return Err(UsageError(
+                "give at most one of --staged and --rev".to_owned(),
+            ));
+        }
+        if source == TreeSource::Revision(String::new()) {
+            return Err(UsageError("--rev needs a revision".to_owned()));
+        }
+        check.source = source;
+        source_chosen = true;
+    }
+    Ok(check)
 }
 
 /// The command, unless an argument follows it.
@@ -124,6 +178,27 @@ mod tests {
     }
 
     #[test]
+    fn check_markers_reads_the_working_tree_unless_told_otherwise() {
+        let check = |source, allow_session_worktree| {
+            Ok(Command::CheckMarkers(CheckMarkers {
+                source,
+                allow_session_worktree,
+            }))
+        };
+        assert_eq!(
+            parse(["check-markers"]),
+            check(TreeSource::WorkingTree, false)
+        );
+        assert_eq!(
+            parse(["check-markers", "--staged", "--allow-session-worktree"]),
+            check(TreeSource::Staged, true)
+        );
+        let at_head = || check(TreeSource::Revision("HEAD".into()), false);
+        assert_eq!(parse(["check-markers", "--rev", "HEAD"]), at_head());
+        assert_eq!(parse(["check-markers", "--rev=HEAD"]), at_head());
+    }
+
+    #[test]
     fn bad_arguments_are_usage_errors() {
         for args in [
             vec!["--issue"],
@@ -140,6 +215,11 @@ mod tests {
             vec!["--handover", "a.md"],
             vec!["init", "now"],
             vec!["Init"],
+            vec!["check-markers", "--rev"],
+            vec!["check-markers", "--rev="],
+            vec!["check-markers", "--staged", "--rev", "HEAD"],
+            vec!["check-markers", "HEAD"],
+            vec!["check-markers", "--no-verify"],
         ] {
             let err = parse(args.clone()).unwrap_err();
             assert!(err.to_string().contains("usage: arbor"), "{args:?}");

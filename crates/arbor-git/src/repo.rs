@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use crate::branch::SessionBranch;
+use crate::branch::{PREFIX, SessionBranch};
 use crate::changes;
 use crate::command::{GitError, git, git_succeeds};
 use crate::mainline::Mainline;
 use crate::worktree::Worktree;
+
+/// Where Sessions live, relative to the project root. Each one's worktree is inside it.
+pub const SESSIONS_DIR: &str = ".arbor/sessions";
 
 /// The local mainline names tried, in order, when there is no remote and none was chosen.
 const LOCAL_MAINLINE_GUESSES: &[&str] = &["main", "master"];
@@ -36,6 +39,22 @@ impl Repo {
     /// The top-level directory of the checkout.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The branch checked out here, or `None` on a detached `HEAD`.
+    pub fn current_branch(&self) -> Option<String> {
+        git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok()
+    }
+
+    /// Whether this checkout is a Session's worktree: on an `arbor/` branch and inside a
+    /// [`SESSIONS_DIR`]. Its commits hold Markers by design (ADR-0002).
+    pub fn is_session_worktree(&self) -> bool {
+        let root = self.root.to_string_lossy().replace('\\', "/");
+        let in_sessions_dir = root.contains(&format!("/{SESSIONS_DIR}/"));
+        in_sessions_dir
+            && self
+                .current_branch()
+                .is_some_and(|branch| branch.starts_with(PREFIX))
     }
 
     /// The git directory every worktree of the repository shares, e.g. for `info/exclude`. From

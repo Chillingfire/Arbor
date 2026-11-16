@@ -1,3 +1,4 @@
+mod check_markers;
 mod cli;
 mod handover;
 mod init;
@@ -31,6 +32,7 @@ fn main() -> ExitCode {
         }
         Command::Tui => live::run(None),
         Command::Init => init::run(),
+        Command::CheckMarkers(check) => check_markers::run(&check),
         Command::Issue(number) => start_from_issue(number),
         Command::HandoverFile(path) => match handover::read(&path) {
             Ok(request) => start(request),
