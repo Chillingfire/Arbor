@@ -133,13 +133,19 @@ fn demo_events() -> Vec<Event> {
         Event::SkeletonCommitted {
             commit: Some("3f9c2a1d".to_owned()),
         },
-        Event::WorkUnitPassed { id: WorkUnitId(1) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(1),
+            model: None,
+        },
         usage(Tier::Writer, 1_900, 420, 0, 0.0012),
         Event::WorkUnitCommitted {
             id: WorkUnitId(1),
             commit: "a71be04c".to_owned(),
         },
-        Event::WorkUnitPassed { id: WorkUnitId(2) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(2),
+            model: None,
+        },
         usage(Tier::Writer, 1_400, 180, 0, 0.0008),
         Event::WorkUnitCommitted {
             id: WorkUnitId(2),
@@ -155,7 +161,10 @@ fn demo_events() -> Vec<Event> {
         Event::SkeletonCommitted {
             commit: Some("e5a4410b".to_owned()),
         },
-        Event::WorkUnitPassed { id: WorkUnitId(3) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(3),
+            model: None,
+        },
         usage(Tier::Writer, 1_700, 260, 0, 0.0009),
         Event::WorkUnitCommitted {
             id: WorkUnitId(3),

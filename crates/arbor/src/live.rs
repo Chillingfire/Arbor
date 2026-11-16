@@ -505,6 +505,10 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
             "Stopped at the Budget Cap. The branch and worktree are kept.".to_owned(),
             Tone::Operator,
         ),
+        Ok(SessionEnd::Aborted) => (
+            "Session aborted. The branch and worktree are kept.".to_owned(),
+            Tone::Operator,
+        ),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
             (format!("Stopped: the {tier:?} {reason}"), Tone::Failure)
         }

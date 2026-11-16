@@ -905,10 +905,12 @@ fn phase_label(view: &SessionView) -> String {
         Phase::Replanning { .. } => "Replanning",
         Phase::ReplanCheckpoint { .. } => "Replan Checkpoint",
         Phase::ResettingTask { .. } => "Resetting Task",
+        Phase::SkippingTask { .. } => "Skipping Task",
         Phase::CheckingMarkers => "Marker check",
         Phase::MarkerCheckpoint { .. } => "Marker Checkpoint",
         Phase::Done => "Done",
         Phase::Stopped => "Stopped",
+        Phase::Aborted => "Aborted",
     };
     format!("{name}{task}")
 }

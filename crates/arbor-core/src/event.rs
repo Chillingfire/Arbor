@@ -33,9 +33,12 @@ pub enum Event {
     SkeletonCommitted {
         commit: Option<String>,
     },
-    /// The Writer's code was spliced and its Work Unit's Checks passed.
+    /// The Writer's code was spliced and its Work Unit's Checks passed. `model` is the model that
+    /// wrote it, so the log shows which Work Units a stronger model wrote.
     WorkUnitPassed {
         id: WorkUnitId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// The Writer failed its Work Unit: it used up its retries, or sent a Missing Response.
     WorkUnitFailed {
@@ -74,6 +77,24 @@ pub enum Event {
     RevisionDiscarded,
     /// At the escalation Checkpoint, the Human Operator sends the failed Task to the Planner.
     ReplanRequested,
+    /// At the Escalation Checkpoint, the Human Operator runs `tier` again with a hint: the Writer
+    /// writes the failed Work Unit again, the Scaffolder makes one more Revision, or the Planner
+    /// makes the Task's Replan.
+    RetryWithHint {
+        tier: Tier,
+        hint: String,
+    },
+    /// At the Escalation Checkpoint, the Human Operator has the failed Work Unit written again in
+    /// the Writer role by `model`, with the same Context Pack and a Failure Brief.
+    StrongerWriterRequested {
+        model: String,
+    },
+    /// At the Escalation Checkpoint, the Human Operator drops the failed Task: its work is reset
+    /// and the Session goes on with the next Task.
+    TaskSkipped,
+    /// At the Escalation Checkpoint, the Human Operator ends the Session for good. The branch and
+    /// worktree are kept as they are.
+    SessionAborted,
     ReplanSubmitted {
         replan: Replan,
     },

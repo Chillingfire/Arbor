@@ -51,7 +51,10 @@ fn events() -> Vec<Event> {
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
         Event::SkeletonCommitted { commit: None },
-        Event::WorkUnitPassed { id: WorkUnitId(1) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(1),
+            model: None,
+        },
         Event::UsageRecorded {
             tier: Tier::Writer,
             usage: Usage {
@@ -73,7 +76,10 @@ fn events() -> Vec<Event> {
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
         Event::SkeletonCommitted { commit: None },
-        Event::WorkUnitPassed { id: WorkUnitId(2) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(2),
+            model: None,
+        },
     ]
 }
 

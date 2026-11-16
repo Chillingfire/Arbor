@@ -23,6 +23,7 @@ fn scaffold_and_write(first_id: u32, task_check_output: &str) -> Vec<Event> {
         Event::SkeletonCommitted { commit: None },
         Event::WorkUnitPassed {
             id: WorkUnitId(first_id),
+            model: None,
         },
         Event::WorkUnitCommitted {
             id: WorkUnitId(first_id),
@@ -47,7 +48,10 @@ fn use_up_revisions(session: &mut Session, id: u32) {
                     },
                 },
                 Event::RevisionCommitted { commit: None },
-                Event::WorkUnitPassed { id: WorkUnitId(id) },
+                Event::WorkUnitPassed {
+                    id: WorkUnitId(id),
+                    model: None,
+                },
                 Event::WorkUnitCommitted {
                     id: WorkUnitId(id),
                     commit: format!("r{round}"),

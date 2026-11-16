@@ -38,7 +38,10 @@ fn happy_path_runs_plan_scaffold_write_to_done() {
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
             Event::SkeletonCommitted { commit: None },
-            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitPassed {
+                id: WorkUnitId(1),
+                model: None,
+            },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(1),
                 commit: "abc123".into(),
@@ -162,12 +165,18 @@ fn work_units_and_tasks_run_in_order() {
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
             Event::SkeletonCommitted { commit: None },
-            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitPassed {
+                id: WorkUnitId(1),
+                model: None,
+            },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(1),
                 commit: "c1".into(),
             },
-            Event::WorkUnitPassed { id: WorkUnitId(2) },
+            Event::WorkUnitPassed {
+                id: WorkUnitId(2),
+                model: None,
+            },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(2),
                 commit: "c2".into(),
@@ -179,7 +188,10 @@ fn work_units_and_tasks_run_in_order() {
             Event::ScaffoldChecksPassed,
             Event::ScaffoldApproved,
             Event::SkeletonCommitted { commit: None },
-            Event::WorkUnitPassed { id: WorkUnitId(3) },
+            Event::WorkUnitPassed {
+                id: WorkUnitId(3),
+                model: None,
+            },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(3),
                 commit: "c3".into(),
@@ -281,7 +293,10 @@ fn events_for_another_work_unit_are_refused() {
         .unwrap();
     let before = session.clone();
     assert_eq!(
-        session.apply(&Event::WorkUnitPassed { id: WorkUnitId(2) }),
+        session.apply(&Event::WorkUnitPassed {
+            id: WorkUnitId(2),
+            model: None
+        }),
         Err(ApplyError::WrongWorkUnit {
             expected: WorkUnitId(1),
             got: WorkUnitId(2)
@@ -290,7 +305,10 @@ fn events_for_another_work_unit_are_refused() {
     assert_eq!(session, before);
 
     session
-        .apply(&Event::WorkUnitPassed { id: WorkUnitId(1) })
+        .apply(&Event::WorkUnitPassed {
+            id: WorkUnitId(1),
+            model: None,
+        })
         .unwrap();
     assert_eq!(
         session.apply(&Event::WorkUnitCommitted {

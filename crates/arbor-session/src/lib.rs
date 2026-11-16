@@ -39,6 +39,8 @@ pub enum SessionEnd {
     Finished,
     /// The Human Operator stopped the Session at the Budget Checkpoint. The branch is kept.
     StoppedAtBudget,
+    /// The Human Operator aborted the Session at the Escalation Checkpoint. The branch is kept.
+    Aborted,
     /// The Operator stopped the run at this Checkpoint, where the Session waits.
     NeedsOperator(Effect),
     /// A Tier ended its run without submitting, by escalating or asking questions.
@@ -320,6 +322,9 @@ impl<'a> Autopilot<'a> {
             Effect::ShowBudgetCheckpoint => vec![self.budget_checkpoint().await?],
             Effect::EndSession if *self.session.phase() == Phase::Stopped => {
                 return Ok(Step::End(SessionEnd::StoppedAtBudget));
+            }
+            Effect::EndSession if *self.session.phase() == Phase::Aborted => {
+                return Ok(Step::End(SessionEnd::Aborted));
             }
             Effect::EndSession => return Ok(Step::End(SessionEnd::Finished)),
         };
@@ -736,7 +741,11 @@ impl<'a> Autopilot<'a> {
             if let AttemptOutcome::Passed { commit, .. } = attempt.outcome {
                 // The Writer committed already, so `CommitWorkUnit` only records it.
                 self.passed_commit = Some(commit);
-                return Ok(Step::Events(vec![Event::WorkUnitPassed { id }, usage]));
+                let passed = Event::WorkUnitPassed {
+                    id,
+                    model: Some(attempt.model),
+                };
+                return Ok(Step::Events(vec![passed, usage]));
             }
             if let Some(failure) = writer.work_unit_failure() {
                 return Ok(Step::Events(vec![Event::WorkUnitFailed { failure }, usage]));

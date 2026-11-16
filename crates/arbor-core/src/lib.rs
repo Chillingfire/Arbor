@@ -14,7 +14,7 @@ pub use revision::{
     BrokenRegion, FailedAttempt, MAX_REVISIONS, Revision, RevisionCause, RevisionRound,
     WorkUnitFailure,
 };
-pub use session::{ApplyError, Effect, Phase, Session};
+pub use session::{ApplyError, Effect, Phase, Session, StrongerWriter};
 pub use types::{
     ASSUMPTION_PREFIX, CommitOrigin, LeftoverMarker, Plan, Priority, Replan, Request,
     SessionCommit, Snippet, Task, Tier, WorkUnit, WorkUnitId, assumptions_in, is_assumption,
