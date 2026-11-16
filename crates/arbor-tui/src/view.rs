@@ -2,7 +2,8 @@
 //! keeps only the current Task's Work Units, so the tree's history is built here.
 
 use arbor_core::{
-    ApplyError, Event, Phase, Plan, Session, Task, Tier, WorkUnit, WorkUnitFailure, WorkUnitId,
+    ApplyError, Event, Phase, Plan, RunOutcome, Session, Task, Tier, WorkUnit, WorkUnitFailure,
+    WorkUnitId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,8 @@ pub struct SessionView {
     session: Session,
     tasks: Vec<TaskView>,
     log: Vec<LogEntry>,
+    /// Every event applied so far, which a Rewind rebuilds the tree from.
+    events: Vec<Event>,
 }
 
 impl SessionView {
@@ -103,6 +106,30 @@ impl SessionView {
 
     /// Applies the event to the Session and updates the tree and the event log to match.
     pub fn apply(&mut self, event: &Event) -> Result<(), ApplyError> {
+        if let Event::Rewound { event_count } = *event {
+            self.rewind(event_count)?;
+        } else {
+            self.apply_forward(event)?;
+        }
+        self.events.push(event.clone());
+        Ok(())
+    }
+
+    /// Puts the tree back as it stood at the Checkpoint. The event log keeps the abandoned lines.
+    fn rewind(&mut self, event_count: usize) -> Result<(), ApplyError> {
+        let session = self.session.rewound(&self.events, event_count)?;
+        let restored = Self::from_events(&self.events[..event_count])?;
+        self.session = session;
+        self.tasks = restored.tasks;
+        self.log.push(LogEntry {
+            text: describe(&Event::Rewound { event_count }),
+            tier: None,
+            tone: Tone::Operator,
+        });
+        Ok(())
+    }
+
+    fn apply_forward(&mut self, event: &Event) -> Result<(), ApplyError> {
         let task_before = phase_task(self.session.phase());
         let escalated_unit = match self.session.phase() {
             Phase::EscalationCheckpoint { cause, .. } => cause.work_unit(),
@@ -444,6 +471,15 @@ pub fn describe(event: &Event) -> String {
         }
         Event::BudgetCapSet { cap: None } => "Budget Cap removed".to_owned(),
         Event::SessionStopped => "Session stopped at the Budget Cap".to_owned(),
+        Event::RunEnded {
+            outcome: RunOutcome::Cancelled,
+        } => "Run cancelled; the Session can be resumed".to_owned(),
+        Event::RunEnded {
+            outcome: RunOutcome::Failed { reason },
+        } => format!("Run failed: {}", first_line(reason)),
+        Event::Rewound { event_count } => {
+            format!("Rewound to the Checkpoint after event {event_count}")
+        }
     }
 }
 
@@ -514,7 +550,10 @@ pub fn event_tone(event: &Event) -> Tone {
         | Event::TaskChecksFailed { .. }
         | Event::RevisionRejected { .. }
         | Event::SessionStopped
-        | Event::SessionAborted => Tone::Failure,
+        | Event::SessionAborted
+        | Event::RunEnded {
+            outcome: RunOutcome::Failed { .. },
+        } => Tone::Failure,
         Event::MarkersChecked { remaining } if !remaining.is_empty() => Tone::Failure,
         Event::PlanApproved { .. }
         | Event::PlanEdited { .. }
@@ -529,7 +568,9 @@ pub fn event_tone(event: &Event) -> Tone {
         | Event::MarkersApproved
         | Event::BudgetCapSet { .. }
         | Event::RevisionCheckpointsSet { .. }
-        | Event::ClarificationModeSet { .. } => Tone::Operator,
+        | Event::ClarificationModeSet { .. }
+        | Event::RunEnded { .. }
+        | Event::Rewound { .. } => Tone::Operator,
         _ => Tone::Progress,
     }
 }

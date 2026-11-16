@@ -64,6 +64,19 @@ impl OpenRouterClient {
         parse_models(&checked_body(http_response).await?)
     }
 
+    /// Checks the API key with OpenRouter's key endpoint, which costs nothing. `Err(Auth)` means
+    /// the key was refused.
+    pub async fn check_key(&self) -> Result<(), LlmError> {
+        let http_response = self
+            .http
+            .get(format!("{}/key", self.base_url))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .map_err(network)?;
+        checked_body(http_response).await.map(drop)
+    }
+
     async fn lookup_model(&self, id: &str) -> Result<ModelInfo, LlmError> {
         let models = self.models.get_or_try_init(|| self.fetch_models()).await?;
         models

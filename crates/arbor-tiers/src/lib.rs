@@ -5,6 +5,8 @@ mod check_proposal;
 mod checkpoint_commits;
 mod failure_brief;
 mod init;
+mod marker_allowlist;
+mod marker_scan;
 pub mod markers;
 mod planner;
 mod replan;
@@ -31,6 +33,8 @@ pub use init::{
     AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
     ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,
 };
+pub use marker_allowlist::{AllowlistError, MARKER_ALLOWLIST_FILE, MarkerAllowlist};
+pub use marker_scan::{MarkerLine, ScanError, scan_markers};
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
 pub use replan::{ReplanRun, SUBMIT_REPLAN, validate_replan};
 pub use revision::{RevisionRun, SUBMIT_REVISION};

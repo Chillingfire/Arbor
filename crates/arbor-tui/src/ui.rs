@@ -18,6 +18,8 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
+use crate::browser::{SessionBrowser, draw_browser};
+use crate::leaving::UnfinishedSession;
 use crate::modal::{Modal, draw_modal};
 use crate::view::{
     LogEntry, ReplyOutcome, SessionView, Status, TaskView, Tone, WorkUnitView, first_line,
@@ -115,10 +117,14 @@ pub struct UiState {
     /// How far the detail pane can scroll, as last drawn.
     pub detail_scroll_limit: Cell<u16>,
     pub confirming: Option<Confirmation>,
+    /// The Session that leaving would leave unfinished, shown in the quit confirmation.
+    pub leaving: Option<UnfinishedSession>,
     /// What the Session waits on the Human Operator for, if anything.
     pub modal: Option<Modal>,
     /// The modal is hidden so the Human Operator can look around the Session first.
     pub modal_hidden: bool,
+    /// The Session browser, while open. It takes the keys.
+    pub browser: Option<SessionBrowser>,
 }
 
 impl UiState {
@@ -189,8 +195,11 @@ pub fn draw(frame: &mut Frame, view: &SessionView, ui_state: &UiState, status: &
     if let Some(modal) = ui_state.shown_modal() {
         draw_modal(frame, modal);
     }
+    if let Some(browser) = &ui_state.browser {
+        draw_browser(frame, browser);
+    }
     if let Some(confirmation) = ui_state.confirming {
-        draw_confirmation(frame, confirmation, status);
+        draw_confirmation(frame, confirmation, status, ui_state.leaving.as_ref());
     }
 }
 
@@ -847,7 +856,8 @@ fn key_hints(focus: Focus) -> &'static [(&'static str, &'static str)] {
             ("↑↓", "move"),
             ("←→", "fold"),
             ("/", "prompt"),
-            ("m", "Ask/Assume"),
+            ("b", "sessions"),
+            ("m", "mode"),
             ("q", "quit"),
         ],
         Focus::Detail => &[
@@ -883,7 +893,11 @@ fn typed_tail(typed: &str, room: usize) -> String {
 }
 
 fn phase_label(view: &SessionView) -> String {
-    let phase = view.session().phase();
+    phase_name(view.session().phase())
+}
+
+/// The phase in a few words, e.g. `Scaffold Checkpoint · Task 2`.
+pub(crate) fn phase_name(phase: &Phase) -> String {
     let task = phase_task(phase)
         .map(|task| format!(" · Task {}", task + 1))
         .unwrap_or_default();
@@ -979,6 +993,37 @@ fn short_model(model: &str) -> &str {
     name.strip_prefix("claude-").unwrap_or(name)
 }
 
+fn running_session_lines<'a>(question: &'a str, status: &StatusInfo) -> Vec<Line<'a>> {
+    let branch = status.branch.as_deref().unwrap_or("the Session branch");
+    vec![
+        Line::styled(question, Style::new().bold()),
+        Line::default(),
+        Line::raw(format!(
+            "Work already committed stays on {branch}. The model call or Check running now is \
+             lost, and the Work Unit being written goes back to its Placeholder."
+        )),
+        Line::default(),
+        Line::raw(
+            "Markers stay in the Session branch until the Session is resumed or deleted; \
+             the mainline is not touched.",
+        ),
+    ]
+}
+
+/// The leaving warning, its first paragraph in bold, with a blank line between paragraphs.
+fn leaving_lines(unfinished: &UnfinishedSession) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (paragraph_index, paragraph) in unfinished.warning().into_iter().enumerate() {
+        if paragraph_index == 0 {
+            lines.push(Line::styled(paragraph, Style::new().bold()));
+        } else {
+            lines.push(Line::default());
+            lines.push(Line::raw(paragraph));
+        }
+    }
+    lines
+}
+
 /// The key that confirms each [`Confirmation`]. It differs from the key that asked, so a stray or
 /// doubled key press can't stop a Session.
 pub fn confirmation_key(confirmation: Confirmation) -> (char, &'static str) {
@@ -988,7 +1033,12 @@ pub fn confirmation_key(confirmation: Confirmation) -> (char, &'static str) {
     }
 }
 
-fn draw_confirmation(frame: &mut Frame, confirmation: Confirmation, status: &StatusInfo) {
+fn draw_confirmation(
+    frame: &mut Frame,
+    confirmation: Confirmation,
+    status: &StatusInfo,
+    leaving: Option<&UnfinishedSession>,
+) {
     let (_, keys) = confirmation_key(confirmation);
     let (title, question, action) = match confirmation {
         Confirmation::Quit => (
@@ -1002,19 +1052,11 @@ fn draw_confirmation(frame: &mut Frame, confirmation: Confirmation, status: &Sta
             "stop",
         ),
     };
-    let branch = status.branch.as_deref().unwrap_or("the Session branch");
-    let lines = vec![
-        Line::styled(question, Style::new().bold()),
-        Line::default(),
-        Line::raw(format!(
-            "Work already committed stays on {branch}. The model call or Check running now is \
-             lost, and the Work Unit being written goes back to its Placeholder."
-        )),
-        Line::default(),
-        Line::raw(
-            "Markers stay in the Session branch until the Session is resumed or deleted; \
-             the mainline is not touched.",
-        ),
+    let mut lines = match (confirmation, leaving) {
+        (Confirmation::Quit, Some(unfinished)) => leaving_lines(unfinished),
+        _ => running_session_lines(question, status),
+    };
+    lines.extend([
         Line::default(),
         Line::from(vec![
             Span::styled(format!("{keys} "), Style::new().fg(RED).bold()),
@@ -1022,16 +1064,7 @@ fn draw_confirmation(frame: &mut Frame, confirmation: Confirmation, status: &Sta
             Span::styled("any other key ", Style::new().fg(ACCENT)),
             Span::styled("keep working", Style::new().fg(MUTED)),
         ]),
-    ];
-    let area = frame.area();
-    let width = area.width.saturating_sub(4).min(64);
-    let height = 11.min(area.height);
-    let popup = Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height - height) / 2,
-        width,
-        height,
-    };
+    ]);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(RED))
@@ -1041,9 +1074,18 @@ fn draw_confirmation(frame: &mut Frame, confirmation: Confirmation, status: &Sta
         ))
         .padding(Padding::horizontal(1))
         .style(Style::new().bg(BAR));
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(72);
+    let height = u16::try_from(paragraph.line_count(width))
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
     frame.render_widget(ratatui::widgets::Clear, popup);
-    frame.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
-        popup,
-    );
+    frame.render_widget(paragraph, popup);
 }

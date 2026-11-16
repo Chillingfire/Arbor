@@ -6,6 +6,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::hooks;
 use arbor_config::{
     API_KEY_ENV, Config, Detection, Platform, detect_project_type_in, load_api_key,
     user_config_path,
@@ -43,7 +44,7 @@ pub fn run() -> ExitCode {
         );
     }
     let mut proposer = OpenRouterScaffolder { root: root.clone() };
-    match runtime.block_on(init(&root, &mut proposer, &mut StdinOperator)) {
+    let checks_written = match runtime.block_on(init(&root, &mut proposer, &mut StdinOperator)) {
         Ok(outcome) => {
             println!("{}", outcome.notice());
             ExitCode::SUCCESS
@@ -52,6 +53,25 @@ pub fn run() -> ExitCode {
             eprintln!("arbor: {err}");
             ExitCode::FAILURE
         }
+    };
+    offer_hooks(&root);
+    checks_written
+}
+
+/// Outside a git repository there is nothing to hook.
+fn offer_hooks(root: &Path) {
+    let Ok(repo) = Repo::open(root) else {
+        return;
+    };
+    if !hooks::ask_yes(
+        "
+Install git hooks that refuse commits, merges and pushes holding Markers? [Y/n] ",
+    ) {
+        return;
+    }
+    match hooks::install(&repo) {
+        Ok(installation) => print!("{}", hooks::installation_notice(&installation)),
+        Err(err) => eprintln!("arbor: could not install the git hooks: {err}"),
     }
 }
 
@@ -92,7 +112,7 @@ async fn propose(
     let unavailable = |err: &dyn std::fmt::Display| ProposalError::Unavailable(err.to_string());
     let user_path = user_config_path(Platform::current(), |name| env::var(name).ok());
     let config = Config::load(user_path.as_deref(), root).map_err(|err| unavailable(&err))?;
-    let api_key = load_api_key(user_path.as_deref())
+    let api_key = load_api_key(user_path.as_deref(), |name| env::var(name).ok())
         .map_err(|err| unavailable(&err))?
         .ok_or_else(|| {
             ProposalError::Unavailable(format!(

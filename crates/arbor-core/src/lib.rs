@@ -4,16 +4,18 @@ mod cost;
 mod event;
 mod log;
 mod revision;
+mod rewind;
 mod session;
 mod types;
 
 pub use cost::{Usage, UsageTotals, Usd};
-pub use event::Event;
+pub use event::{Event, RunOutcome};
 pub use log::{EventLog, ReadError, read_events};
 pub use revision::{
     BrokenRegion, FailedAttempt, MAX_REVISIONS, Revision, RevisionCause, RevisionRound,
     WorkUnitFailure,
 };
+pub use rewind::{RewindPoint, rewind_points};
 pub use session::{ApplyError, Effect, Phase, Session, StrongerWriter};
 pub use types::{
     ASSUMPTION_PREFIX, ClarificationMode, CommitOrigin, LeftoverMarker, Plan, Priority, Replan,

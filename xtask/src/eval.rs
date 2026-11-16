@@ -229,7 +229,7 @@ async fn run_cases(options: &EvalOptions) -> Result<PathBuf, String> {
     }
     let user_config =
         arbor_config::user_config_path(Platform::current(), |name| env::var(name).ok());
-    let api_key = load_api_key(user_config.as_deref())
+    let api_key = load_api_key(user_config.as_deref(), |name| env::var(name).ok())
         .map_err(|err| err.to_string())?
         .ok_or_else(|| format!("set {API_KEY_ENV} or api_key in the user config"))?;
     let client = OpenRouterClient::new(api_key.expose());

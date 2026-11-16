@@ -350,7 +350,9 @@ fn main() -> std::io::Result<()> {
                     | KeyOutcome::Decided(_)
                     | KeyOutcome::Answered(_)
                     | KeyOutcome::SwitchClarificationMode
-                    | KeyOutcome::EditPlan(_) => {}
+                    | KeyOutcome::EditPlan(_)
+                    | KeyOutcome::OpenBrowser
+                    | KeyOutcome::Browser(_) => {}
                 }
             }
         }

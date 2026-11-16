@@ -224,6 +224,12 @@ pub enum ApplyError {
     AtBudgetCheckpoint {
         event: Box<Event>,
     },
+    /// A `Rewound` event needs the events before it, so only [`Session::replay`] applies it.
+    RewindNeedsLog,
+    /// A Rewind that names no earlier Checkpoint in the log.
+    InvalidRewind {
+        event_count: usize,
+    },
 }
 
 impl fmt::Display for ApplyError {
@@ -263,6 +269,11 @@ impl fmt::Display for ApplyError {
             Self::AtBudgetCheckpoint { event } => {
                 write!(f, "event {event:?} refused: the budget checkpoint is open")
             }
+            Self::RewindNeedsLog => f.write_str("a Rewind is applied by replaying the event log"),
+            Self::InvalidRewind { event_count } => write!(
+                f,
+                "a Rewind to event {event_count} names no earlier Checkpoint in the log"
+            ),
         }
     }
 }
@@ -325,13 +336,43 @@ impl Session {
         Self::default()
     }
 
-    /// Rebuilds a Session from its event log. Call `pending` afterwards to redo in-flight work.
-    pub fn replay<'a>(events: impl IntoIterator<Item = &'a Event>) -> Result<Self, ApplyError> {
+    /// Rebuilds a Session from its event log, Rewinds included. Call `pending` afterwards to redo
+    /// in-flight work.
+    pub fn replay(events: &[Event]) -> Result<Self, ApplyError> {
         let mut session = Self::new();
-        for event in events {
-            session.apply(event)?;
+        for (index, event) in events.iter().enumerate() {
+            match *event {
+                Event::Rewound { event_count } => {
+                    session = session.rewound(&events[..index], event_count)?;
+                }
+                _ => {
+                    session.apply(event)?;
+                }
+            }
         }
         Ok(session)
+    }
+
+    /// The Session as it stood at the Checkpoint after the first `event_count` of
+    /// `earlier_events`. It keeps what this one has spent, its settings, and the Work Unit IDs it
+    /// has used, so the log never names two Work Units the same.
+    pub fn rewound(
+        &self,
+        earlier_events: &[Event],
+        event_count: usize,
+    ) -> Result<Self, ApplyError> {
+        let invalid = ApplyError::InvalidRewind { event_count };
+        let restored_events = earlier_events.get(..event_count).ok_or(invalid.clone())?;
+        let mut restored = Self::replay(restored_events)?;
+        if !is_rewind_target(&restored.phase) {
+            return Err(invalid);
+        }
+        restored.usage = self.usage.clone();
+        restored.budget_cap = self.budget_cap;
+        restored.revision_checkpoints = self.revision_checkpoints;
+        restored.clarification_mode = self.clarification_mode;
+        restored.highest_id = self.highest_id;
+        Ok(restored)
     }
 
     pub fn phase(&self) -> &Phase {
@@ -445,7 +486,10 @@ impl Session {
         };
         let resolves_or_records = matches!(
             event,
-            Event::BudgetCapSet { .. } | Event::SessionStopped | Event::UsageRecorded { .. }
+            Event::BudgetCapSet { .. }
+                | Event::SessionStopped
+                | Event::UsageRecorded { .. }
+                | Event::RunEnded { .. }
         );
         if self.is_at_budget_checkpoint() && !resolves_or_records {
             return Err(ApplyError::AtBudgetCheckpoint {
@@ -708,6 +752,8 @@ impl Session {
                 phase.clone()
             }
             (_, Event::SessionStopped) if self.is_at_budget_checkpoint() => Phase::Stopped,
+            (phase, Event::RunEnded { .. }) => phase.clone(),
+            (_, Event::Rewound { .. }) => return Err(ApplyError::RewindNeedsLog),
             _ => return Err(unexpected()),
         };
         self.phase = next;
@@ -1003,6 +1049,19 @@ impl Session {
             Err(ApplyError::WrongWorkUnit { expected, got })
         }
     }
+}
+
+/// A Checkpoint the Session can be rewound to.
+pub(crate) fn is_rewind_target(phase: &Phase) -> bool {
+    matches!(
+        phase,
+        Phase::PlanCheckpoint
+            | Phase::ScaffoldCheckpoint { .. }
+            | Phase::RevisionCheckpoint { .. }
+            | Phase::EscalationCheckpoint { .. }
+            | Phase::ReplanCheckpoint { .. }
+            | Phase::MarkerCheckpoint { .. }
+    )
 }
 
 /// Started and not yet finished, so LLM calls can happen.
