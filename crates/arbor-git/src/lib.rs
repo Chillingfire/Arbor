@@ -9,6 +9,7 @@
 mod approval;
 mod branch;
 mod changes;
+mod cleanup;
 mod command;
 mod commit;
 mod github;

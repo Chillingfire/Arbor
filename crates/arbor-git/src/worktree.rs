@@ -114,7 +114,7 @@ impl Worktree {
 
     /// The commit's hash, once it is known to name a commit here. The hash may come from the
     /// event log, so it is never passed to git as an option or a range.
-    fn verified<'a>(&self, commit: &'a CommitId) -> Result<&'a str, GitError> {
+    pub(crate) fn verified<'a>(&self, commit: &'a CommitId) -> Result<&'a str, GitError> {
         let hash = commit.as_str();
         let is_hash =
             (7..=64).contains(&hash.len()) && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
