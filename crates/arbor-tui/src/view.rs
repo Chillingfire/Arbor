@@ -363,6 +363,9 @@ pub fn describe(event: &Event) -> String {
             "Planner submitted a Plan with {}",
             counted(plan.tasks.len(), "Task")
         ),
+        Event::PlanEdited { plan } => {
+            format!("Plan edited by hand: {}", counted(plan.tasks.len(), "Task"))
+        }
         Event::PlanApproved { task_order } => {
             format!("Plan approved: {}", counted(task_order.len(), "Task"))
         }
@@ -514,6 +517,7 @@ pub fn event_tone(event: &Event) -> Tone {
         | Event::SessionAborted => Tone::Failure,
         Event::MarkersChecked { remaining } if !remaining.is_empty() => Tone::Failure,
         Event::PlanApproved { .. }
+        | Event::PlanEdited { .. }
         | Event::ScaffoldApproved
         | Event::RevisionApproved
         | Event::CheckpointRejected { .. }

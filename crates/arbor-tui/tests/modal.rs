@@ -120,6 +120,25 @@ fn rejecting_takes_typed_feedback_and_esc_goes_back_to_choosing() {
 }
 
 #[test]
+fn e_at_the_plan_checkpoint_asks_to_edit_the_plan_and_keeps_the_modal_open() {
+    let mut ui_state = opened(Modal::checkpoint(Checkpoint::Plan { plan: plan() }));
+    assert_eq!(
+        press(&mut ui_state, KeyCode::Char('e')),
+        KeyOutcome::EditPlan(plan())
+    );
+    assert!(ui_state.modal.is_some());
+
+    let mut scaffold = opened(Modal::checkpoint(Checkpoint::Scaffold {
+        task: 0,
+        work_units: Vec::new(),
+    }));
+    assert_eq!(
+        press(&mut scaffold, KeyCode::Char('e')),
+        KeyOutcome::Handled
+    );
+}
+
+#[test]
 fn esc_hides_the_modal_to_look_around_and_c_brings_it_back() {
     let mut ui_state = opened(Modal::checkpoint(Checkpoint::Plan { plan: plan() }));
     press(&mut ui_state, KeyCode::Esc);

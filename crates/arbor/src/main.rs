@@ -2,6 +2,7 @@ mod cli;
 mod handover;
 mod init;
 mod live;
+mod plan_editor;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;

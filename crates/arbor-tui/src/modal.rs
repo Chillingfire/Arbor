@@ -2,7 +2,7 @@
 //! an Escalation, leftover Markers or the Budget Cap to settle, and a Tier's clarifying questions
 //! to answer (grilling log Round 1 decision 7, Round 3 decisions 2 and 9).
 
-use arbor_core::{LeftoverMarker, Task, Tier, Usd, assumptions_in, is_assumption};
+use arbor_core::{LeftoverMarker, Plan, Task, Tier, Usd, assumptions_in, is_assumption};
 use arbor_session::{Checkpoint, Decision};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -21,6 +21,8 @@ pub(crate) enum ModalOutcome {
     Hide,
     Decided(Decision),
     Answered(String),
+    /// `e` at the Plan Checkpoint: edit this Plan in the Human Operator's editor.
+    EditPlan(Plan),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +220,11 @@ impl CheckpointModal {
             KeyCode::Esc => return Some(ModalOutcome::Hide),
             KeyCode::Char('a') | KeyCode::Enter => return self.approval(),
             KeyCode::Char('r') => self.feedback = Some(String::new()),
+            KeyCode::Char('e') => {
+                if let Checkpoint::Plan { plan } = &self.checkpoint {
+                    return Some(ModalOutcome::EditPlan(plan.clone()));
+                }
+            }
             KeyCode::Char('K') => self.move_selected_task(-1),
             KeyCode::Char('J') => self.move_selected_task(1),
             KeyCode::Up if moving => self.move_selected_task(-1),
@@ -491,6 +498,7 @@ fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> Vec<(&'static str, &'
         &[
             ("a", "approve"),
             ("r", "reject"),
+            ("e", "edit"),
             ("↑↓", "select"),
             ("Space", "keep/drop"),
             ("Shift+↑↓", "move"),

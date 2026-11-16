@@ -399,6 +399,69 @@ async fn a_clarification_mode_switched_mid_session_is_logged_and_reaches_the_nex
 }
 
 #[tokio::test]
+async fn a_plan_edited_at_its_checkpoint_is_shown_again_and_approved_as_edited() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let mut edited = two_task_plan();
+    edited.tasks.truncate(1);
+    edited.goal = "Add a --verbose flag, parsed only".to_owned();
+    let model = ScriptedModel::new([submitted_plan(&two_task_plan()), question(QUESTION)]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::EditPlan(edited.clone()), Decision::Approve].into(),
+        answers: [None].into(),
+        ..ScriptedOperator::default()
+    };
+    let shown = Rc::clone(&operator.shown);
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    autopilot.run(request()).await.unwrap();
+
+    assert_eq!(
+        shown.borrow()[1],
+        format!(
+            "{:?}",
+            Checkpoint::Plan {
+                plan: edited.clone()
+            }
+        )
+    );
+    assert!(autopilot.events().contains(&Event::PlanEdited {
+        plan: edited.clone()
+    }));
+    assert_eq!(autopilot.session().plan(), Some(&edited));
+}
+
+#[tokio::test]
+async fn an_edited_plan_without_tasks_ends_the_run_without_recording_it() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let mut emptied = two_task_plan();
+    emptied.tasks.clear();
+    let model = ScriptedModel::new([submitted_plan(&two_task_plan())]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::EditPlan(emptied)].into(),
+        ..ScriptedOperator::default()
+    };
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    let err = autopilot.run(request()).await.unwrap_err();
+
+    assert_eq!(err.step, "reading the edited Plan");
+    assert!(
+        !autopilot
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::PlanEdited { .. }))
+    );
+}
+
+#[tokio::test]
 async fn approving_some_tasks_drops_the_rest_before_scaffolding() {
     let dir = tempdir().unwrap();
     let (worktree, mainline) = session_worktree(dir.path());

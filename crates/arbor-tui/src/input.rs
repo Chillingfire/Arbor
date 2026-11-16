@@ -1,5 +1,6 @@
 //! What each key does to the [`UiState`].
 
+use arbor_core::Plan;
 use arbor_session::Decision;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -28,6 +29,9 @@ pub enum KeyOutcome {
     Answered(String),
     /// `m` outside the prompt: switch the Clarification Mode between Ask and Assume.
     SwitchClarificationMode,
+    /// `e` at the Plan Checkpoint: edit this Plan in the Human Operator's editor. The modal stays
+    /// open until the edit is sent.
+    EditPlan(Plan),
 }
 
 const LOG_PAGE: usize = 10;
@@ -124,6 +128,7 @@ impl UiState {
                 self.modal = None;
                 KeyOutcome::Answered(answers)
             }
+            Some(ModalOutcome::EditPlan(plan)) => KeyOutcome::EditPlan(plan),
         }
     }
 

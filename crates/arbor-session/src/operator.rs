@@ -78,6 +78,9 @@ pub enum Decision {
     ApproveTasks(Vec<usize>),
     /// The same Tier runs again with this feedback.
     Reject(String),
+    /// At a Plan Checkpoint only: the Plan as the Human Operator edited it by hand. The
+    /// Checkpoint shows it again.
+    EditPlan(Plan),
     /// At an Escalation or Marker Checkpoint: the Human Operator fixed the work by hand in the
     /// worktree, so Arbor checks the fix and commits it.
     Fixed,

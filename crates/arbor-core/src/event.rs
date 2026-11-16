@@ -16,6 +16,10 @@ pub enum Event {
     PlanSubmitted {
         plan: Plan,
     },
+    /// The Human Operator edited the Plan by hand at its Checkpoint, which shows it again.
+    PlanEdited {
+        plan: Plan,
+    },
     /// The Human Operator approved the Plan. `task_order` lists the Plan's Task indices to run,
     /// in order, so Tasks can be dropped or reordered. At the Replan's Checkpoint it indexes the
     /// Replan's Tasks instead.

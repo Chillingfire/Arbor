@@ -21,6 +21,7 @@ arbor-tiers.workspace = true
 arbor-tui.workspace = true
 ratatui = "0.30.2"
 tokio = { version = "1", features = ["rt", "macros", "sync"] }
+toml = "0.9"
 
 [dev-dependencies]
 arbor-tools.workspace = true

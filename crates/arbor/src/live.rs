@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use arbor_config::{
     API_KEY_ENV, ClarificationMode, Config, ConfigError, Platform, load_api_key, user_config_path,
 };
-use arbor_core::{Effect, Phase, Request, Tier};
+use arbor_core::{Effect, Phase, Plan, Request, Tier};
 use arbor_git::{Repo, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{
@@ -29,6 +29,8 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use tokio::sync::oneshot;
+
+use crate::plan_editor::{PlanEdit, edit_plan};
 
 /// How often the screen redraws while waiting, so the spinner moves.
 const FRAME: Duration = Duration::from_millis(100);
@@ -209,7 +211,11 @@ fn event_loop(
             } else {
                 key
             };
-            if run.handle_key(app, project, key).is_break() {
+            let key_flow = run.handle_key(app, project, key);
+            if let Some(plan) = run.plan_to_edit.take() {
+                run.send_edited_plan(app, edit_plan(terminal, &plan)?);
+            }
+            if key_flow.is_break() {
                 app.view
                     .push_note("Stopping the Session before leaving…", Tone::Operator);
                 terminal.draw(|frame| app.draw(frame))?;
@@ -234,6 +240,8 @@ fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
 #[derive(Default)]
 struct Run {
     session: Option<RunningSession>,
+    /// The Plan the Human Operator asked to edit at its Checkpoint, until the editor opens.
+    plan_to_edit: Option<Plan>,
 }
 
 impl Run {
@@ -297,8 +305,22 @@ impl Run {
             KeyOutcome::Decided(decision) => self.send_decision(app, decision),
             KeyOutcome::Answered(answers) => self.send_answers(app, answers),
             KeyOutcome::SwitchClarificationMode => self.switch_clarification_mode(app),
+            KeyOutcome::EditPlan(plan) => self.plan_to_edit = Some(plan),
         }
         ControlFlow::Continue(())
+    }
+
+    /// An edited Plan goes back to the Plan Checkpoint, which shows it again. An edit that changed
+    /// nothing or can't be used leaves the modal open.
+    fn send_edited_plan(&mut self, app: &mut App, plan_edit: PlanEdit) {
+        match plan_edit {
+            Ok(Some(edited)) => {
+                app.ui_state.modal = None;
+                self.send_decision(app, Decision::EditPlan(edited));
+            }
+            Ok(None) => app.view.push_note("The Plan is unchanged.", Tone::Progress),
+            Err(message) => app.view.push_note(message, Tone::Failure),
+        }
     }
 
     /// A running Session takes the new mode from its next Planner or Scaffolder run; otherwise
@@ -573,6 +595,7 @@ fn decision_note(decision: &Decision) -> String {
             )
         }
         Decision::Reject(feedback) => format!("Rejected the Checkpoint: {feedback}"),
+        Decision::EditPlan(_) => "Edited the Plan by hand.".to_owned(),
         Decision::Fixed => "Fixed it by hand; checking the fix.".to_owned(),
         Decision::Replan => "Sent the Task to the Planner.".to_owned(),
         Decision::RetryWithHint { tier, hint } => {

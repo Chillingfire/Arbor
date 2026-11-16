@@ -349,7 +349,8 @@ fn main() -> std::io::Result<()> {
                     | KeyOutcome::Confirmed(_)
                     | KeyOutcome::Decided(_)
                     | KeyOutcome::Answered(_)
-                    | KeyOutcome::SwitchClarificationMode => {}
+                    | KeyOutcome::SwitchClarificationMode
+                    | KeyOutcome::EditPlan(_) => {}
                 }
             }
         }

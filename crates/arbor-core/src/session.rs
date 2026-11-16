@@ -478,6 +478,10 @@ impl Session {
                     feedback: None,
                 }
             }
+            (Phase::PlanCheckpoint, Event::PlanEdited { plan }) => {
+                self.plan = Some(plan.clone());
+                Phase::PlanCheckpoint
+            }
             (Phase::PlanCheckpoint, Event::CheckpointRejected { feedback }) => Phase::Planning {
                 feedback: Some(feedback.clone()),
             },

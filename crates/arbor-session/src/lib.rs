@@ -24,7 +24,7 @@ use arbor_tiers::{
     PlannerRun, Rejection, ReplanRun, RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, Writer,
     WriterError, WriterRun, check_markers, check_operator_fix, commit_operator_fix,
     commit_revision, commit_skeleton, discard_revision, failure_brief, hint_input, reset_task,
-    review_revision, run_task_check, strip_work_unit_markers, task_diff,
+    review_revision, run_task_check, strip_work_unit_markers, task_diff, validate_plan,
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
@@ -349,6 +349,13 @@ impl<'a> Autopilot<'a> {
                 Checkpoint::Plan { .. } | Checkpoint::Replan { .. },
                 Decision::ApproveTasks(task_order),
             ) => Event::PlanApproved { task_order },
+            (Checkpoint::Plan { .. }, Decision::EditPlan(plan)) => {
+                validate_plan(&plan).map_err(|problems| AutopilotError {
+                    step: "reading the edited Plan",
+                    message: problems,
+                })?;
+                Event::PlanEdited { plan }
+            }
             (Checkpoint::Scaffold { .. }, Decision::Approve) => Event::ScaffoldApproved,
             (Checkpoint::Revision { .. }, Decision::Approve) => Event::RevisionApproved,
             (Checkpoint::Markers { .. }, Decision::Approve) => Event::MarkersApproved,

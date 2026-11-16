@@ -57,6 +57,7 @@ dependencies = [
  "ratatui",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]
