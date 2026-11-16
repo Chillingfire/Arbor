@@ -37,8 +37,8 @@ pub use operator::{ApproveEverything, Checkpoint, Decision, Operator, Pending};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 pub use store::{
-    RunLock, SESSIONS_DIR, SessionFolder, SessionStatus, SessionSummary, StoreError, retention,
-    rewind_session, session_folders, summarize,
+    RunLock, SessionFolder, SessionStatus, SessionSummary, StoreError, retention, rewind_session,
+    session_folders, summarize,
 };
 
 /// How an [`Autopilot`] run ended.

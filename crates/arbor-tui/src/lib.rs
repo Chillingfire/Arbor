@@ -3,6 +3,7 @@
 mod app;
 mod browser;
 mod input;
+mod leaving;
 mod modal;
 mod ui;
 mod view;
@@ -10,6 +11,7 @@ mod view;
 pub use app::App;
 pub use browser::{BrowserOutcome, SessionBrowser, duration_label};
 pub use input::KeyOutcome;
+pub use leaving::UnfinishedSession;
 pub use modal::{CheckpointModal, Modal, QuestionsModal, TaskRow};
 pub use ui::{
     Confirmation, DetailTab, Focus, RunningActivity, StatusInfo, TreeNode, UiState, draw,

@@ -12,10 +12,8 @@ use arbor_core::{
     ApplyError, Event, EventLog, Phase, ReadError, RewindPoint, RunOutcome, Session, Usd,
     read_events,
 };
-use arbor_git::{CommitId, GitError, Worktree};
+use arbor_git::{CommitId, GitError, SESSIONS_DIR, Worktree};
 
-/// Where Sessions live, relative to the project root.
-pub const SESSIONS_DIR: &str = ".arbor/sessions";
 const EVENT_LOG_FILE: &str = "events.jsonl";
 const WORKTREE_DIR: &str = "worktree";
 const RUN_LOCK_FILE: &str = "run.lock";

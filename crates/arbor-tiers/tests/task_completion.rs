@@ -311,3 +311,19 @@ fn a_fixed_work_units_markers_are_stripped_and_other_markers_stay() {
     );
     strip_work_unit_markers(session.worktree.path(), "calc.py", WorkUnitId(1)).unwrap();
 }
+
+#[test]
+fn a_fix_that_leaves_a_marker_for_its_work_unit_is_refused_and_left_alone() {
+    let session = Session::new();
+    let duplicated = "# ARBOR:BEGIN WU-1\nreturn 1\n# ARBOR:END WU-1\n# ARBOR:BEGIN WU-1\npass\n# ARBOR:END WU-1\n";
+    session.write("calc.py", duplicated);
+
+    let refused = strip_work_unit_markers(session.worktree.path(), "calc.py", WorkUnitId(1));
+
+    let message = refused.unwrap_err();
+    assert!(message.contains("line 1, 3, 4, 6"), "{message}");
+    assert_eq!(
+        fs::read_to_string(session.worktree.path().join("calc.py")).unwrap(),
+        duplicated
+    );
+}

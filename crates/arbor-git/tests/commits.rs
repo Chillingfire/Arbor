@@ -173,3 +173,31 @@ fn resetting_to_something_that_is_not_a_commit_hash_is_refused() {
     }
     assert_eq!(session.worktree.head().unwrap(), head);
 }
+
+#[test]
+fn a_commit_runs_the_repositorys_hooks_and_a_refusing_hook_stops_it() {
+    let session = Session::new();
+    let hooks = git(
+        session.path(),
+        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+    );
+    write(
+        Path::new(&hooks),
+        "pre-commit",
+        "#!/bin/sh\necho refused by the hook >&2\nexit 1\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let hook = Path::new(&hooks).join("pre-commit");
+        std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(session.path(), "a.txt", "a\n");
+
+    let refused = session
+        .worktree
+        .commit(&CommitMessage::new("Add a file.").unwrap());
+
+    let message = refused.unwrap_err().to_string();
+    assert!(message.contains("refused by the hook"), "{message}");
+}

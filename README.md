@@ -40,6 +40,28 @@ worktree are removed, their `arbor/*` branch is always kept, and a Session whose
 uncommitted changes is skipped with a warning. The default is **30 days**. Set `retention_days` in
 `arbor.toml` or in the user config (`arbor.toml` wins); `0` keeps Sessions forever.
 
+## Keep Markers out of the mainline
+
+Arbor brackets the code each Writer fills with Marker comments (`ARBOR:BEGIN WU-7` …
+`ARBOR:END WU-7`) that must never reach the mainline or a remote. Arbor checks for them itself,
+and `arbor init` also offers `pre-commit`, `pre-merge-commit` and `pre-push` hooks that run
+`arbor check-markers` for git commands run outside Arbor. It never overwrites a hook you already
+have; it prints the lines to add instead, as it does when `core.hooksPath` is set.
+
+For a server-side check too, add this step to CI. It lists every Marker line and fails if there
+are any:
+
+```sh
+arbor check-markers --rev HEAD
+```
+
+If some files hold Markers on purpose, such as tests or docs about them, list their paths in a
+committed `.arbor-markers-allowed` file at the repository root: gitignore-style patterns, one per
+line, with `#` comments. The check reads the file from what it scans: the working tree, the index
+with `--staged`, or the tree at `--rev`. The list only narrows where the check looks; a pattern
+that would allow every path, such as `*` or `**`, is an error. Arbor's own checks that a Writer's
+Region was stripped, and the Marker check at the end of a Session, ignore the list.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
