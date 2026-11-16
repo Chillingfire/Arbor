@@ -125,7 +125,7 @@ fn delete_asks_first_naming_the_branch() {
 }
 
 #[test]
-fn only_an_unfinished_session_resumes() {
+fn only_an_unfinished_session_resumes_but_a_finished_one_can_be_rewound() {
     let mut browser = browser();
     assert_eq!(
         browser.handle_key(key(KeyCode::Char('r'))),
@@ -133,6 +133,10 @@ fn only_an_unfinished_session_resumes() {
     );
     browser.handle_key(key(KeyCode::Down));
     assert_eq!(browser.handle_key(key(KeyCode::Char('r'))), None);
+    assert_eq!(
+        browser.handle_key(key(KeyCode::Char('w'))),
+        Some(BrowserOutcome::ListRewindPoints(folder("1-finished")))
+    );
     assert_eq!(
         browser.handle_key(key(KeyCode::Enter)),
         Some(BrowserOutcome::Inspect(folder("1-finished")))

@@ -118,8 +118,10 @@ impl SessionBrowser {
             KeyCode::Enter => {
                 return Some(BrowserOutcome::Inspect(self.selected()?.folder.clone()));
             }
-            KeyCode::Char('r') => return self.resumable().map(BrowserOutcome::Resume),
-            KeyCode::Char('w') => return self.resumable().map(BrowserOutcome::ListRewindPoints),
+            KeyCode::Char('r') => return self.runnable(false).map(BrowserOutcome::Resume),
+            KeyCode::Char('w') => {
+                return self.runnable(true).map(BrowserOutcome::ListRewindPoints);
+            }
             KeyCode::Char('d') => match self.selected()?.is_running() {
                 true => self.set_note("A running Session can't be deleted."),
                 false => self.mode = Mode::ConfirmDelete,
@@ -149,15 +151,18 @@ impl SessionBrowser {
         None
     }
 
-    /// The selected Session's folder, if it can run again: not running, finished, or stopped at
-    /// the Budget Cap for good.
-    fn resumable(&mut self) -> Option<SessionFolder> {
+    /// The selected Session's folder, if it can run again: not running and with a log that
+    /// replays. Only a Rewind carries on a finished Session, or one stopped at the Budget Cap.
+    fn runnable(&mut self, rewinding: bool) -> Option<SessionFolder> {
         let summary = self.selected()?;
         let refusal = match (&summary.status, &summary.phase) {
             (SessionStatus::Running, _) => Some("This Session is already running."),
-            (SessionStatus::Finished, _) => Some("This Session is finished."),
-            (_, Some(Phase::Stopped)) => Some("This Session was stopped at the Budget Cap."),
             (_, None) => Some("This Session's event log can't be replayed."),
+            _ if rewinding => None,
+            (SessionStatus::Finished, _) => Some("This Session is finished; rewind it instead."),
+            (_, Some(Phase::Stopped)) => {
+                Some("This Session was stopped at the Budget Cap; rewind it instead.")
+            }
             _ => None,
         };
         match refusal {
