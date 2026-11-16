@@ -34,8 +34,8 @@ pub fn run(check: &CheckMarkers) -> ExitCode {
         println!("{marker_line}");
     }
     eprintln!(
-        "arbor: found {} Marker line{}. Markers belong only to an unfinished Session's branch; \
-         remove them before this reaches the mainline.",
+        "arbor: found {} Marker line{}. Markers must not reach the mainline or a remote; remove \
+         them, or finish the Session that left them.",
         marker_lines.len(),
         if marker_lines.len() == 1 { "" } else { "s" }
     );

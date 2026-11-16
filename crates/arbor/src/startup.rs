@@ -8,6 +8,8 @@ use arbor_config::Config;
 use arbor_git::{Repo, TreeSource, is_session_branch};
 use arbor_tiers::{MarkerLine, scan_markers};
 
+use crate::hooks;
+
 /// More Marker lines than this per place are counted, not listed.
 const LISTED_LINES: usize = 20;
 
@@ -27,6 +29,7 @@ pub fn check(root: &Path, config: &Config) {
             return;
         }
     };
+    hooks::check_health(&repo);
     let findings = scan_checkout_and_mainline(&repo, config);
     let Some(warning) = marker_warning(&findings) else {
         return;

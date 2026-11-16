@@ -67,6 +67,14 @@ impl Repo {
         Ok(PathBuf::from(common_dir))
     }
 
+    /// The `core.hooksPath` setting, if the operator set one. Git then runs hooks from there
+    /// instead of the `hooks` folder in [`Self::common_dir`].
+    pub fn configured_hooks_path(&self) -> Option<String> {
+        git(&self.root, &["config", "--get", "core.hooksPath"])
+            .ok()
+            .filter(|hooks_path| !hooks_path.is_empty())
+    }
+
     /// Fetches `origin`. This is read-only for the remote, so it needs no approval (ADR-0006).
     /// It updates only remote-tracking branches, never the local mainline.
     pub fn fetch(&self) -> Result<Fetch, GitError> {

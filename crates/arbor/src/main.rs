@@ -1,6 +1,7 @@
 mod check_markers;
 mod cli;
 mod handover;
+mod hooks;
 mod init;
 mod live;
 mod startup;

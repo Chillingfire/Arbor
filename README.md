@@ -28,6 +28,21 @@ repository to write them: Arbor detects the project type from `Cargo.toml`, `go.
 configuration and proposes commands for you to accept or skip. Running `arbor init` again replaces
 only the `[checks]` table.
 
+## Keep Markers out of the mainline
+
+Arbor brackets the code each Writer fills with Marker comments (`ARBOR:BEGIN WU-7` …
+`ARBOR:END WU-7`) that must never reach the mainline or a remote. Arbor checks for them itself,
+and `arbor init` also offers `pre-commit`, `pre-merge-commit` and `pre-push` hooks that run
+`arbor check-markers` for git commands run outside Arbor. It never overwrites a hook you already
+have; it prints the lines to add instead, as it does when `core.hooksPath` is set.
+
+For a server-side check too, add this step to CI. It lists every Marker line and fails if there
+are any:
+
+```sh
+arbor check-markers --rev HEAD
+```
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
