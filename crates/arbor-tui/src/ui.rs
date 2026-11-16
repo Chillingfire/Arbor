@@ -847,6 +847,7 @@ fn key_hints(focus: Focus) -> &'static [(&'static str, &'static str)] {
             ("↑↓", "move"),
             ("←→", "fold"),
             ("/", "prompt"),
+            ("m", "Ask/Assume"),
             ("q", "quit"),
         ],
         Focus::Detail => &[

@@ -4,7 +4,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arbor_core::{LeftoverMarker, Plan, Replan, Revision, RevisionCause, Tier, Usd, WorkUnit};
+use arbor_core::{
+    ClarificationMode, LeftoverMarker, Plan, Replan, Revision, RevisionCause, Tier, Usd, WorkUnit,
+};
 
 /// A future the Operator resolves once the Human Operator has decided, e.g. in a TUI modal.
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -108,6 +110,12 @@ pub trait Operator {
     /// The answers to a Tier's clarifying questions, or `None` when nobody can answer them, which
     /// ends the run.
     fn answer<'a>(&'a mut self, tier: Tier, questions: &'a str) -> Pending<'a, Option<String>>;
+
+    /// The Clarification Mode the Human Operator switched to since the last call, if they did.
+    /// Asked before each Planner and Scaffolder run, so a switch applies from the next run on.
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        None
+    }
 }
 
 /// Approves every Checkpoint as it is and answers no questions, for runs nobody is watching, such

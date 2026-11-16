@@ -26,6 +26,8 @@ pub enum KeyOutcome {
     Decided(Decision),
     /// The Human Operator answered a Tier's questions.
     Answered(String),
+    /// `m` outside the prompt: switch the Clarification Mode between Ask and Assume.
+    SwitchClarificationMode,
 }
 
 const LOG_PAGE: usize = 10;
@@ -61,6 +63,7 @@ impl UiState {
         }
         match key.code {
             KeyCode::Char('q') => return KeyOutcome::Quit,
+            KeyCode::Char('m') => return KeyOutcome::SwitchClarificationMode,
             KeyCode::Esc => return KeyOutcome::Cancel,
             KeyCode::Char('/' | 'i') => self.focus = Focus::Prompt,
             KeyCode::Left if self.focus == Focus::Tree => self.collapse_selected(),

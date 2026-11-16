@@ -12,7 +12,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
+use arbor_config::{
+    API_KEY_ENV, ClarificationMode, Config, ConfigError, Platform, load_api_key, user_config_path,
+};
 use arbor_core::{Effect, Phase, Request, Tier};
 use arbor_git::{Repo, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
@@ -63,6 +65,7 @@ enum AwaitedReply {
 /// Session waits for the reply.
 struct ScreenOperator {
     sender: Sender<DriverMessage>,
+    mode_switches: Receiver<ClarificationMode>,
 }
 
 /// Without a screen left to reply, the Session waits until it is cancelled rather than go on
@@ -93,6 +96,10 @@ impl Operator for ScreenOperator {
         });
         Box::pin(screen_reply(replied))
     }
+
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        self.mode_switches.try_iter().last()
+    }
 }
 
 /// The Session running behind the screen.
@@ -101,6 +108,7 @@ struct RunningSession {
     cancel: Option<oneshot::Sender<()>>,
     driver: JoinHandle<()>,
     awaited_reply: Option<AwaitedReply>,
+    mode_switches: Sender<ClarificationMode>,
 }
 
 struct Project {
@@ -288,8 +296,29 @@ impl Run {
             ),
             KeyOutcome::Decided(decision) => self.send_decision(app, decision),
             KeyOutcome::Answered(answers) => self.send_answers(app, answers),
+            KeyOutcome::SwitchClarificationMode => self.switch_clarification_mode(app),
         }
         ControlFlow::Continue(())
+    }
+
+    /// A running Session takes the new mode from its next Planner or Scaffolder run; otherwise
+    /// the next Session starts with it.
+    fn switch_clarification_mode(&mut self, app: &mut App) {
+        let mode = match app.status.clarification_mode {
+            ClarificationMode::Ask => ClarificationMode::Assume,
+            ClarificationMode::Assume => ClarificationMode::Ask,
+        };
+        app.status.clarification_mode = mode;
+        let applies_from = match &self.session {
+            Some(session) if session.mode_switches.send(mode).is_ok() => {
+                "the next Planner or Scaffolder run"
+            }
+            _ => "the next Session",
+        };
+        app.view.push_note(
+            format!("Clarification Mode {mode:?} from {applies_from}."),
+            Tone::Operator,
+        );
     }
 
     fn take_awaited_reply(&mut self) -> Option<AwaitedReply> {
@@ -373,10 +402,16 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
     };
     let (sender, messages) = mpsc::channel();
     let (cancel, cancelled) = oneshot::channel();
+    let (mode_switches, switched_modes) = mpsc::channel();
     let root = project.root.clone();
-    let config = project.config.clone();
+    let mut config = project.config.clone();
+    config.clarification_mode = app.status.clarification_mode;
     let driver = thread::spawn(move || {
-        let ending = drive(&root, config, &api_key, request, &sender, cancelled);
+        let operator = ScreenOperator {
+            sender: sender.clone(),
+            mode_switches: switched_modes,
+        };
+        let ending = drive(&root, config, &api_key, request, operator, cancelled);
         let _ = sender.send(ending);
     });
     Some(RunningSession {
@@ -384,6 +419,7 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
         cancel: Some(cancel),
         driver,
         awaited_reply: None,
+        mode_switches,
     })
 }
 
@@ -393,10 +429,10 @@ fn drive(
     config: Config,
     api_key: &str,
     request: Request,
-    sender: &Sender<DriverMessage>,
+    operator: ScreenOperator,
     cancelled: oneshot::Receiver<()>,
 ) -> DriverMessage {
-    try_drive(root, config, api_key, request, sender, cancelled)
+    try_drive(root, config, api_key, request, operator, cancelled)
         .unwrap_or_else(|message| DriverMessage::Ended(message, Tone::Failure))
 }
 
@@ -406,9 +442,10 @@ fn try_drive(
     config: Config,
     api_key: &str,
     request: Request,
-    sender: &Sender<DriverMessage>,
+    operator: ScreenOperator,
     cancelled: oneshot::Receiver<()>,
 ) -> Result<DriverMessage, String> {
+    let sender = operator.sender.clone();
     let repo = Repo::open(root).map_err(|err| format!("Could not open the repository: {err}"))?;
     let mainline = repo
         .mainline(config.mainline.as_deref())
@@ -431,9 +468,6 @@ fn try_drive(
 
     let client = OpenRouterClient::new(api_key);
     let observer_sender = sender.clone();
-    let operator = ScreenOperator {
-        sender: sender.clone(),
-    };
     let mut autopilot = Autopilot::new(&worktree, &mainline, &client, config)
         .map_err(|err| err.to_string())?
         .with_operator(operator)

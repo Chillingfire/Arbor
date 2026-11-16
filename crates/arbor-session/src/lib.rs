@@ -10,8 +10,8 @@ use std::io::Write;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session, StrongerWriter, Task,
-    Tier, Usd, WorkUnit, WorkUnitFailure, WorkUnitId,
+    ClarificationMode, Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session,
+    StrongerWriter, Task, Tier, Usd, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
@@ -500,6 +500,22 @@ impl<'a> Autopilot<'a> {
         commit_operator_fix(self.worktree, &message).map_err(failed("committing the fix"))
     }
 
+    /// The configured Clarification Mode, or the one the Human Operator last switched to. A switch
+    /// since the last Tier run is recorded first.
+    fn clarification_mode(&mut self) -> Result<ClarificationMode, AutopilotError> {
+        let current = self
+            .session
+            .clarification_mode()
+            .unwrap_or(self.config.clarification_mode);
+        match self.operator.clarification_mode_change() {
+            Some(mode) if mode != current => {
+                self.apply(Event::ClarificationModeSet { mode })?;
+                Ok(mode)
+            }
+            _ => Ok(current),
+        }
+    }
+
     /// The settings from the config that the event log records, applied as the Session starts.
     fn configured_settings(&self) -> Vec<Event> {
         let mut settings = Vec::new();
@@ -637,7 +653,7 @@ impl<'a> Autopilot<'a> {
     async fn plan(&mut self, feedback: Option<String>) -> Result<Step, AutopilotError> {
         let request = self.request()?;
         let rejected_plan = self.session.plan().cloned();
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let inputs = PlannerInputs {
             request: &request,
             clarification_mode: mode,
@@ -684,7 +700,7 @@ impl<'a> Autopilot<'a> {
     ) -> Result<Step, AutopilotError> {
         let request = self.request()?;
         let plan = self.session_plan()?.clone();
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let cap_tokens = self.config.writer_cap_tokens;
         let inputs = ScaffolderInputs {
             request: &request,
@@ -871,7 +887,7 @@ impl<'a> Autopilot<'a> {
             .map(str::to_owned);
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let cap_tokens = self.config.writer_cap_tokens;
         let inputs = ScaffolderInputs {
             request: &request,
@@ -941,7 +957,7 @@ impl<'a> Autopilot<'a> {
             .map(str::to_owned);
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let inputs = PlannerInputs {
             request: &request,
             clarification_mode: mode,

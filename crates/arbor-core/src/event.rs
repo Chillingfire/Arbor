@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cost::{Usage, Usd};
 use crate::revision::{Revision, WorkUnitFailure};
-use crate::types::{LeftoverMarker, Plan, Replan, Request, Tier, WorkUnit, WorkUnitId};
+use crate::types::{
+    ClarificationMode, LeftoverMarker, Plan, Replan, Request, Tier, WorkUnit, WorkUnitId,
+};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +65,11 @@ pub enum Event {
     RevisionRejected {
         revision: Revision,
         reason: String,
+    },
+    /// The Human Operator switched the Clarification Mode mid-Session. Tier runs from here on use
+    /// it instead of the configured one.
+    ClarificationModeSet {
+        mode: ClarificationMode,
     },
     /// Turns the Checkpoint after each Revision on or off. Off by default.
     RevisionCheckpointsSet {

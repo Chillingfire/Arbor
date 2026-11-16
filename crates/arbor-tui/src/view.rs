@@ -400,6 +400,7 @@ pub fn describe(event: &Event) -> String {
         Event::RevisionRejected { reason, .. } => {
             format!("Revision rejected: {}", first_line(reason))
         }
+        Event::ClarificationModeSet { mode } => format!("Clarification Mode switched to {mode:?}"),
         Event::RevisionCheckpointsSet { enabled } => format!(
             "Revision Checkpoints turned {}",
             if *enabled { "on" } else { "off" }
@@ -523,7 +524,8 @@ pub fn event_tone(event: &Event) -> Tone {
         | Event::OperatorFixed { .. }
         | Event::MarkersApproved
         | Event::BudgetCapSet { .. }
-        | Event::RevisionCheckpointsSet { .. } => Tone::Operator,
+        | Event::RevisionCheckpointsSet { .. }
+        | Event::ClarificationModeSet { .. } => Tone::Operator,
         _ => Tone::Progress,
     }
 }

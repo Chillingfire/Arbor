@@ -7,7 +7,8 @@ use crate::revision::{
     MAX_REVISIONS, Revision, RevisionCause, RevisionRound, WorkUnitFailure, revisions_for,
 };
 use crate::types::{
-    CommitOrigin, LeftoverMarker, Plan, Replan, Request, SessionCommit, Tier, WorkUnit, WorkUnitId,
+    ClarificationMode, CommitOrigin, LeftoverMarker, Plan, Replan, Request, SessionCommit, Tier,
+    WorkUnit, WorkUnitId,
 };
 
 /// What the outer crates should do next.
@@ -298,6 +299,8 @@ pub struct Session {
     stronger_writer: Option<StrongerWriter>,
     /// Indices of the approved Plan's Tasks the Human Operator skipped.
     skipped_tasks: Vec<usize>,
+    /// Set once the Human Operator switches the mode; until then the configured one holds.
+    clarification_mode: Option<ClarificationMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,6 +395,11 @@ impl Session {
 
     pub fn skipped_tasks(&self) -> &[usize] {
         &self.skipped_tasks
+    }
+
+    /// The Clarification Mode the Human Operator switched to, or `None` to use the configured one.
+    pub fn clarification_mode(&self) -> Option<ClarificationMode> {
+        self.clarification_mode
     }
 
     /// The lowest ID no Work Unit in the Session has used.
@@ -685,6 +693,10 @@ impl Session {
                     return Err(ApplyError::BudgetCapReached { cap, spent });
                 }
                 self.budget_cap = cap;
+                phase.clone()
+            }
+            (phase, &Event::ClarificationModeSet { mode }) if is_live(phase) => {
+                self.clarification_mode = Some(mode);
                 phase.clone()
             }
             (phase, &Event::RevisionCheckpointsSet { enabled }) if is_live(phase) => {

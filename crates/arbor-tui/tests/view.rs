@@ -248,6 +248,24 @@ fn typing_in_the_prompt_submits_on_enter() {
 }
 
 #[test]
+fn m_outside_the_prompt_switches_the_clarification_mode_and_inside_it_is_typed() {
+    let view = SessionView::new();
+    let mut ui_state = UiState::default();
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    assert_eq!(
+        ui_state.handle_key(key(KeyCode::Char('m')), &view),
+        KeyOutcome::SwitchClarificationMode
+    );
+    ui_state.handle_key(key(KeyCode::Char('/')), &view);
+    assert_eq!(
+        ui_state.handle_key(key(KeyCode::Char('m')), &view),
+        KeyOutcome::Handled
+    );
+    assert_eq!(ui_state.prompt, "m");
+}
+
+#[test]
 fn collapsing_a_task_hides_its_units_and_selects_the_task() {
     let view = SessionView::from_events(&events()).unwrap();
     let mut ui_state = UiState {

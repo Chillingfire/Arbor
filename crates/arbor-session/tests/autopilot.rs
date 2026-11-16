@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use arbor_config::Config;
-use arbor_core::{Effect, Event, Phase, Plan, Request, Task, Tier, Usd};
+use arbor_core::{ClarificationMode, Effect, Event, Phase, Plan, Request, Task, Tier, Usd};
 use arbor_git::{Mainline, Repo, Worktree};
 use arbor_llm::{
     BoxFuture, ChatRequest, ChatResponse, FinishReason, LlmClient, LlmError, Message, ModelInfo,
@@ -190,6 +190,21 @@ impl ScriptedModel {
         }
     }
 
+    /// The text of the `index`th request's system message.
+    fn system_text(&self, index: usize) -> String {
+        self.requests.lock().unwrap()[index]
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::System { content } => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .map(|part| part.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// The text of every user message in the `index`th request, joined.
     fn user_text(&self, index: usize) -> String {
         self.requests.lock().unwrap()[index]
@@ -272,6 +287,8 @@ struct ScriptedOperator {
     decisions: VecDeque<Decision>,
     answers: VecDeque<Option<String>>,
     shown: Rc<RefCell<Vec<String>>>,
+    /// Switched to before the next Tier run asks.
+    mode_switch: Option<ClarificationMode>,
 }
 
 impl Operator for ScriptedOperator {
@@ -287,6 +304,10 @@ impl Operator for ScriptedOperator {
             .push(format!("{tier:?} asked: {questions}"));
         let answers = self.answers.pop_front().expect("scripted answers");
         Box::pin(async move { answers })
+    }
+
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        self.mode_switch.take()
     }
 }
 
@@ -340,6 +361,41 @@ async fn the_operators_answers_and_rejection_feedback_reach_the_planner() {
     assert!(autopilot.events().contains(&Event::CheckpointRejected {
         feedback: "Print details first".to_owned()
     }));
+}
+
+#[tokio::test]
+async fn a_clarification_mode_switched_mid_session_is_logged_and_reaches_the_next_tier_run() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    assert_eq!(config.clarification_mode, ClarificationMode::Ask);
+    let model = ScriptedModel::new([submitted_plan(&two_task_plan())]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::Stop].into(),
+        mode_switch: Some(ClarificationMode::Assume),
+        ..ScriptedOperator::default()
+    };
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    autopilot.run(request()).await.unwrap();
+
+    assert_eq!(
+        autopilot.events()[1],
+        Event::ClarificationModeSet {
+            mode: ClarificationMode::Assume
+        }
+    );
+    let instructions = model.system_text(0);
+    assert!(
+        instructions.contains("Clarification Mode is Assume"),
+        "{instructions}"
+    );
+    assert_eq!(
+        autopilot.session().clarification_mode(),
+        Some(ClarificationMode::Assume)
+    );
 }
 
 #[tokio::test]

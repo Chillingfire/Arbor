@@ -16,6 +16,7 @@ pub use revision::{
 };
 pub use session::{ApplyError, Effect, Phase, Session, StrongerWriter};
 pub use types::{
-    ASSUMPTION_PREFIX, CommitOrigin, LeftoverMarker, Plan, Priority, Replan, Request,
-    SessionCommit, Snippet, Task, Tier, WorkUnit, WorkUnitId, assumptions_in, is_assumption,
+    ASSUMPTION_PREFIX, ClarificationMode, CommitOrigin, LeftoverMarker, Plan, Priority, Replan,
+    Request, SessionCommit, Snippet, Task, Tier, WorkUnit, WorkUnitId, assumptions_in,
+    is_assumption,
 };
