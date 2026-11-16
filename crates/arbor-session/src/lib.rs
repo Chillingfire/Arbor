@@ -3,7 +3,9 @@
 //! and a Tier's clarifying questions go to an [`Operator`]; by default [`ApproveEverything`]. The
 //! run stops where the Operator says so.
 
+mod cleanup;
 mod operator;
+mod store;
 
 use std::fmt;
 use std::io::Write;
@@ -28,9 +30,16 @@ use arbor_tiers::{
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
+pub use cleanup::{
+    PruneReport, PrunedSession, branch_markers, delete_session, list_sessions, prune_sessions,
+};
 pub use operator::{ApproveEverything, Checkpoint, Decision, Operator, Pending};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+pub use store::{
+    RunLock, SESSIONS_DIR, SessionFolder, SessionStatus, SessionSummary, StoreError, retention,
+    rewind_session, session_folders, summarize,
+};
 
 /// How an [`Autopilot`] run ended.
 #[derive(Debug, Clone, PartialEq)]
