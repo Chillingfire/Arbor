@@ -107,4 +107,25 @@ pub enum Event {
     },
     /// The Human Operator chose to stop at a budget Checkpoint.
     SessionStopped,
+    /// A run of the unfinished Session ended, and why. A resume carries on from the events before
+    /// it, which it leaves as they were.
+    RunEnded {
+        outcome: RunOutcome,
+    },
+    /// The Human Operator rewound the Session to how it stood after its first `event_count`
+    /// events, at a Checkpoint. The events in between stay in the log as the abandoned
+    /// transcript, and what their model calls cost still counts.
+    Rewound {
+        event_count: usize,
+    },
+}
+
+/// Why a run ended before its Session finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// The Human Operator stopped the run: cancelled it, left arbor, or stopped at a Checkpoint.
+    Cancelled,
+    /// A Tier gave up, a Check or git command failed, or the model call failed.
+    Failed { reason: String },
 }
