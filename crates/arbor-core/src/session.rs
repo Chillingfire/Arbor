@@ -405,7 +405,10 @@ impl Session {
                         task_order: task_order.clone(),
                     });
                 }
-                plan.tasks = task_order.iter().map(|&i| plan.tasks[i].clone()).collect();
+                plan.tasks = task_order
+                    .iter()
+                    .map(|&task_index| plan.tasks[task_index].clone())
+                    .collect();
                 self.replanned = vec![false; task_order.len()];
                 Phase::Scaffolding {
                     task: 0,
@@ -534,7 +537,7 @@ impl Session {
             }
             (Phase::EscalationCheckpoint { task, cause }, Event::OperatorFixed { commit }) => {
                 let (task, failed_unit) = (*task, cause.work_unit());
-                self.record_operator_fix(commit);
+                self.record_optional_commit(commit, CommitOrigin::OperatorFix);
                 match failed_unit {
                     Some(fixed) => {
                         self.write_queue = self.queue_after(fixed, &[]);
@@ -591,7 +594,7 @@ impl Session {
                 }
             }
             (Phase::MarkerCheckpoint { .. }, Event::OperatorFixed { commit }) => {
-                self.record_operator_fix(commit);
+                self.record_optional_commit(commit, CommitOrigin::OperatorFix);
                 Phase::CheckingMarkers
             }
             (Phase::MarkerCheckpoint { .. }, Event::MarkersApproved) => Phase::Done,
@@ -711,7 +714,9 @@ impl Session {
             .plan
             .as_mut()
             .expect("a Task runs only once a Plan is approved");
-        let replacements = task_order.iter().map(|&i| replan.tasks[i].clone());
+        let replacements = task_order
+            .iter()
+            .map(|&task_index| replan.tasks[task_index].clone());
         plan.tasks.splice(task..=task, replacements);
         self.replanned
             .splice(task..=task, std::iter::repeat_n(true, task_order.len()));
@@ -760,10 +765,6 @@ impl Session {
             hash: hash.to_owned(),
             origin,
         });
-    }
-
-    fn record_operator_fix(&mut self, commit: &Option<String>) {
-        self.record_optional_commit(commit, CommitOrigin::OperatorFix);
     }
 
     fn record_optional_commit(&mut self, commit: &Option<String>, origin: CommitOrigin) {
@@ -866,9 +867,15 @@ fn first_duplicate(work_units: &[WorkUnit]) -> Option<WorkUnitId> {
 
 /// A non-empty selection of distinct indices below `len`.
 fn is_valid_order(order: &[usize], len: usize) -> bool {
+    if order.is_empty() {
+        return false;
+    }
     let mut seen = vec![false; len];
-    !order.is_empty()
-        && order
-            .iter()
-            .all(|&i| i < len && !std::mem::replace(&mut seen[i], true))
+    for &task_index in order {
+        if task_index >= len || seen[task_index] {
+            return false;
+        }
+        seen[task_index] = true;
+    }
+    true
 }

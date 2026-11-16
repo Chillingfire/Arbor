@@ -8,7 +8,7 @@ use arbor_tools::{Tools, Toolset, validate_check_command};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
+use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel, reject_if_any};
 
 pub const SUBMIT_CHECKS: &str = "submit_checks";
 
@@ -99,12 +99,5 @@ pub fn validate_proposed_checks(worktree: &Path, proposed: &ProposedChecks) -> R
     {
         problems.push(format!("unit_filtered must contain {FILTER_PLACEHOLDER}"));
     }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "the proposed Checks are invalid: {}",
-            problems.join("; ")
-        ))
-    }
+    reject_if_any("the proposed Checks are invalid", problems)
 }

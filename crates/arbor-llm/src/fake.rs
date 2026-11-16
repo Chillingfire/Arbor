@@ -150,26 +150,28 @@ fn to_value(request: &ChatRequest) -> Value {
 }
 
 /// The path of the first place `a` and `b` differ, e.g. `messages[1].content[0].text`.
-fn first_difference(a: &Value, b: &Value) -> Option<String> {
-    match (a, b) {
-        (Value::Object(a), Value::Object(b)) => {
-            let mut keys: Vec<_> = a.keys().chain(b.keys()).collect();
+fn first_difference(recorded: &Value, sent: &Value) -> Option<String> {
+    match (recorded, sent) {
+        (Value::Object(recorded), Value::Object(sent)) => {
+            let mut keys: Vec<_> = recorded.keys().chain(sent.keys()).collect();
             keys.sort_unstable();
             keys.dedup();
             keys.into_iter().find_map(|key| {
-                match (a.get(key), b.get(key)) {
-                    (Some(a), Some(b)) => first_difference(a, b),
+                match (recorded.get(key), sent.get(key)) {
+                    (Some(recorded), Some(sent)) => first_difference(recorded, sent),
                     _ => Some(String::new()),
                 }
                 .map(|rest| join(key, &rest))
             })
         }
-        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => a
+        (Value::Array(recorded), Value::Array(sent)) if recorded.len() == sent.len() => recorded
             .iter()
-            .zip(b)
+            .zip(sent)
             .enumerate()
-            .find_map(|(i, (a, b))| first_difference(a, b).map(|rest| format!("[{i}]{rest}"))),
-        _ => (a != b).then(String::new),
+            .find_map(|(element_index, (recorded, sent))| {
+                first_difference(recorded, sent).map(|rest| format!("[{element_index}]{rest}"))
+            }),
+        _ => (recorded != sent).then(String::new),
     }
 }
 

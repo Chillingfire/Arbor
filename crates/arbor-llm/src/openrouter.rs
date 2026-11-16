@@ -147,11 +147,11 @@ fn request_body(request: &ChatRequest) -> Value {
         .messages
         .iter()
         .enumerate()
-        .map(|(i, message)| {
+        .map(|(message_index, message)| {
             message_json(
                 message,
                 cache,
-                cache && request.cache_transcript && i == last,
+                cache && request.cache_transcript && message_index == last,
             )
         })
         .collect();
@@ -360,22 +360,6 @@ fn parse_chat(body: &str) -> Result<ChatResponse, LlmError> {
     let message = choice
         .message
         .ok_or_else(|| decode("the choice has no message"))?;
-    let usage = wire.usage.map_or_else(Usage::default, |usage| {
-        let details = usage.prompt_tokens_details;
-        Usage {
-            input_tokens: usage.prompt_tokens,
-            output_tokens: usage.completion_tokens,
-            cache_read_tokens: details
-                .as_ref()
-                .and_then(|token_details| token_details.cached_tokens)
-                .unwrap_or(0),
-            cache_write_tokens: details
-                .as_ref()
-                .and_then(|token_details| token_details.cache_write_tokens)
-                .unwrap_or(0),
-            cost_usd: usage.cost.unwrap_or(0.0),
-        }
-    });
     Ok(ChatResponse {
         id: wire.id,
         model: wire.model,
@@ -389,15 +373,39 @@ fn parse_chat(body: &str) -> Result<ChatResponse, LlmError> {
                 arguments: call.function.arguments,
             })
             .collect(),
-        finish_reason: match choice.finish_reason.as_deref() {
-            Some("stop") => FinishReason::Stop,
-            Some("tool_calls") => FinishReason::ToolCalls,
-            Some("length") => FinishReason::Length,
-            Some("content_filter") => FinishReason::ContentFilter,
-            other => FinishReason::Other(other.unwrap_or_default().to_owned()),
-        },
-        usage,
+        finish_reason: finish_reason_from_wire(choice.finish_reason.as_deref()),
+        usage: usage_from_wire(wire.usage),
     })
+}
+
+fn usage_from_wire(wire_usage: Option<WireUsage>) -> Usage {
+    let Some(wire_usage) = wire_usage else {
+        return Usage::default();
+    };
+    let details = wire_usage.prompt_tokens_details;
+    Usage {
+        input_tokens: wire_usage.prompt_tokens,
+        output_tokens: wire_usage.completion_tokens,
+        cache_read_tokens: details
+            .as_ref()
+            .and_then(|token_details| token_details.cached_tokens)
+            .unwrap_or(0),
+        cache_write_tokens: details
+            .as_ref()
+            .and_then(|token_details| token_details.cache_write_tokens)
+            .unwrap_or(0),
+        cost_usd: wire_usage.cost.unwrap_or(0.0),
+    }
+}
+
+fn finish_reason_from_wire(wire_reason: Option<&str>) -> FinishReason {
+    match wire_reason {
+        Some("stop") => FinishReason::Stop,
+        Some("tool_calls") => FinishReason::ToolCalls,
+        Some("length") => FinishReason::Length,
+        Some("content_filter") => FinishReason::ContentFilter,
+        other => FinishReason::Other(other.unwrap_or_default().to_owned()),
+    }
 }
 
 #[derive(Deserialize)]

@@ -3173,7 +3173,6 @@ dependencies = [
  "arbor-git",
  "arbor-llm",
  "arbor-session",
- "arbor-tiers",
  "serde",
  "serde_json",
  "tempfile",

@@ -67,22 +67,16 @@ pub async fn validate_checks(worktree: &Path, checks: &Checks) -> Vec<CheckRun> 
     ];
     for (check, command) in configured {
         let Some(command) = command else { continue };
-        let check_run = match run_check(worktree, checks, check, None).await {
-            Ok(check_output) => CheckRun {
-                check,
-                command: command.clone(),
-                passed: !check_output.is_error,
-                output: check_output.text,
-            },
-            Err(problem) => CheckRun {
-                check,
-                command: command.clone(),
-                passed: false,
-                output: problem,
-            },
+        let (passed, output) = match run_check(worktree, checks, check, None).await {
+            Ok(check_output) => (!check_output.is_error, check_output.text),
+            Err(could_not_run) => (false, could_not_run),
         };
-        let passed = check_run.passed;
-        check_runs.push(check_run);
+        check_runs.push(CheckRun {
+            check,
+            command: command.clone(),
+            passed,
+            output,
+        });
         if !passed {
             break;
         }

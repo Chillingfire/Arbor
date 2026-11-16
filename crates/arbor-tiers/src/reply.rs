@@ -143,18 +143,7 @@ pub fn parse_reply(reply_text: &str) -> Result<WriterReply, ReplyError> {
     }
     let language = info_string.split_whitespace().next().unwrap_or_default();
     if language.eq_ignore_ascii_case(MISSING) {
-        let missing_items: Vec<String> = body
-            .iter()
-            .map(|line| {
-                let line = line.trim();
-                line.strip_prefix(['-', '*'])
-                    .filter(|rest| rest.is_empty() || rest.starts_with(' '))
-                    .unwrap_or(line)
-                    .trim()
-                    .to_owned()
-            })
-            .filter(|missing_item| !missing_item.is_empty())
-            .collect();
+        let missing_items = missing_items(body);
         if missing_items.is_empty() {
             return Err(ReplyError::EmptyMissing);
         }
@@ -164,6 +153,21 @@ pub fn parse_reply(reply_text: &str) -> Result<WriterReply, ReplyError> {
         language: language.to_owned(),
         lines: body.iter().map(|&line| line.to_owned()).collect(),
     }))
+}
+
+/// One item per line, without its list bullet.
+fn missing_items(body: &[&str]) -> Vec<String> {
+    body.iter()
+        .map(|line| {
+            let line = line.trim();
+            line.strip_prefix(['-', '*'])
+                .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                .unwrap_or(line)
+                .trim()
+                .to_owned()
+        })
+        .filter(|missing_item| !missing_item.is_empty())
+        .collect()
 }
 
 impl CodeReply {

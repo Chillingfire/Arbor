@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::Path;
 
 use crate::config::{ConfigError, ConfigFile, UserFile, parse};
 
@@ -57,4 +58,12 @@ pub fn resolve_api_key(
     Ok(user
         .api_key
         .and_then(|user_key| found(&user_key, KeySource::UserConfig)))
+}
+
+/// Reads the key from `OPENROUTER_API_KEY`, then from the user config file. A user config that
+/// can't be read counts as absent.
+pub fn load_api_key(user_config: Option<&Path>) -> Result<Option<ApiKey>, ConfigError> {
+    let env_key = std::env::var(API_KEY_ENV).ok();
+    let user_text = user_config.and_then(|path| std::fs::read_to_string(path).ok());
+    resolve_api_key(env_key.as_deref(), user_text.as_deref())
 }

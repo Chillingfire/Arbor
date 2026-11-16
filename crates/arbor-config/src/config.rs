@@ -228,18 +228,16 @@ pub(crate) fn parse<T: for<'de> Deserialize<'de> + Default>(
     toml_text: Option<&str>,
     file: ConfigFile,
 ) -> Result<T, ConfigError> {
-    toml_text.map_or_else(
-        || Ok(T::default()),
-        |toml_text| {
-            toml::from_str(toml_text).map_err(|err| ConfigError::Parse {
-                file,
-                line: err
-                    .span()
-                    .map(|span| toml_text[..span.start].matches('\n').count() + 1),
-                message: err.message().trim_end().to_owned(),
-            })
-        },
-    )
+    let Some(toml_text) = toml_text else {
+        return Ok(T::default());
+    };
+    toml::from_str(toml_text).map_err(|err| ConfigError::Parse {
+        file,
+        line: err
+            .span()
+            .map(|span| toml_text[..span.start].matches('\n').count() + 1),
+        message: err.message().trim_end().to_owned(),
+    })
 }
 
 fn has_api_key(toml_text: &str) -> bool {

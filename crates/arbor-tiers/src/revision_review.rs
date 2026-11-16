@@ -8,7 +8,7 @@ use arbor_core::{Event, Revision, RevisionCause, WorkUnit};
 use arbor_git::{GitError, Repo, Worktree};
 
 use crate::markers::{Markers, is_marker_line};
-use crate::task_completion::{new_file_path, parse_hunk};
+use crate::unified_diff::{HunkLineKind, hunk_lines, new_file_path, parse_hunk};
 
 pub const REWORDING_ONLY: &str = "the Revision changed no Context Pack, acceptance criteria, test \
                                   filter, file or Work Unit split, and nothing in the Skeleton or \
@@ -115,30 +115,16 @@ pub fn changes_outside_regions(diff: &str, read_current: impl Fn(&str) -> Option
                 .iter()
                 .any(|&(begin, end)| (begin..=end).contains(&index))
         };
-        let (mut old_left, mut new_left) = (hunk.old_lines, hunk.new_lines);
-        let mut index = hunk.new_start.saturating_sub(1);
-        while old_left + new_left > 0 {
-            let Some(hunk_line) = lines.next() else { break };
-            match hunk_line.as_bytes().first() {
-                Some(b'+') => {
-                    if !inside(index) && !is_marker_line(&hunk_line[1..]) {
-                        return true;
-                    }
-                    index += 1;
-                    new_left = new_left.saturating_sub(1);
-                }
-                Some(b'-') => {
-                    if !inside(index) {
-                        return true;
-                    }
-                    old_left = old_left.saturating_sub(1);
-                }
-                Some(b'\\') => {}
-                _ => {
-                    index += 1;
-                    old_left = old_left.saturating_sub(1);
-                    new_left = new_left.saturating_sub(1);
-                }
+        let first_index = hunk.new_start.saturating_sub(1);
+        for hunk_line in hunk_lines(&mut lines, hunk) {
+            let index = first_index + hunk_line.new_offset;
+            let changes_outside = match hunk_line.kind {
+                HunkLineKind::Added(added_line) => !inside(index) && !is_marker_line(added_line),
+                HunkLineKind::Removed => !inside(index),
+                HunkLineKind::Context => false,
+            };
+            if changes_outside {
+                return true;
             }
         }
     }

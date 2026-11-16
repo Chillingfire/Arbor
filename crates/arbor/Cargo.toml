@@ -18,11 +18,11 @@ arbor-llm.workspace = true
 arbor-prompts.workspace = true
 arbor-session.workspace = true
 arbor-tiers.workspace = true
-arbor-tools.workspace = true
 arbor-tui.workspace = true
 ratatui = "0.30.2"
 tokio = { version = "1", features = ["rt", "macros", "sync"] }
 
 [dev-dependencies]
+arbor-tools.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

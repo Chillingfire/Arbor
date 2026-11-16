@@ -39,16 +39,10 @@ where
         return Ok(Command::Tui);
     };
     if first == "--version" || first == "-V" {
-        return match remaining_args.next() {
-            Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
-            None => Ok(Command::Version),
-        };
+        return without_more_arguments(remaining_args, Command::Version);
     }
     if first == "init" {
-        return match remaining_args.next() {
-            Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
-            None => Ok(Command::Init),
-        };
+        return without_more_arguments(remaining_args, Command::Init);
     }
     let (option, inline_value) = match first.split_once('=') {
         Some((option, inline)) => (option.to_owned(), Some(inline.to_owned())),
@@ -67,9 +61,10 @@ where
         return Err(UsageError(format!("unexpected argument `{extra}`")));
     }
     if option == "--handover-file" {
-        return match option_value.is_empty() {
-            true => Err(UsageError("--handover-file needs a path".to_owned())),
-            false => Ok(Command::HandoverFile(option_value)),
+        return if option_value.is_empty() {
+            Err(UsageError("--handover-file needs a path".to_owned()))
+        } else {
+            Ok(Command::HandoverFile(option_value))
         };
     }
     match option_value.parse::<u64>() {
@@ -77,6 +72,17 @@ where
         _ => Err(UsageError(format!(
             "`{option_value}` is not an issue number; give a positive whole number such as 21"
         ))),
+    }
+}
+
+/// The command, unless an argument follows it.
+fn without_more_arguments(
+    mut remaining_args: impl Iterator<Item = String>,
+    command: Command,
+) -> Result<Command, UsageError> {
+    match remaining_args.next() {
+        Some(extra) => Err(UsageError(format!("unexpected argument `{extra}`"))),
+        None => Ok(command),
     }
 }
 

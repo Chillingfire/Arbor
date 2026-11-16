@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use arbor_config::{Checks, ClarificationMode};
 use arbor_core::{Revision, RevisionCause, Tier, WorkUnit, WorkUnitId};
-use arbor_llm::{ContentPart, Message, ModelInfo};
+use arbor_llm::ModelInfo;
 use arbor_prompts::Prompt;
 use arbor_tools::{Tools, Toolset};
 
-use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
+use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel, append_input};
 use crate::scaffold_check::ScaffoldCheck;
 
 pub const SUBMIT_REVISION: &str = "submit_revision";
@@ -50,13 +50,13 @@ impl RevisionRun<'_> {
     pub fn start(self) -> Result<Agent<Revision>, UnsupportedModel> {
         assert_eq!(self.prompt.template, arbor_prompts::Template::Scaffolder);
         let mut messages = self.prompt.messages();
-        let Some(Message::User { content }) = messages.last_mut() else {
-            unreachable!("a prompt ends with its inputs");
-        };
-        content.push(ContentPart::text(format!(
-            "A revised Work Unit keeps its ID. Number any new Work Unit from {} upwards.",
-            self.first_new_id
-        )));
+        append_input(
+            &mut messages,
+            format!(
+                "A revised Work Unit keeps its ID. Number any new Work Unit from {} upwards.",
+                self.first_new_id
+            ),
+        );
         let scope = self.scope();
         let settings = AgentSettings {
             tier: Tier::Scaffolder,
@@ -115,20 +115,28 @@ fn submission(check: Arc<ScaffoldCheck>, scope_file: Option<String>) -> Submissi
         move |revision: &Revision| {
             let check = Arc::clone(&check);
             let scope_file = scope_file.clone();
-            Box::pin(async move {
-                if revision.diagnosis.trim().is_empty() {
-                    return Err("the Revision has no diagnosis; say why the work failed".into());
-                }
-                if let Some(shared_change) = &revision.shared_change {
-                    return check_shared_change(shared_change, revision);
-                }
-                if let Some(file) = scope_file {
-                    check_file_scope(&file, revision)?;
-                }
-                check.run(&revision.work_units).await
-            })
+            Box::pin(
+                async move { validate_revision(&check, scope_file.as_deref(), revision).await },
+            )
         },
     )
+}
+
+async fn validate_revision(
+    check: &ScaffoldCheck,
+    scope_file: Option<&str>,
+    revision: &Revision,
+) -> Result<(), String> {
+    if revision.diagnosis.trim().is_empty() {
+        return Err("the Revision has no diagnosis; say why the work failed".into());
+    }
+    if let Some(shared_change) = &revision.shared_change {
+        return check_shared_change(shared_change, revision);
+    }
+    if let Some(file) = scope_file {
+        check_file_scope(file, revision)?;
+    }
+    check.run(&revision.work_units).await
 }
 
 fn check_shared_change(shared_change: &str, revision: &Revision) -> Result<(), String> {

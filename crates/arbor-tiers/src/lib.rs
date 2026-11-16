@@ -13,7 +13,9 @@ mod revision_review;
 mod scaffold_check;
 mod scaffolder;
 mod task_completion;
+mod unified_diff;
 mod writer;
+mod writer_cap;
 
 pub use agent::{
     Agent, AgentSettings, MAX_SUBMIT_FAILURES, Outcome, SUBMIT_NOW_PERCENT, Submission, Turn,
@@ -34,9 +36,8 @@ pub use revision_review::{
     REWORDING_ONLY, changes_outside_regions, changes_work_units, review_revision,
 };
 pub use scaffold_check::{
-    NO_SCAFFOLD_CHECK, ScaffoldCheck, WRITER_CAP_MARGIN_PERCENT, comment_less_marker_problems,
-    field_problems, marker_problems, revision_field_problems, writer_cap_report,
-    writer_input_tokens,
+    NO_SCAFFOLD_CHECK, ScaffoldCheck, comment_less_marker_problems, field_problems,
+    marker_problems, revision_field_problems,
 };
 pub use scaffolder::{SUBMIT_WORK_UNITS, ScaffolderRun, WorkUnits};
 pub use task_completion::{
@@ -48,3 +49,4 @@ pub use writer::{
     Attempt, AttemptError, AttemptOutcome, Failure, FailureReason, MAX_WRITER_ATTEMPTS,
     RETRY_OUTPUT_CHARS, WRITER_SEED, Writer, WriterError, WriterRun, commit_subject,
 };
+pub use writer_cap::{WRITER_CAP_MARGIN_PERCENT, writer_cap_report, writer_input_tokens};

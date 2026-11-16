@@ -2,13 +2,12 @@
 //! stdin until the TUI's modal exists.
 
 use std::env;
-use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use arbor_config::{
-    API_KEY_ENV, Config, Detection, Platform, detect_project_type_in, resolve_api_key,
+    API_KEY_ENV, Config, Detection, Platform, detect_project_type_in, load_api_key,
     user_config_path,
 };
 use arbor_git::Repo;
@@ -93,8 +92,7 @@ async fn propose(
     let unavailable = |err: &dyn std::fmt::Display| ProposalError::Unavailable(err.to_string());
     let user_path = user_config_path(Platform::current(), |name| env::var(name).ok());
     let config = Config::load(user_path.as_deref(), root).map_err(|err| unavailable(&err))?;
-    let user_text = user_path.and_then(|path| fs::read_to_string(path).ok());
-    let api_key = resolve_api_key(env::var(API_KEY_ENV).ok().as_deref(), user_text.as_deref())
+    let api_key = load_api_key(user_path.as_deref())
         .map_err(|err| unavailable(&err))?
         .ok_or_else(|| {
             ProposalError::Unavailable(format!(

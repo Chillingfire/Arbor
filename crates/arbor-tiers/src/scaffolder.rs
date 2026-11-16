@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use arbor_config::{Checks, ClarificationMode};
 use arbor_core::{Tier, WorkUnit, WorkUnitId};
-use arbor_llm::{ContentPart, Message, ModelInfo};
+use arbor_llm::ModelInfo;
 use arbor_prompts::Prompt;
 use arbor_tools::{Tools, Toolset};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel};
+use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel, append_input};
 use crate::scaffold_check::ScaffoldCheck;
 
 pub const SUBMIT_WORK_UNITS: &str = "submit_work_units";
@@ -50,15 +50,15 @@ impl ScaffolderRun<'_> {
     pub fn start(self) -> Result<Agent<WorkUnits>, UnsupportedModel> {
         assert_eq!(self.prompt.template, arbor_prompts::Template::Scaffolder);
         let mut messages = self.prompt.messages();
-        let Some(Message::User { content }) = messages.last_mut() else {
-            unreachable!("a prompt ends with its inputs");
-        };
-        content.push(ContentPart::text(format!(
-            "Number this Task's Work Units from {} upwards; lower IDs belong to earlier Tasks.",
-            self.first_id
-        )));
+        append_input(
+            &mut messages,
+            format!(
+                "Number this Task's Work Units from {} upwards; lower IDs belong to earlier Tasks.",
+                self.first_id
+            ),
+        );
         if let Some(feedback) = self.feedback {
-            content.push(ContentPart::text(rejection_text(feedback)));
+            append_input(&mut messages, rejection_text(feedback));
         }
         let settings = AgentSettings {
             tier: Tier::Scaffolder,

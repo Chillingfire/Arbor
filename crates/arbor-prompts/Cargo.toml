@@ -9,9 +9,9 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-arbor-config = { path = "../arbor-config" }
-arbor-core = { path = "../arbor-core" }
-arbor-llm = { path = "../arbor-llm" }
+arbor-config.workspace = true
+arbor-core.workspace = true
+arbor-llm.workspace = true
 minijinja = { version = "3", features = ["serde"] }
 serde.workspace = true
 

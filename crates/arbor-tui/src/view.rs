@@ -25,6 +25,19 @@ pub struct WorkUnitView {
     pub diff: Option<String>,
 }
 
+impl WorkUnitView {
+    /// A Work Unit waiting for its Writer, with any earlier replies.
+    fn pending(work_unit: WorkUnit, transcript: Vec<WriterReplyRecord>) -> Self {
+        Self {
+            work_unit,
+            status: Status::Pending,
+            transcript,
+            commit: None,
+            diff: None,
+        }
+    }
+}
+
 /// One Writer reply and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriterReplyRecord {
@@ -203,20 +216,8 @@ impl SessionView {
                         ..earlier
                     },
                     // A rewritten unit starts over but keeps the replies that led to its Revision.
-                    Some(earlier) => WorkUnitView {
-                        work_unit: work_unit.clone(),
-                        status: Status::Pending,
-                        transcript: earlier.transcript,
-                        commit: None,
-                        diff: None,
-                    },
-                    None => WorkUnitView {
-                        work_unit: work_unit.clone(),
-                        status: Status::Pending,
-                        transcript: Vec::new(),
-                        commit: None,
-                        diff: None,
-                    },
+                    Some(earlier) => WorkUnitView::pending(work_unit.clone(), earlier.transcript),
+                    None => WorkUnitView::pending(work_unit.clone(), Vec::new()),
                 }
             })
             .collect();
@@ -242,7 +243,9 @@ impl SessionView {
         let Some(work_unit_view) = self.work_unit_mut(failure.id) else {
             return;
         };
-        let recorded = work_unit_view.transcript.len();
+        if !work_unit_view.transcript.is_empty() {
+            return;
+        }
         let failed_replies = failure.attempts.iter().map(|attempt| WriterReplyRecord {
             reply: attempt.reply.clone(),
             outcome: ReplyOutcome::Failed(attempt.error.clone()),
@@ -254,10 +257,7 @@ impl SessionView {
                 reply: String::new(),
                 outcome: ReplyOutcome::Missing(items),
             });
-        let replies: Vec<WriterReplyRecord> = failed_replies.chain(missing).collect();
-        if recorded == 0 {
-            work_unit_view.transcript = replies;
-        }
+        work_unit_view.transcript = failed_replies.chain(missing).collect();
     }
 
     /// Adds a Writer reply to the Work Unit's transcript. A failed one also goes in the event log,
@@ -301,11 +301,13 @@ impl SessionView {
         let current = phase_task(phase);
         let writing = matches!(phase, Phase::Writing { .. });
         for (task_index, task_view) in self.tasks.iter_mut().enumerate() {
-            task_view.status = match current {
-                _ if done => Status::Done,
-                Some(current) if task_index < current => Status::Done,
-                Some(current) if task_index == current => Status::Active,
-                _ => Status::Pending,
+            let is_finished = done || current.is_some_and(|current_task| task_index < current_task);
+            task_view.status = if is_finished {
+                Status::Done
+            } else if current == Some(task_index) {
+                Status::Active
+            } else {
+                Status::Pending
             };
             for work_unit_view in &mut task_view.work_units {
                 if work_unit_view.status == Status::Active {
@@ -354,22 +356,18 @@ pub fn describe(event: &Event) -> String {
             format!("Session started: {}", first_line(&request.text))
         }
         Event::PlanSubmitted { plan } => format!(
-            "Planner submitted a Plan with {} Task{}",
-            plan.tasks.len(),
-            plural(plan.tasks.len())
+            "Planner submitted a Plan with {}",
+            counted(plan.tasks.len(), "Task")
         ),
-        Event::PlanApproved { task_order } => format!(
-            "Plan approved: {} Task{}",
-            task_order.len(),
-            plural(task_order.len())
-        ),
+        Event::PlanApproved { task_order } => {
+            format!("Plan approved: {}", counted(task_order.len(), "Task"))
+        }
         Event::CheckpointRejected { feedback } => {
             format!("Checkpoint rejected: {}", first_line(feedback))
         }
         Event::WorkUnitsSubmitted { work_units } => format!(
-            "Scaffolder submitted {} Work Unit{}",
-            work_units.len(),
-            plural(work_units.len())
+            "Scaffolder submitted {}",
+            counted(work_units.len(), "Work Unit")
         ),
         Event::ScaffoldChecksPassed => "Scaffold Check passed".to_owned(),
         Event::ScaffoldApproved => "Skeleton approved".to_owned(),
@@ -382,10 +380,9 @@ pub fn describe(event: &Event) -> String {
                 }
                 (None, Some(_)) => format!("{} sent a Missing Response", failure.id),
                 (None, None) => format!(
-                    "{} failed after {} attempt{}",
+                    "{} failed after {}",
                     failure.id,
-                    failure.attempts.len(),
-                    plural(failure.attempts.len())
+                    counted(failure.attempts.len(), "attempt")
                 ),
             }
         }
@@ -393,9 +390,8 @@ pub fn describe(event: &Event) -> String {
         Event::TaskChecksPassed => "Task's Unit Check passed".to_owned(),
         Event::TaskChecksFailed { .. } => "Task's Unit Check failed".to_owned(),
         Event::RevisionSubmitted { revision } => format!(
-            "Scaffolder submitted a Revision of {} Work Unit{}",
-            revision.work_units.len(),
-            plural(revision.work_units.len())
+            "Scaffolder submitted a Revision of {}",
+            counted(revision.work_units.len(), "Work Unit")
         ),
         Event::RevisionRejected { reason, .. } => {
             format!("Revision rejected: {}", first_line(reason))
@@ -409,20 +405,17 @@ pub fn describe(event: &Event) -> String {
         Event::RevisionDiscarded => "Revision discarded".to_owned(),
         Event::ReplanRequested => "Task sent to the Planner for a Replan".to_owned(),
         Event::ReplanSubmitted { replan } => format!(
-            "Planner submitted a Replan with {} Task{}",
-            replan.tasks.len(),
-            plural(replan.tasks.len())
+            "Planner submitted a Replan with {}",
+            counted(replan.tasks.len(), "Task")
         ),
         Event::TaskReset => "Task reset to where it started".to_owned(),
         Event::OperatorFixed { commit } => committed("Operator's fix", commit.as_deref()),
         Event::MarkersChecked { remaining } if remaining.is_empty() => {
             "No Markers left in the branch".to_owned()
         }
-        Event::MarkersChecked { remaining } => format!(
-            "{} Marker{} left in the branch",
-            remaining.len(),
-            plural(remaining.len())
-        ),
+        Event::MarkersChecked { remaining } => {
+            format!("{} left in the branch", counted(remaining.len(), "Marker"))
+        }
         Event::MarkersApproved => "Remaining Markers approved".to_owned(),
         Event::UsageRecorded { tier, usage } => format!(
             "{tier:?} call: {} in / {} out tokens, ${:.4}",
@@ -467,6 +460,11 @@ pub(crate) fn first_line(text: &str) -> &str {
 
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
+}
+
+/// `1 Task`, `3 Tasks`.
+fn counted(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", plural(count))
 }
 
 /// The Tier whose work the event records.
