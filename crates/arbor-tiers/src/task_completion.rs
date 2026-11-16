@@ -8,7 +8,7 @@ use arbor_core::{Event, LeftoverMarker, SessionCommit, WorkUnitId};
 use arbor_git::{CommitId, CommitMessage, GitError, Mainline, Worktree};
 use arbor_tools::{CheckName, run_check};
 
-use crate::markers::{Markers, is_well_formed_marker, strip};
+use crate::markers::{Markers, is_well_formed_marker, marker_lines_of, strip};
 use crate::unified_diff::{HunkLineKind, hunk_lines, new_file_path, parse_hunk};
 
 pub const NO_UNIT_CHECK: &str = "No unit check is configured in arbor.toml, so Arbor can't run \
@@ -73,13 +73,27 @@ pub fn commit_operator_fix(
 }
 
 /// Removes the Region Markers of `id` from `file`, if the Human Operator's fix left them there.
+/// Fails without committing anything if a Marker for `id` would still be left, e.g. a second
+/// Region the fix added.
 pub fn strip_work_unit_markers(worktree: &Path, file: &str, id: WorkUnitId) -> Result<(), String> {
     let path = worktree.join(file);
     let source = std::fs::read_to_string(&path).map_err(|error| format!("{file}: {error}"))?;
-    let Some(region) = Markers::parse(&source).region(id).copied() else {
-        return Ok(());
+    let stripped = match Markers::parse(&source).region(id) {
+        Some(region) => strip(&source, region),
+        None => source,
     };
-    std::fs::write(&path, strip(&source, &region)).map_err(|error| format!("{file}: {error}"))
+    let lines_left = marker_lines_of(&stripped, id);
+    if !lines_left.is_empty() {
+        let lines: Vec<String> = lines_left
+            .iter()
+            .map(|line| (line + 1).to_string())
+            .collect();
+        return Err(format!(
+            "{file} still holds a Marker for {id} on line {}; remove it and fix again",
+            lines.join(", ")
+        ));
+    }
+    std::fs::write(&path, stripped).map_err(|error| format!("{file}: {error}"))
 }
 
 /// Runs the Checks a fix by hand must pass at an Escalation Checkpoint, and returns the output of

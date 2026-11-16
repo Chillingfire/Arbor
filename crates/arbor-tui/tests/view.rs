@@ -436,3 +436,22 @@ fn only_the_confirming_key_confirms_and_any_other_dismisses() {
     );
     assert_eq!(confirmed, KeyOutcome::Confirmed(Confirmation::Quit));
 }
+
+#[test]
+fn a_rewind_puts_the_tree_back_and_keeps_the_abandoned_log_lines() {
+    let mut rewound_events = events();
+    rewound_events.push(Event::Rewound { event_count: 2 });
+    let view = SessionView::from_events(&rewound_events).unwrap();
+
+    assert_eq!(view.session().phase(), &arbor_core::Phase::PlanCheckpoint);
+    assert!(view.tasks().is_empty());
+    assert_eq!(view.log().len(), rewound_events.len());
+    assert_eq!(
+        view.log().last().unwrap().text,
+        "Rewound to the Checkpoint after event 2"
+    );
+    assert_eq!(
+        view.session().usage().total().cost,
+        Usd::from_dollars(0.002)
+    );
+}

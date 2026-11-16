@@ -13,7 +13,7 @@ use arbor_prompts::{Prompt, estimate_tokens};
 use arbor_tools::{CheckName, run_check};
 
 use crate::agent::{core_usage, supports};
-use crate::markers::{Markers, Region, splice, strip};
+use crate::markers::{Markers, Region, marker_lines_of, splice, strip};
 use crate::reply::{CodeReply, ReplyError, WriterReply, parse_reply};
 use crate::writer_cap::{with_margin, writer_input_tokens};
 
@@ -159,6 +159,13 @@ pub enum WriterError {
     NotCommitted {
         file: String,
     },
+    /// Stripping the Region left a Marker for the Work Unit in its file, so nothing was committed.
+    MarkersLeft {
+        file: String,
+        id: WorkUnitId,
+        /// 1-based.
+        lines: Vec<usize>,
+    },
     /// A Check couldn't run at all, e.g. its command wasn't found.
     Check(String),
     Finished,
@@ -187,6 +194,14 @@ impl fmt::Display for WriterError {
                 f,
                 "git found nothing to commit after {file} was filled; it may be ignored by git"
             ),
+            Self::MarkersLeft { file, id, lines } => {
+                let lines: Vec<String> = lines.iter().map(usize::to_string).collect();
+                write!(
+                    f,
+                    "{file} still holds a Marker for {id} on line {} after its Region was                      stripped, so it wasn't committed",
+                    lines.join(", ")
+                )
+            }
             Self::Check(message) => write!(f, "a Check couldn't run: {message}"),
             Self::Finished => f.write_str("the Writer has already finished"),
             Self::NoAttemptsLeft => write!(
@@ -423,7 +438,16 @@ impl Writer {
     fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {
         let unit = &self.work_unit;
         let region = self.intact_region(spliced)?;
-        write(path, &strip(spliced, &region))?;
+        let stripped = strip(spliced, &region);
+        let lines_left = marker_lines_of(&stripped, unit.id);
+        if !lines_left.is_empty() {
+            return Err(WriterError::MarkersLeft {
+                file: unit.file.clone(),
+                id: unit.id,
+                lines: lines_left.iter().map(|line| line + 1).collect(),
+            });
+        }
+        write(path, &stripped)?;
         let message = CommitMessage::new(&commit_subject(&unit.spec, &unit.file))?;
         Worktree::open(&self.worktree)?
             .commit(&message)?

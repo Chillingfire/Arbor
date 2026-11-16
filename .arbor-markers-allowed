@@ -1,0 +1,17 @@
+# Paths where Markers are expected, so `arbor check-markers` and the git hooks skip them.
+# Gitignore-style patterns; a pattern that would allow every path is refused.
+
+# Tests, their fixtures and the TUI preview write Markers on purpose.
+crates/*/tests/
+crates/arbor-tui/examples/preview.rs
+
+# Docs and the Scaffolder's prompt explain the Marker syntax.
+/README.md
+/docs/
+crates/arbor-prompts/templates/
+
+# Source that parses Markers or tests them in its own test module.
+crates/arbor-tiers/src/markers.rs
+crates/arbor-tiers/src/scaffold_check.rs
+crates/arbor/src/leaving.rs
+crates/arbor/src/startup.rs

@@ -108,6 +108,29 @@ pub fn is_well_formed_marker(line: &str) -> bool {
     matches!(parse_line(line, 0), Some(Ok(_)))
 }
 
+/// A well-formed `ARBOR:BEGIN WU-<n>`, which opens a Region.
+pub fn is_begin_marker(line: &str) -> bool {
+    matches!(
+        parse_line(line, 0),
+        Some(Ok(Marker {
+            kind: MarkerKind::Begin,
+            ..
+        }))
+    )
+}
+
+/// The 0-based lines of `source` that hold a well-formed Marker for `id`.
+pub fn marker_lines_of(source: &str, id: WorkUnitId) -> Vec<usize> {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(line, content)| match parse_line(content, line) {
+            Some(Ok(marker)) if marker.id == id => Some(line),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkerError {
     Malformed {

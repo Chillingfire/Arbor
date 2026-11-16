@@ -12,16 +12,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
-use arbor_core::{Effect, Phase, Request, Tier};
-use arbor_git::{Repo, SessionBranch, Worktree};
+use arbor_core::{Effect, Event, Phase, Request, RunOutcome, Tier};
+use arbor_git::{Mainline, Repo, SESSIONS_DIR, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{
-    Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, SessionEnd,
+    Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, RunLock, SessionEnd,
+    SessionFolder,
 };
-use arbor_tui::{App, Confirmation, Focus, KeyOutcome, Modal, StatusInfo, Tone};
+use arbor_tui::{App, Confirmation, Focus, KeyOutcome, Modal, StatusInfo, Tone, UnfinishedSession};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event as TerminalEvent, KeyCode, KeyEvent,
@@ -30,11 +31,26 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use tokio::sync::oneshot;
 
+mod browsing;
+
+use crate::leaving::{self, StartedSession};
+use crate::startup;
+
 /// How often the screen redraws while waiting, so the spinner moves.
 const FRAME: Duration = Duration::from_millis(100);
 
-/// Where Sessions live, relative to the project root.
-const SESSIONS_DIR: &str = ".arbor/sessions";
+/// What the Session thread runs: a new Session for a Request, or a stored one carried on.
+enum SessionStart {
+    New(Request),
+    Resume(Resumed),
+}
+
+/// A stored Session claimed for a resumed run, with its event log as replayed on the screen.
+struct Resumed {
+    folder: SessionFolder,
+    lock: RunLock,
+    events: Vec<Event>,
+}
 
 /// What the Session thread sends to the screen.
 enum DriverMessage {
@@ -103,6 +119,8 @@ struct RunningSession {
     cancel: Option<oneshot::Sender<()>>,
     driver: JoinHandle<()>,
     awaited_reply: Option<AwaitedReply>,
+    /// Set once the Session's branch and worktree exist.
+    started: Option<StartedSession>,
 }
 
 struct Project {
@@ -122,6 +140,10 @@ impl Project {
         let api_key = load_api_key(self.user_config.as_deref(), |name| env::var(name).ok())?;
         Ok(api_key.map(|key| key.expose().to_owned()))
     }
+
+    fn repo(&self) -> Result<Repo, String> {
+        Repo::open(&self.root).map_err(|err| err.to_string())
+    }
 }
 
 pub fn run(initial_request: Option<Request>) -> ExitCode {
@@ -132,6 +154,7 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    startup::check(&project.root, &project.config);
     let roles = &project.config.roles;
     let mut app = App::new(StatusInfo {
         models: [
@@ -143,6 +166,7 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
         branch: None,
         activity: None,
     });
+    browsing::prune_at_startup(&project, &mut app);
     let outcome = ratatui::run(|terminal| {
         // The legacy Windows console can't do bracketed paste; there a paste arrives as keys.
         let _ = execute!(io::stdout(), EnableBracketedPaste);
@@ -150,13 +174,16 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
             Ok(ControlFlow::Continue(())) => {
                 event_loop(terminal, &mut app, &project, initial_request)
             }
-            settled => settled.map(drop),
+            settled => settled.map(|_| Vec::new()),
         };
         let _ = execute!(io::stdout(), DisableBracketedPaste);
         looped
     });
     match outcome {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(started_sessions) => {
+            leaving::warn_on_stderr(&started_sessions);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("arbor: the terminal failed: {err}");
             ExitCode::FAILURE
@@ -187,7 +214,7 @@ fn event_loop(
     app: &mut App,
     project: &Project,
     initial_request: Option<Request>,
-) -> io::Result<()> {
+) -> io::Result<Vec<StartedSession>> {
     let mut run = Run::default();
     match initial_request {
         Some(request) => run.start(app, project, request),
@@ -219,7 +246,7 @@ fn event_loop(
                     .push_note("Stopping the Session before leaving…", Tone::Operator);
                 terminal.draw(|frame| app.draw(frame))?;
                 run.stop();
-                return Ok(());
+                return Ok(run.started_sessions);
             }
         }
     }
@@ -239,6 +266,8 @@ fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
 #[derive(Default)]
 struct Run {
     session: Option<RunningSession>,
+    /// The Sessions that have ended, to warn about any left unfinished.
+    started_sessions: Vec<StartedSession>,
 }
 
 impl Run {
@@ -246,7 +275,15 @@ impl Run {
         if app.view.session().phase() != &Phase::NotStarted {
             app.start_over();
         }
-        self.session = start_session(app, project, request);
+        self.session = start_session(app, project, SessionStart::New(request));
+    }
+
+    /// Carries on a stored Session, already replayed on the screen.
+    fn resume(&mut self, app: &mut App, project: &Project, resumed: Resumed) {
+        self.session = start_session(app, project, SessionStart::Resume(resumed));
+        if self.session.is_some() {
+            app.ui_state.focus = Focus::Tree;
+        }
     }
 
     /// Applies what the Session thread sent, and forgets the Session once it has ended.
@@ -254,10 +291,27 @@ impl Run {
         if let Some(session) = &mut self.session
             && !drain_messages(app, session)
         {
-            self.session = None;
+            let started = self.session.take().and_then(|session| session.started);
             app.stop_working();
             app.ui_state.confirming = None;
             app.ui_state.modal = None;
+            if let Some(unfinished) = started.as_ref().and_then(|ended| ended.unfinished(false)) {
+                app.view
+                    .push_note(unfinished.warning().join(" "), Tone::Operator);
+            }
+            self.started_sessions.extend(started);
+        }
+    }
+
+    /// What leaving now would leave unfinished: the running Session, or the last one that ended.
+    fn leaving_warning(&self) -> Option<UnfinishedSession> {
+        match &self.session {
+            Some(session) => session.started.as_ref()?.unfinished(true),
+            None => self
+                .started_sessions
+                .iter()
+                .rev()
+                .find_map(|ended| ended.unfinished(false)),
         }
     }
 
@@ -273,16 +327,40 @@ impl Run {
     /// worktree is put back before the process exits.
     fn stop(&mut self) {
         self.cancel();
-        if let Some(session) = self.session.take() {
-            let _ = session.driver.join();
+        let Some(RunningSession {
+            messages,
+            driver,
+            mut started,
+            ..
+        }) = self.session.take()
+        else {
+            return;
+        };
+        let _ = driver.join();
+        for message in messages.try_iter() {
+            match message {
+                DriverMessage::Started {
+                    branch,
+                    session_dir,
+                } => started = Some(started_session(branch, &session_dir)),
+                DriverMessage::Ended(_, tone) => mark_ended(&mut started, tone),
+                _ => {}
+            }
         }
+        self.started_sessions.extend(started);
     }
 
     fn handle_key(&mut self, app: &mut App, project: &Project, key: KeyEvent) -> ControlFlow<()> {
         match app.ui_state.handle_key(key, &app.view) {
             KeyOutcome::Handled => {}
-            KeyOutcome::Quit if self.session.is_none() => return ControlFlow::Break(()),
-            KeyOutcome::Quit => app.ui_state.confirming = Some(Confirmation::Quit),
+            KeyOutcome::Quit => {
+                let leaving = self.leaving_warning();
+                if self.session.is_none() && leaving.is_none() {
+                    return ControlFlow::Break(());
+                }
+                app.ui_state.leaving = leaving;
+                app.ui_state.confirming = Some(Confirmation::Quit);
+            }
             KeyOutcome::Cancel if self.session.is_some() => {
                 app.ui_state.confirming = Some(Confirmation::Cancel);
             }
@@ -301,6 +379,13 @@ impl Run {
             ),
             KeyOutcome::Decided(decision) => self.send_decision(app, decision),
             KeyOutcome::Answered(answers) => self.send_answers(app, answers),
+            KeyOutcome::OpenBrowser => browsing::open(app, project),
+            KeyOutcome::Browser(outcome) => {
+                let running_here = self.session.is_some();
+                if let Some(resumed) = browsing::act(app, project, outcome, running_here) {
+                    self.resume(app, project, resumed);
+                }
+            }
         }
         ControlFlow::Continue(())
     }
@@ -335,6 +420,7 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
                 branch,
                 session_dir,
             }) => {
+                session.started = Some(started_session(branch.clone(), &session_dir));
                 app.status.branch = Some(branch);
                 app.view.push_note(
                     format!("Session folder {}", session_dir.display()),
@@ -357,6 +443,7 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
                 session.awaited_reply = Some(AwaitedReply::Answers(reply));
             }
             Ok(DriverMessage::Ended(message, tone)) => {
+                mark_ended(&mut session.started, tone);
                 app.view.push_note(message, tone);
                 return false;
             }
@@ -366,7 +453,22 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
     }
 }
 
-fn start_session(app: &mut App, project: &Project, request: Request) -> Option<RunningSession> {
+fn started_session(branch: String, session_dir: &Path) -> StartedSession {
+    StartedSession {
+        branch,
+        worktree: SessionFolder::new(session_dir).worktree_path(),
+        finished: false,
+    }
+}
+
+/// Only a Session that ended with success is finished; any other ending leaves it unfinished.
+fn mark_ended(started: &mut Option<StartedSession>, tone: Tone) {
+    if let Some(started) = started {
+        started.finished = tone == Tone::Success;
+    }
+}
+
+fn start_session(app: &mut App, project: &Project, start: SessionStart) -> Option<RunningSession> {
     let api_key = match project.api_key() {
         Ok(Some(api_key)) => api_key,
         Ok(None) => {
@@ -389,7 +491,7 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
     let root = project.root.clone();
     let config = project.config.clone();
     let driver = thread::spawn(move || {
-        let ending = drive(&root, config, &api_key, request, &sender, cancelled);
+        let ending = drive(&root, config, &api_key, start, &sender, cancelled);
         let _ = sender.send(ending);
     });
     Some(RunningSession {
@@ -397,20 +499,46 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
         cancel: Some(cancel),
         driver,
         awaited_reply: None,
+        started: None,
     })
 }
 
-/// Creates the Session branch and worktree and runs the Session. Returns the last message.
+/// Runs the Session, new or resumed. Returns the last message.
 fn drive(
     root: &Path,
     config: Config,
     api_key: &str,
-    request: Request,
+    start: SessionStart,
     sender: &Sender<DriverMessage>,
     cancelled: oneshot::Receiver<()>,
 ) -> DriverMessage {
-    try_drive(root, config, api_key, request, sender, cancelled)
+    try_drive(root, config, api_key, start, sender, cancelled)
         .unwrap_or_else(|message| DriverMessage::Ended(message, Tone::Failure))
+}
+
+/// What the Autopilot starts from.
+enum RunFrom {
+    Request(Request),
+    Log(Vec<Event>),
+}
+
+/// A new Session's branch, folder and worktree, claimed for its first run.
+fn create_session(
+    repo: &Repo,
+    mainline: &Mainline,
+    request: &Request,
+) -> Result<(Worktree, SessionFolder, RunLock), String> {
+    let branch = free_branch(repo, &request.text)?;
+    let folder = SessionFolder::for_new_session(repo.root(), SystemTime::now(), branch.as_str());
+    exclude_sessions(repo)
+        .map_err(|message| format!("Could not keep {SESSIONS_DIR} out of git: {message}"))?;
+    fs::create_dir_all(folder.dir())
+        .map_err(|err| format!("Could not create {}: {err}", folder.dir().display()))?;
+    let lock = folder.lock_run().map_err(|err| err.to_string())?;
+    let worktree = repo
+        .create_worktree(mainline, &branch, &folder.worktree_path())
+        .map_err(|err| format!("Could not create the Session worktree: {err}"))?;
+    Ok((worktree, folder, lock))
 }
 
 /// `Err` holds the message for a Session that couldn't start.
@@ -418,7 +546,7 @@ fn try_drive(
     root: &Path,
     config: Config,
     api_key: &str,
-    request: Request,
+    start: SessionStart,
     sender: &Sender<DriverMessage>,
     cancelled: oneshot::Receiver<()>,
 ) -> Result<DriverMessage, String> {
@@ -426,20 +554,27 @@ fn try_drive(
     let mainline = repo
         .mainline(config.mainline.as_deref())
         .map_err(|err| format!("Could not find the mainline: {err}"))?;
-    let branch = free_branch(&repo, &request.text)?;
-    let session_dir = root.join(SESSIONS_DIR).join(session_id(&branch));
-    exclude_sessions(&repo)
-        .map_err(|message| format!("Could not keep {SESSIONS_DIR} out of git: {message}"))?;
-    fs::create_dir_all(&session_dir)
-        .map_err(|err| format!("Could not create {}: {err}", session_dir.display()))?;
-    let worktree = repo
-        .create_worktree(&mainline, &branch, &session_dir.join("worktree"))
-        .map_err(|err| format!("Could not create the Session worktree: {err}"))?;
-    let event_file = fs::File::create(session_dir.join("events.jsonl"))
-        .map_err(|err| format!("Could not create the event log: {err}"))?;
+    let (worktree, folder, _lock, run_from) = match start {
+        SessionStart::New(request) => {
+            let (worktree, folder, lock) = create_session(&repo, &mainline, &request)?;
+            (worktree, folder, lock, RunFrom::Request(request))
+        }
+        SessionStart::Resume(Resumed {
+            folder,
+            lock,
+            events,
+        }) => {
+            let worktree = Worktree::open(folder.worktree_path())
+                .map_err(|err| format!("Could not open the Session worktree: {err}"))?;
+            (worktree, folder, lock, RunFrom::Log(events))
+        }
+    };
+    let event_file = folder
+        .append_to_log()
+        .map_err(|err| format!("Could not open the event log: {err}"))?;
     let _ = sender.send(DriverMessage::Started {
-        branch: branch.as_str().to_owned(),
-        session_dir: session_dir.clone(),
+        branch: worktree.branch().to_owned(),
+        session_dir: folder.dir().to_owned(),
     });
 
     let client = OpenRouterClient::new(api_key);
@@ -461,15 +596,32 @@ fn try_drive(
     // Dropping the run future at a cancel kills a running Check (`kill_on_drop`); the worktree is
     // put back after that, below.
     let session_end = runtime.block_on(async {
+        let run = async {
+            match run_from {
+                RunFrom::Request(request) => autopilot.run(request).await,
+                RunFrom::Log(events) => autopilot.resume(events).await,
+            }
+        };
         tokio::select! {
-            session_end = autopilot.run(request) => Some(session_end),
+            session_end = run => Some(session_end),
             _ = cancelled => None,
         }
     });
-    Ok(match session_end {
-        Some(session_end) => ending(session_end),
-        None => cancelled_ending(autopilot.session().phase(), &worktree),
-    })
+    let Some(session_end) = session_end else {
+        let message = cancelled_ending(autopilot.session().phase(), &worktree);
+        let _ = autopilot.record_run_end(RunOutcome::Cancelled);
+        return Ok(message);
+    };
+    let run_outcome = match &session_end {
+        Ok(end) => end.run_outcome(),
+        Err(err) => Some(RunOutcome::Failed {
+            reason: err.to_string(),
+        }),
+    };
+    if let Some(run_outcome) = run_outcome {
+        let _ = autopilot.record_run_end(run_outcome);
+    }
+    Ok(ending(session_end))
 }
 
 /// After a cancel, puts the worktree back to its last commit when the cancelled step had written
@@ -601,14 +753,6 @@ fn free_branch(repo: &Repo, request_text: &str) -> Result<SessionBranch, String>
         }
     }
     Err("every Session branch name for this Request is taken".to_owned())
-}
-
-fn session_id(branch: &SessionBranch) -> String {
-    let started = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since_epoch| since_epoch.as_secs());
-    let slug = branch.as_str().trim_start_matches("arbor/");
-    format!("{started}-{slug}")
 }
 
 /// Adds the Sessions folder to the `info/exclude` every worktree shares, so the worktrees inside
