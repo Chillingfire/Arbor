@@ -3,7 +3,9 @@ use arbor_core::{
     WorkUnitFailure, WorkUnitId,
 };
 use arbor_prompts::estimate_tokens;
-use arbor_tiers::{FAILURE_BRIEF_TOKENS, failure_brief};
+use arbor_tiers::failure_brief;
+
+const ALLOWANCE_TOKENS: u32 = 2_000;
 
 fn work_unit(id: u32) -> WorkUnit {
     WorkUnit {
@@ -59,6 +61,7 @@ fn the_brief_holds_the_latest_error_the_diagnoses_and_what_was_missing() {
             round(2, "Another Work Unit's diagnosis"),
             round(1, "The Context Pack lacked split_whitespace"),
         ],
+        ALLOWANCE_TOKENS,
     );
 
     assert!(brief.starts_with("# Failure Brief"), "{brief}");
@@ -78,9 +81,10 @@ fn a_long_error_is_trimmed_so_the_brief_fits_its_allowance() {
     let brief = failure_brief(
         &failure(1, &long_error),
         &[round(1, "The spec left out ties")],
+        ALLOWANCE_TOKENS,
     );
 
-    assert!(estimate_tokens(&brief) <= FAILURE_BRIEF_TOKENS);
+    assert!(estimate_tokens(&brief) <= ALLOWANCE_TOKENS);
     assert!(
         brief.contains("trimmed to fit the Failure Brief"),
         "{brief}"

@@ -5,15 +5,17 @@
 use arbor_core::{RevisionRound, WorkUnitFailure};
 use arbor_prompts::estimate_tokens;
 
-/// The Failure Brief's own allowance, on top of the Writer Cap (grilling log, Round 4 decision 9).
-pub const FAILURE_BRIEF_TOKENS: u32 = 2_000;
-
 const TRIMMED: &str = "\n[… trimmed to fit the Failure Brief]";
 
 /// Sums up a Work Unit's failures for a stronger model, mechanically with no model call: the latest
 /// error, the Scaffolder's diagnoses, and what a Missing Response said was lacking. Stays within
-/// [`FAILURE_BRIEF_TOKENS`] by trimming the error, which is the longest part.
-pub fn failure_brief(failure: &WorkUnitFailure, revisions: &[RevisionRound]) -> String {
+/// `allowance_tokens` (`Config::failure_brief_tokens`, on top of the Writer Cap) by trimming the
+/// error, which is the longest part.
+pub fn failure_brief(
+    failure: &WorkUnitFailure,
+    revisions: &[RevisionRound],
+    allowance_tokens: u32,
+) -> String {
     let mut sections = vec![format!(
         "# Failure Brief\n\nEarlier Writers failed {} even after the Scaffolder revised it. Use \
          this to avoid their mistakes; the output contract and the rules above still apply.",
@@ -40,14 +42,14 @@ pub fn failure_brief(failure: &WorkUnitFailure, revisions: &[RevisionRound]) -> 
         ));
     }
     let Some(latest) = failure.attempts.last() else {
-        return within_allowance(sections.join("\n\n"));
+        return within_allowance(sections.join("\n\n"), allowance_tokens);
     };
     let error_section = |error: &str| format!("## The latest error\n\n```\n{error}\n```");
     let without_error = sections.join("\n\n");
     let overhead = without_error.len() + "\n\n".len() + error_section("").len();
-    let room = allowance_chars().saturating_sub(overhead);
+    let room = allowance_chars(allowance_tokens).saturating_sub(overhead);
     sections.push(error_section(&trimmed(latest.error.trim(), room)));
-    within_allowance(sections.join("\n\n"))
+    within_allowance(sections.join("\n\n"), allowance_tokens)
 }
 
 /// The Human Operator's hint, as added to a Tier's inputs.
@@ -77,15 +79,15 @@ fn bullets(lines: &[String]) -> String {
 }
 
 /// [`estimate_tokens`] counts 2 tokens per 5 bytes, so the allowance holds this many bytes.
-fn allowance_chars() -> usize {
-    usize::try_from(FAILURE_BRIEF_TOKENS).unwrap_or(usize::MAX) * 5 / 2
+fn allowance_chars(allowance_tokens: u32) -> usize {
+    usize::try_from(allowance_tokens).unwrap_or(usize::MAX) * 5 / 2
 }
 
-fn within_allowance(brief: String) -> String {
-    if estimate_tokens(&brief) <= FAILURE_BRIEF_TOKENS {
+fn within_allowance(brief: String, allowance_tokens: u32) -> String {
+    if estimate_tokens(&brief) <= allowance_tokens {
         return brief;
     }
-    trimmed(&brief, allowance_chars())
+    trimmed(&brief, allowance_chars(allowance_tokens))
 }
 
 /// `text` cut to at most `room` bytes at a character boundary, saying it was cut.

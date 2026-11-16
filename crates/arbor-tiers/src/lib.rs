@@ -26,7 +26,7 @@ pub use check_proposal::{
     CheckProposalRun, ProposedChecks, SUBMIT_CHECKS, validate_proposed_checks,
 };
 pub use checkpoint_commits::{commit_revision, commit_skeleton, discard_revision};
-pub use failure_brief::{FAILURE_BRIEF_TOKENS, failure_brief, hint_input};
+pub use failure_brief::{failure_brief, hint_input};
 pub use init::{
     AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
     ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,

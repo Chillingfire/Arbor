@@ -435,7 +435,11 @@ impl<'a> Autopilot<'a> {
                 work_unit: &work_unit,
             })
             .map_err(failed("rendering the Writer prompt"))?;
-        let brief = failure_brief(failure, self.session.revisions());
+        let brief = failure_brief(
+            failure,
+            self.session.revisions(),
+            self.config.failure_brief_tokens,
+        );
         let input_tokens = estimate_tokens(&prompt.text()) + estimate_tokens(&brief);
         let dollars = f64::from(input_tokens) * pricing.prompt
             + f64::from(ESTIMATED_WRITER_REPLY_TOKENS) * pricing.completion;
@@ -457,8 +461,13 @@ impl<'a> Autopilot<'a> {
             .session
             .hint_for(Tier::Writer, Some(id))
             .map(hint_input);
-        let brief =
-            stronger.map(|stronger| failure_brief(&stronger.failure, self.session.revisions()));
+        let brief = stronger.map(|stronger| {
+            failure_brief(
+                &stronger.failure,
+                self.session.revisions(),
+                self.config.failure_brief_tokens,
+            )
+        });
         let notes: Vec<String> = hint.into_iter().chain(brief).collect();
         (!notes.is_empty()).then(|| notes.join("\n\n"))
     }
