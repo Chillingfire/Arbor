@@ -541,6 +541,12 @@ fn decision_note(decision: &Decision) -> String {
         Decision::Reject(feedback) => format!("Rejected the Checkpoint: {feedback}"),
         Decision::Fixed => "Fixed it by hand; checking the fix.".to_owned(),
         Decision::Replan => "Sent the Task to the Planner.".to_owned(),
+        Decision::RetryWithHint { tier, hint } => {
+            format!("Ran the {tier:?} again with a hint: {hint}")
+        }
+        Decision::RetryWithStrongerWriter => "Sent the Work Unit to a stronger Writer.".to_owned(),
+        Decision::Skip => "Skipped the Task.".to_owned(),
+        Decision::Abort => "Aborted the Session.".to_owned(),
         Decision::Stop => "Stopped at the Checkpoint.".to_owned(),
         Decision::SetBudgetCap(Some(cap)) => {
             format!("Raised the Budget Cap to ${:.2}.", cap.dollars())

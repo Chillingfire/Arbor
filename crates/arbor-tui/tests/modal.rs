@@ -196,6 +196,8 @@ fn escalation(may_replan: bool, failed_fix: Option<&str>) -> Modal {
         }),
         may_replan,
         failed_fix: failed_fix.map(str::to_owned),
+        later_tasks: vec!["Print the longest word".to_owned()],
+        stronger_writer: None,
     })
 }
 

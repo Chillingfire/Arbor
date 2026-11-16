@@ -10,25 +10,27 @@ use std::io::Write;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session, Task, Tier, Usd,
-    WorkUnit, WorkUnitId,
+    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session, StrongerWriter, Task,
+    Tier, Usd, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
 use arbor_prompts::{
     Conventions, PlannerInputs, Prompts, ReplanInputs, RevisionInputs, ScaffolderInputs,
-    WriterInputs,
+    WriterInputs, estimate_tokens,
 };
 use arbor_tiers::{
-    Agent, Attempt, AttemptError, AttemptOutcome, MARKER_FIX_SUBJECT, Outcome, PlannerRun,
-    Rejection, ReplanRun, RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, Writer, WriterError,
-    WriterRun, check_markers, check_operator_fix, commit_operator_fix, commit_revision,
-    commit_skeleton, discard_revision, reset_task, review_revision, run_task_check,
-    strip_work_unit_markers, task_diff,
+    Agent, Attempt, AttemptError, AttemptOutcome, MARKER_FIX_SUBJECT, MAX_WRITER_ATTEMPTS, Outcome,
+    PlannerRun, Rejection, ReplanRun, RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, Writer,
+    WriterError, WriterRun, check_markers, check_operator_fix, commit_operator_fix,
+    commit_revision, commit_skeleton, discard_revision, failure_brief, hint_input, reset_task,
+    review_revision, run_task_check, strip_work_unit_markers, task_diff,
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
-pub use operator::{ApproveEverything, Checkpoint, Decision, Operator, Pending};
+pub use operator::{
+    ApproveEverything, Checkpoint, Decision, Operator, Pending, StrongerWriterOffer,
+};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
@@ -361,13 +363,25 @@ impl<'a> Autopilot<'a> {
         Ok(Step::Events(vec![decided]))
     }
 
-    /// Asks the Operator at the Escalation Checkpoint until they send the Task to the Planner,
-    /// stop, or fix it by hand in a way that passes the Checks.
+    /// Asks the Operator at the Escalation Checkpoint until they choose how the Session goes on, or
+    /// fix it by hand in a way that passes the Checks.
     async fn escalation(
         &mut self,
         task: usize,
         cause: RevisionCause,
     ) -> Result<Step, AutopilotError> {
+        let later_tasks: Vec<String> = self
+            .plan_tasks()?
+            .iter()
+            .skip(task + 1)
+            .map(|later| later.title.clone())
+            .collect();
+        let stronger_writer = match &cause {
+            RevisionCause::WorkUnitFailed(failure) => {
+                Some(self.stronger_writer_offer(failure).await?)
+            }
+            RevisionCause::TaskChecksFailed { .. } => None,
+        };
         let mut failed_fix = None;
         loop {
             let checkpoint = Checkpoint::Escalation {
@@ -375,22 +389,78 @@ impl<'a> Autopilot<'a> {
                 cause: cause.clone(),
                 may_replan: self.session.may_replan(task),
                 failed_fix: failed_fix.take(),
+                later_tasks: later_tasks.clone(),
+                stronger_writer: stronger_writer.clone(),
             };
-            match self.operator.decide(&checkpoint).await {
+            let chosen = match self.operator.decide(&checkpoint).await {
                 Decision::Stop => return Ok(self.stopped_here()),
-                Decision::Replan if self.session.may_replan(task) => {
-                    return Ok(Step::Events(vec![Event::ReplanRequested]));
+                Decision::Replan if self.session.may_replan(task) => Event::ReplanRequested,
+                Decision::RetryWithHint { tier, hint } => Event::RetryWithHint { tier, hint },
+                Decision::RetryWithStrongerWriter if stronger_writer.is_some() => {
+                    let model = stronger_writer.clone().map(|offer| offer.model);
+                    Event::StrongerWriterRequested {
+                        model: model.unwrap_or_default(),
+                    }
                 }
+                Decision::Skip => Event::TaskSkipped,
+                Decision::Abort => Event::SessionAborted,
                 Decision::Fixed => match self.check_fix(&cause).await? {
-                    Some(check_output) => failed_fix = Some(check_output),
+                    Some(check_output) => {
+                        failed_fix = Some(check_output);
+                        continue;
+                    }
                     None => {
                         self.task_fix_checked = cause.work_unit().is_none();
-                        return Ok(Step::Events(vec![self.commit_fix(&cause)?]));
+                        self.commit_fix(&cause)?
                     }
                 },
                 decision => return Err(misplaced(&checkpoint, &decision)),
-            }
+            };
+            return Ok(Step::Events(vec![chosen]));
         }
+    }
+
+    /// The Scaffolder's model in the Writer role (grilling log, Round 3 decision 2), priced for the
+    /// failed Work Unit's prompt with its Failure Brief.
+    async fn stronger_writer_offer(
+        &self,
+        failure: &WorkUnitFailure,
+    ) -> Result<StrongerWriterOffer, AutopilotError> {
+        let model = self.config.roles.scaffolder.model.clone();
+        let pricing = self.model(&model).await?.pricing;
+        let work_unit = self.work_unit(failure.id)?;
+        let prompt = self
+            .prompts
+            .writer(&WriterInputs {
+                work_unit: &work_unit,
+            })
+            .map_err(failed("rendering the Writer prompt"))?;
+        let brief = failure_brief(failure, self.session.revisions());
+        let input_tokens = estimate_tokens(&prompt.text()) + estimate_tokens(&brief);
+        let dollars = f64::from(input_tokens) * pricing.prompt
+            + f64::from(ESTIMATED_WRITER_REPLY_TOKENS) * pricing.completion;
+        Ok(StrongerWriterOffer {
+            model,
+            cost_per_attempt: Usd::from_dollars(dollars),
+            max_attempts: MAX_WRITER_ATTEMPTS,
+        })
+    }
+
+    /// The hint and Failure Brief a Writer gets when its Work Unit is retried from the Escalation
+    /// Checkpoint.
+    fn escalation_notes(
+        &self,
+        id: WorkUnitId,
+        stronger: Option<&StrongerWriter>,
+    ) -> Option<String> {
+        let hint = self
+            .session
+            .hint_for(Tier::Writer, Some(id))
+            .map(hint_input);
+        let brief =
+            stronger.map(|stronger| failure_brief(&stronger.failure, self.session.revisions()));
+        let notes: Vec<String> = hint.into_iter().chain(brief).collect();
+        (!notes.is_empty()).then(|| notes.join("\n\n"))
     }
 
     /// The output of the first Check the Human Operator's fix fails, or `None` when it passes.
@@ -687,17 +757,21 @@ impl<'a> Autopilot<'a> {
             })
             .map_err(failed("rendering the Writer prompt"))?;
         let role = self.config.roles.writer.clone();
-        let supported_parameters = self.model(&role.model).await?.supported_parameters;
+        let stronger = self.session.stronger_writer(id).cloned();
+        let escalation_notes = self.escalation_notes(id, stronger.as_ref());
+        let model_id = stronger.map_or(role.model, |stronger| stronger.model);
+        let supported_parameters = self.model(&model_id).await?.supported_parameters;
         let mut writer = WriterRun {
             prompt: &prompt,
             work_unit: &work_unit,
-            model: role.model.clone(),
+            model: model_id.clone(),
             temperature: role.temperature,
             supported_parameters,
             worktree: self.worktree.path(),
             checks: self.config.checks.clone(),
             cap_tokens: self.config.writer_cap_tokens,
             missing_response_allowed: self.session.may_send_missing_response(id),
+            escalation_notes,
         }
         .start();
         self.writer_runs.push(WriterRunAttempts {
@@ -709,7 +783,7 @@ impl<'a> Autopilot<'a> {
             attempt_number += 1;
             self.working(
                 Some(Tier::Writer),
-                Some(&role.model),
+                Some(&model_id),
                 format!("Writing {id}, attempt {attempt_number}"),
             );
             let client = self.client;
@@ -782,6 +856,10 @@ impl<'a> Autopilot<'a> {
         let plan = self.session_plan()?.clone();
         let work_units = self.session.work_units().to_vec();
         let earlier = self.session.revisions().to_vec();
+        let hint = self
+            .session
+            .hint_for(Tier::Scaffolder, None)
+            .map(str::to_owned);
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
         let mode = self.config.clarification_mode;
@@ -816,6 +894,7 @@ impl<'a> Autopilot<'a> {
             task_work_units: &work_units,
             first_new_id: self.session.next_work_unit_id(),
             tool_call_budget: self.config.revision_tool_call_budget,
+            hint: hint.as_deref(),
         }
         .start()
         .map_err(failed("starting the Revision"))?;
@@ -847,6 +926,10 @@ impl<'a> Autopilot<'a> {
         let request = self.request()?;
         let plan = self.session_plan()?.clone();
         let revisions = self.session.revisions().to_vec();
+        let hint = self
+            .session
+            .hint_for(Tier::Planner, None)
+            .map(str::to_owned);
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
         let mode = self.config.clarification_mode;
@@ -873,6 +956,7 @@ impl<'a> Autopilot<'a> {
             clarification_mode: mode,
             tools: self.tools(Toolset::Planner),
             feedback: feedback.as_deref(),
+            hint: hint.as_deref(),
         }
         .start()
         .map_err(failed("starting the Replan"))?;
@@ -957,6 +1041,9 @@ impl<'a> Autopilot<'a> {
         }
     }
 }
+
+/// The reply length a stronger Writer's estimated cost assumes: a Region with its context lines.
+const ESTIMATED_WRITER_REPLY_TOKENS: u32 = 1_000;
 
 fn misplaced(checkpoint: &Checkpoint, decision: &Decision) -> AutopilotError {
     AutopilotError {

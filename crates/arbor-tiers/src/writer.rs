@@ -12,7 +12,7 @@ use arbor_llm::{ChatRequest, ContentPart, FinishReason, LlmClient, LlmError, Mes
 use arbor_prompts::{Prompt, estimate_tokens};
 use arbor_tools::{CheckName, run_check};
 
-use crate::agent::{core_usage, supports};
+use crate::agent::{append_input, core_usage, supports};
 use crate::markers::{Markers, Region, splice, strip};
 use crate::reply::{CodeReply, ReplyError, WriterReply, parse_reply};
 use crate::writer_cap::{with_margin, writer_input_tokens};
@@ -42,6 +42,9 @@ pub struct WriterRun<'a> {
     pub cap_tokens: u32,
     /// `Session::may_send_missing_response`.
     pub missing_response_allowed: bool,
+    /// The Human Operator's hint and the Failure Brief, when the Work Unit is retried from the
+    /// Escalation Checkpoint. Given after the Work Unit, outside the Writer Cap.
+    pub escalation_notes: Option<String>,
 }
 
 impl WriterRun<'_> {
@@ -50,6 +53,10 @@ impl WriterRun<'_> {
     /// If the prompt isn't the Writer's.
     pub fn start(self) -> Writer {
         assert_eq!(self.prompt.template, arbor_prompts::Template::Writer);
+        let mut prompt = self.prompt.messages();
+        if let Some(escalation_notes) = self.escalation_notes {
+            append_input(&mut prompt, escalation_notes);
+        }
         Writer {
             work_unit: self.work_unit.clone(),
             model: self.model,
@@ -59,7 +66,7 @@ impl WriterRun<'_> {
             worktree: self.worktree.to_owned(),
             checks: self.checks,
             cap_tokens: self.cap_tokens,
-            prompt: self.prompt.messages(),
+            prompt,
             retry: Vec::new(),
             retry_tokens: 0,
             failures: Vec::new(),

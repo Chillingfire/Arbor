@@ -10,6 +10,7 @@ use arbor_tools::{Tools, Toolset};
 use crate::agent::{
     Agent, AgentSettings, Submission, UnsupportedModel, append_input, reject_if_any,
 };
+use crate::failure_brief::hint_input;
 use crate::planner::task_problems;
 
 pub const SUBMIT_REPLAN: &str = "submit_replan";
@@ -23,6 +24,8 @@ pub struct ReplanRun<'a> {
     pub tools: Tools,
     /// The Human Operator's feedback on a rejected Replan.
     pub feedback: Option<&'a str>,
+    /// The Human Operator's hint, when they asked for this Replan with one.
+    pub hint: Option<&'a str>,
 }
 
 impl ReplanRun<'_> {
@@ -33,6 +36,9 @@ impl ReplanRun<'_> {
         assert_eq!(self.prompt.template, arbor_prompts::Template::Planner);
         assert_eq!(self.tools.toolset(), Toolset::Planner);
         let mut messages = self.prompt.messages();
+        if let Some(hint) = self.hint {
+            append_input(&mut messages, hint_input(hint));
+        }
         if let Some(feedback) = self.feedback {
             append_input(
                 &mut messages,

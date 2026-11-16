@@ -275,6 +275,8 @@ failures:
             },
             may_replan: true,
             failed_fix: None,
+            later_tasks: Vec::new(),
+            stronger_writer: None,
         })),
         Ok("questions") => Some(Modal::questions(
             Tier::Planner,

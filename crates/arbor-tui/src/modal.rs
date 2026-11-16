@@ -24,7 +24,7 @@ pub(crate) enum ModalOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
-    Checkpoint(CheckpointModal),
+    Checkpoint(Box<CheckpointModal>),
     Questions(QuestionsModal),
 }
 
@@ -128,7 +128,7 @@ impl Modal {
             Checkpoint::Budget { cap, .. } => format!("{:.2}", cap.dollars() * 2.0),
             _ => String::new(),
         };
-        Self::Checkpoint(CheckpointModal {
+        Self::Checkpoint(Box::new(CheckpointModal {
             checkpoint,
             task_rows,
             selected_row: 0,
@@ -136,7 +136,7 @@ impl Modal {
             budget_cap_text,
             budget_cap_suggested: true,
             scroll: ModalScroll::default(),
-        })
+        }))
     }
 
     pub fn questions(tier: Tier, questions: String) -> Self {
@@ -158,12 +158,11 @@ impl Modal {
 
     pub(crate) fn paste(&mut self, pasted: &str) {
         let typed = match self {
-            Self::Checkpoint(CheckpointModal {
-                feedback: Some(feedback),
-                ..
-            }) => feedback,
+            Self::Checkpoint(checkpoint_modal) => match &mut checkpoint_modal.feedback {
+                Some(feedback) => feedback,
+                None => return,
+            },
             Self::Questions(questions_modal) => &mut questions_modal.answers,
-            Self::Checkpoint(_) => return,
         };
         typed.push_str(&pasted.replace("\r\n", "\n").replace('\r', "\n"));
     }
