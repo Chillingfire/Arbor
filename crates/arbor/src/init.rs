@@ -92,7 +92,7 @@ async fn propose(
     let unavailable = |err: &dyn std::fmt::Display| ProposalError::Unavailable(err.to_string());
     let user_path = user_config_path(Platform::current(), |name| env::var(name).ok());
     let config = Config::load(user_path.as_deref(), root).map_err(|err| unavailable(&err))?;
-    let api_key = load_api_key(user_path.as_deref())
+    let api_key = load_api_key(user_path.as_deref(), |name| env::var(name).ok())
         .map_err(|err| unavailable(&err))?
         .ok_or_else(|| {
             ProposalError::Unavailable(format!(

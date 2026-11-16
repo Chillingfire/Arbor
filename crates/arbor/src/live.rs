@@ -112,7 +112,7 @@ struct Project {
 impl Project {
     /// Read again for each Session, so a key set after a failed start is picked up.
     fn api_key(&self) -> Result<Option<String>, ConfigError> {
-        let api_key = load_api_key(self.user_config.as_deref())?;
+        let api_key = load_api_key(self.user_config.as_deref(), |name| env::var(name).ok())?;
         Ok(api_key.map(|key| key.expose().to_owned()))
     }
 }
