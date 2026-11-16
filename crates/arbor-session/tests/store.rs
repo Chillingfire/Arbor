@@ -137,13 +137,7 @@ fn the_listing_shows_status_cost_age_and_time_until_pruned() {
     let running = project.session("Running one", 3, &[started("Running one")], Duration::ZERO);
     let _lock = running.lock_run().unwrap();
 
-    let summaries = list_sessions(
-        &project.repo,
-        Some(&project.mainline),
-        30,
-        SystemTime::now(),
-    )
-    .unwrap();
+    let summaries = list_sessions(&project.repo, 30, SystemTime::now()).unwrap();
 
     let statuses: Vec<&SessionStatus> = summaries.iter().map(|summary| &summary.status).collect();
     assert_eq!(statuses[0], &SessionStatus::Running);
@@ -176,10 +170,13 @@ fn the_listing_counts_markers_at_the_branch_tip() {
         "lib.rs",
         "// ARBOR:BEGIN WU-1\ntodo!()\n// ARBOR:END WU-1\n",
     );
-    let summaries =
-        list_sessions(&project.repo, Some(&project.mainline), 0, SystemTime::now()).unwrap();
+    let summaries = list_sessions(&project.repo, 0, SystemTime::now()).unwrap();
     assert_eq!(summaries[0].markers_at_tip, Some(2));
     assert_eq!(summaries[0].pruned_in, None);
+
+    commit_in(&folder, ".arbor-markers-allowed", "lib.rs\n");
+    let summaries = list_sessions(&project.repo, 0, SystemTime::now()).unwrap();
+    assert_eq!(summaries[0].markers_at_tip, Some(0));
 }
 
 #[test]
@@ -189,12 +186,7 @@ fn pruning_removes_old_sessions_but_keeps_their_branches() {
     commit_in(&old, "lib.rs", "// ARBOR:BEGIN WU-2\n");
     let fresh = project.session("Fresh work", 2, &[started("Fresh work")], DAY);
 
-    let report = prune_sessions(
-        &project.repo,
-        Some(&project.mainline),
-        30,
-        SystemTime::now(),
-    );
+    let report = prune_sessions(&project.repo, 30, SystemTime::now());
 
     assert_eq!(report.pruned.len(), 1);
     assert!(!old.dir().exists());
@@ -221,15 +213,10 @@ fn pruning_skips_dirty_and_running_sessions_and_zero_retention_prunes_nothing() 
     let running = project.session("Running", 2, &[started("Running")], 40 * DAY);
     let lock = running.lock_run().unwrap();
 
-    let never = prune_sessions(&project.repo, Some(&project.mainline), 0, SystemTime::now());
+    let never = prune_sessions(&project.repo, 0, SystemTime::now());
     assert_eq!(never.notice(), None);
 
-    let report = prune_sessions(
-        &project.repo,
-        Some(&project.mainline),
-        30,
-        SystemTime::now(),
-    );
+    let report = prune_sessions(&project.repo, 30, SystemTime::now());
     drop(lock);
 
     assert!(report.pruned.is_empty());

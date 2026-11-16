@@ -81,19 +81,6 @@ fn only_session_branches_can_be_deleted() {
 }
 
 #[test]
-fn the_branch_diff_shows_what_the_branch_adds() {
-    let setup = session_setup();
-    commit(&setup.worktree, "src/lib.rs", "// ARBOR:BEGIN WU-1\n");
-    let mainline = setup.repo.mainline(None).unwrap();
-    let diff = setup
-        .repo
-        .branch_diff(&mainline, "arbor/add-a-thing")
-        .unwrap();
-    assert!(diff.contains("+// ARBOR:BEGIN WU-1"), "{diff}");
-    assert!(!diff.contains("hello"), "{diff}");
-}
-
-#[test]
 fn a_reset_with_uncommitted_edits_leaves_the_later_files_uncommitted() {
     let setup = session_setup();
     let start = setup.worktree.head().unwrap();

@@ -14,11 +14,11 @@ use super::{Project, Resumed};
 /// Prunes the Sessions past retention, then notes what was pruned and how many Sessions are
 /// unfinished.
 pub(super) fn prune_at_startup(project: &Project, app: &mut App) {
-    let Ok((repo, mainline)) = project.repo() else {
+    let Ok(repo) = project.repo() else {
         return;
     };
     let retention_days = project.config.retention_days;
-    let report = prune_sessions(&repo, mainline.as_ref(), retention_days, SystemTime::now());
+    let report = prune_sessions(&repo, retention_days, SystemTime::now());
     if let Some(notice) = report.notice() {
         app.view.push_note(notice, Tone::Progress);
     }
@@ -42,14 +42,9 @@ pub(super) fn prune_at_startup(project: &Project, app: &mut App) {
 }
 
 fn list(project: &Project) -> Result<Vec<SessionSummary>, String> {
-    let (repo, mainline) = project.repo()?;
-    list_sessions(
-        &repo,
-        mainline.as_ref(),
-        project.config.retention_days,
-        SystemTime::now(),
-    )
-    .map_err(|err| err.to_string())
+    let repo = project.repo()?;
+    list_sessions(&repo, project.config.retention_days, SystemTime::now())
+        .map_err(|err| err.to_string())
 }
 
 pub(super) fn open(app: &mut App, project: &Project) {
@@ -101,7 +96,7 @@ fn list_rewind_points(app: &mut App, folder: &SessionFolder) -> Result<(), Strin
 
 fn delete(app: &mut App, project: &Project, folder: &SessionFolder) -> Result<(), String> {
     let branch = folder.branch();
-    let (repo, _) = project.repo()?;
+    let repo = project.repo()?;
     delete_session(&repo, folder).map_err(|err| err.to_string())?;
     let sessions = list(project)?;
     if let Some(browser) = &mut app.ui_state.browser {

@@ -4,38 +4,33 @@
 use std::fs;
 use std::time::{Duration, SystemTime};
 
-use arbor_git::{Mainline, Repo, Worktree};
-use arbor_tiers::markers::{BEGIN, END};
+use arbor_git::{Repo, TreeSource, Worktree};
+use arbor_tiers::scan_markers;
 
 use crate::store::{
     RunLock, SessionFolder, SessionSummary, StoreError, io_error, retention, session_folders,
     summarize,
 };
 
-/// Counts the Marker lines `branch` adds to the mainline: how many Markers its tip still holds.
-/// A plain text scan of the branch diff, like the Marker check at the end of a Session.
-pub fn branch_markers(repo: &Repo, mainline: &Mainline, branch: &str) -> Option<usize> {
+/// The Marker lines at the tip of `branch`, outside the paths its Marker Allowlist names, or
+/// `None` when the branch is gone or can't be scanned.
+pub fn branch_markers(repo: &Repo, branch: &str) -> Option<usize> {
     if !repo.branch_exists(branch).ok()? {
         return None;
     }
-    let diff = repo.branch_diff(mainline, branch).ok()?;
-    let added_markers = diff
-        .lines()
-        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
-        .filter(|line| line.contains(BEGIN) || line.contains(END))
-        .count();
-    Some(added_markers)
+    let tip = TreeSource::Revision(format!("refs/heads/{branch}"));
+    scan_markers(repo, &tip)
+        .ok()
+        .map(|marker_lines| marker_lines.len())
 }
 
 /// Every Session under the project, newest first, as the Session browser shows them.
 pub fn list_sessions(
     repo: &Repo,
-    mainline: Option<&Mainline>,
     retention_days: u32,
     now: SystemTime,
 ) -> Result<Vec<SessionSummary>, StoreError> {
-    let markers_at_tip =
-        |branch: &str| mainline.and_then(|mainline| branch_markers(repo, mainline, branch));
+    let markers_at_tip = |branch: &str| branch_markers(repo, branch);
     Ok(session_folders(repo.root())?
         .into_iter()
         .map(|folder| summarize(folder, now, retention_days, markers_at_tip))
@@ -113,12 +108,7 @@ impl PruneReport {
 /// Removes the folder and worktree of each Session whose last event is older than
 /// `retention_days`, keeping its branch. A running Session, or one whose worktree has uncommitted
 /// changes, is skipped. `retention_days` of 0 prunes nothing.
-pub fn prune_sessions(
-    repo: &Repo,
-    mainline: Option<&Mainline>,
-    retention_days: u32,
-    now: SystemTime,
-) -> PruneReport {
+pub fn prune_sessions(repo: &Repo, retention_days: u32, now: SystemTime) -> PruneReport {
     let mut report = PruneReport {
         retention_days,
         ..PruneReport::default()
@@ -146,7 +136,7 @@ pub fn prune_sessions(
             continue;
         };
         let id = folder.id();
-        match prune_one(repo, mainline, &folder, lock, idle) {
+        match prune_one(repo, &folder, lock, idle) {
             Ok(Some(pruned)) => report.pruned.push(pruned),
             Ok(None) => report.dirty.push(id),
             Err(err) => report.failed.push((id, err.to_string())),
@@ -159,7 +149,6 @@ pub fn prune_sessions(
 /// the folder goes, since Windows can't remove a folder with an open file in it.
 fn prune_one(
     repo: &Repo,
-    mainline: Option<&Mainline>,
     folder: &SessionFolder,
     lock: RunLock,
     idle: Duration,
@@ -171,7 +160,7 @@ fn prune_one(
         return Ok(None);
     }
     let branch = folder.branch();
-    let markers_at_tip = mainline.and_then(|mainline| branch_markers(repo, mainline, &branch));
+    let markers_at_tip = branch_markers(repo, &branch);
     drop(lock);
     remove_folder(repo, folder)?;
     Ok(Some(PrunedSession {

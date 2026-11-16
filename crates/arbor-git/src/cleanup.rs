@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::branch::PREFIX;
 use crate::command::{GitError, git};
 use crate::commit::CommitId;
-use crate::mainline::Mainline;
 use crate::repo::Repo;
 use crate::worktree::Worktree;
 
@@ -40,26 +39,6 @@ impl Repo {
     pub fn branch_exists(&self, branch: &str) -> Result<bool, GitError> {
         self.check_branch_name(branch)?;
         self.commit_exists(&format!("refs/heads/{branch}"))
-    }
-
-    /// What `branch` adds to the mainline since they parted, as a unified diff with no context
-    /// lines.
-    pub fn branch_diff(&self, mainline: &Mainline, branch: &str) -> Result<String, GitError> {
-        self.check_branch_name(branch)?;
-        let range = format!("{}...refs/heads/{branch}", mainline.start_ref());
-        git(
-            self.root(),
-            &[
-                "diff",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-renames",
-                "--unified=0",
-                &range,
-                "--",
-            ],
-        )
     }
 }
 

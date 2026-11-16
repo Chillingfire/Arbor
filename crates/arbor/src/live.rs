@@ -134,11 +134,8 @@ impl Project {
         Ok(api_key.map(|key| key.expose().to_owned()))
     }
 
-    /// The repository and its mainline, if it can be found, e.g. to count a branch's Markers.
-    fn repo(&self) -> Result<(Repo, Option<Mainline>), String> {
-        let repo = Repo::open(&self.root).map_err(|err| err.to_string())?;
-        let mainline = repo.mainline(self.config.mainline.as_deref()).ok();
-        Ok((repo, mainline))
+    fn repo(&self) -> Result<Repo, String> {
+        Repo::open(&self.root).map_err(|err| err.to_string())
     }
 }
 
