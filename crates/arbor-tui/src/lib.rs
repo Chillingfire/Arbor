@@ -1,12 +1,14 @@
 //! Terminal UI: the Plan tree, detail pane, event log, prompt and status bar.
 
 mod app;
+mod browser;
 mod input;
 mod modal;
 mod ui;
 mod view;
 
 pub use app::App;
+pub use browser::{BrowserOutcome, SessionBrowser, duration_label};
 pub use input::KeyOutcome;
 pub use modal::{CheckpointModal, Modal, QuestionsModal, TaskRow};
 pub use ui::{

@@ -337,7 +337,9 @@ fn main() -> std::io::Result<()> {
                     | KeyOutcome::Cancel
                     | KeyOutcome::Confirmed(_)
                     | KeyOutcome::Decided(_)
-                    | KeyOutcome::Answered(_) => {}
+                    | KeyOutcome::Answered(_)
+                    | KeyOutcome::OpenBrowser
+                    | KeyOutcome::Browser(_) => {}
                 }
             }
         }

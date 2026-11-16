@@ -288,6 +288,7 @@ impl Run {
             ),
             KeyOutcome::Decided(decision) => self.send_decision(app, decision),
             KeyOutcome::Answered(answers) => self.send_answers(app, answers),
+            KeyOutcome::OpenBrowser | KeyOutcome::Browser(_) => {}
         }
         ControlFlow::Continue(())
     }

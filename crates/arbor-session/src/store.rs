@@ -219,7 +219,7 @@ pub enum SessionStatus {
 }
 
 /// What the Session browser shows for one Session.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub folder: SessionFolder,
     pub branch: String,
