@@ -183,20 +183,17 @@ fn event_loop(
     loop {
         run.follow(app);
         terminal.draw(|frame| app.draw(frame))?;
-        // Take every event already waiting before drawing again, so a paste doesn't trail behind.
-        let mut event_waiting = event::poll(FRAME)?;
-        while event_waiting {
-            let terminal_event = event::read()?;
-            event_waiting = event::poll(Duration::ZERO)?;
+        let waiting_events = read_waiting_events()?;
+        for (position, terminal_event) in waiting_events.iter().enumerate() {
             let key = match terminal_event {
                 TerminalEvent::Paste(pasted) => {
-                    app.ui_state.paste(&pasted);
+                    app.ui_state.paste(pasted);
                     continue;
                 }
-                TerminalEvent::Key(key) if key.kind == KeyEventKind::Press => key,
+                TerminalEvent::Key(key) if key.kind == KeyEventKind::Press => *key,
                 _ => continue,
             };
-            let key = if event_waiting {
+            let key = if waiting_events[position + 1..].iter().any(is_key_press) {
                 as_pasted(key, app.ui_state.focus)
             } else {
                 key
@@ -212,8 +209,25 @@ fn event_loop(
     }
 }
 
+/// Every event already waiting once the next frame's wait ends, so a paste doesn't trail behind.
+fn read_waiting_events() -> io::Result<Vec<TerminalEvent>> {
+    let mut waiting_events = Vec::new();
+    let mut event_waiting = event::poll(FRAME)?;
+    while event_waiting {
+        waiting_events.push(event::read()?);
+        event_waiting = event::poll(Duration::ZERO)?;
+    }
+    Ok(waiting_events)
+}
+
+/// Windows reports key releases too, and a single Enter's release is often already waiting, so
+/// only a press counts as more of a paste.
+fn is_key_press(terminal_event: &TerminalEvent) -> bool {
+    matches!(terminal_event, TerminalEvent::Key(key) if key.kind == KeyEventKind::Press)
+}
+
 /// Where bracketed paste isn't available, a paste arrives as keys all at once. An Enter with more
-/// keys right behind it is a pasted newline, not the Human Operator sending the prompt.
+/// key presses right behind it is a pasted newline, not the Human Operator sending the prompt.
 fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
     if focus == Focus::Prompt && key.code == KeyCode::Enter && key.modifiers.is_empty() {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
@@ -619,4 +633,26 @@ fn exclude_sessions(repo: &Repo) -> Result<(), String> {
     };
     fs::write(&exclude_path, format!("{existing}{separator}{pattern}\n"))
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyEventState;
+
+    fn key_event(kind: KeyEventKind) -> TerminalEvent {
+        TerminalEvent::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    #[test]
+    fn only_a_waiting_press_counts_as_more_of_a_paste() {
+        assert!(is_key_press(&key_event(KeyEventKind::Press)));
+        assert!(!is_key_press(&key_event(KeyEventKind::Release)));
+        assert!(!is_key_press(&TerminalEvent::FocusGained));
+    }
 }
