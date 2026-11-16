@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::{Checks, Config, ConfigError, ConfigFile, UserFile, parse};
+use crate::config::{Checks, Config, ConfigError, ConfigFile, Roles, UserFile, parse};
 
 /// The project config file, at the repository root.
 pub const PROJECT_CONFIG_FILE: &str = "arbor.toml";
@@ -72,6 +72,31 @@ pub fn save_api_key(path: &Path, key: &str) -> Result<(), ConfigError> {
         .parse()
         .expect("valid TOML parses as a document");
     doc["api_key"] = value(key);
+
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io_error)?;
+    }
+    write_private(path, &doc.to_string()).map_err(io_error)
+}
+
+/// Writes each role's model and temperature into the user config at `path`, keeping everything
+/// else in the file as it was.
+pub fn save_roles(path: &Path, roles: &Roles) -> Result<(), ConfigError> {
+    let io_error = |source| ConfigError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let existing_toml = read_optional(path)?.unwrap_or_default();
+    // Refuse to rewrite a file we can't read, so a typo never costs the operator their settings.
+    parse::<UserFile>(Some(&existing_toml), ConfigFile::User)?;
+    let mut doc: DocumentMut = existing_toml
+        .parse()
+        .expect("valid TOML parses as a document");
+    for (role_name, role) in roles.named() {
+        let role_item = &mut doc["roles"][role_name.to_lowercase().as_str()];
+        role_item["model"] = value(role.model.as_str());
+        role_item["temperature"] = value(role.temperature);
+    }
 
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_error)?;
