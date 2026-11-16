@@ -312,3 +312,65 @@ fn rewinding_resets_the_worktree_and_records_the_rewind() {
     let session = arbor_core::Session::replay(&logged).unwrap();
     assert_eq!(session.phase(), &Phase::ScaffoldCheckpoint { task: 0 });
 }
+
+/// A one-Task Session whose only Work Unit went to the Escalation Checkpoint, where the Human
+/// Operator aborted it.
+fn aborted_events() -> Vec<Event> {
+    let work_unit = arbor_core::WorkUnit {
+        id: arbor_core::WorkUnitId(1),
+        file: "src/lib.rs".to_owned(),
+        spec: "Fill the Region".to_owned(),
+        context: Vec::new(),
+        acceptance_criteria: Vec::new(),
+        test_filter: "wu_1".to_owned(),
+    };
+    let plan = arbor_core::Plan {
+        goal: "Abort it".to_owned(),
+        constraints: Vec::new(),
+        tasks: vec![arbor_core::Task {
+            title: "Only Task".to_owned(),
+            description: "Do it.".to_owned(),
+        }],
+    };
+    vec![
+        started("Abort it"),
+        Event::PlanSubmitted { plan },
+        Event::PlanApproved {
+            task_order: vec![0],
+        },
+        Event::WorkUnitsSubmitted {
+            work_units: vec![work_unit],
+        },
+        Event::ScaffoldChecksPassed,
+        Event::ScaffoldApproved,
+        Event::SkeletonCommitted { commit: None },
+        Event::WorkUnitFailed {
+            failure: arbor_core::WorkUnitFailure {
+                id: arbor_core::WorkUnitId(1),
+                attempts: Vec::new(),
+                missing_response: Some(vec!["the Config type".to_owned()]),
+                broken_region: None,
+            },
+        },
+        Event::RevisionSubmitted {
+            revision: arbor_core::Revision {
+                diagnosis: "It needs a shared signature changed".to_owned(),
+                work_units: Vec::new(),
+                shared_change: Some("Change parse()".to_owned()),
+            },
+        },
+        Event::RevisionDiscarded,
+        Event::SessionAborted,
+    ]
+}
+
+#[test]
+fn an_aborted_session_is_listed_as_aborted_not_cancelled_or_failed() {
+    let project = Project::new();
+    project.session("Abort it", 1, &aborted_events(), DAY);
+
+    let summaries = list_sessions(&project.repo, 30, SystemTime::now()).unwrap();
+
+    assert_eq!(summaries[0].status, SessionStatus::Aborted);
+    assert_eq!(summaries[0].phase, Some(Phase::Aborted));
+}

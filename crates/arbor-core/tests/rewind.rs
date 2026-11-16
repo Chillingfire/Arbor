@@ -173,3 +173,21 @@ fn points_rewound_away_from_stay_listed_and_the_rewind_adds_none() {
     assert_eq!(points.len(), 4);
     assert_eq!(points[3].event_count, events.len());
 }
+
+#[test]
+fn a_rewind_keeps_the_clarification_mode_switched_after_the_checkpoint() {
+    let mut events = full_session_events()[..2].to_vec();
+    events.extend(full_session_events()[2..9].iter().cloned());
+    events.push(Event::ClarificationModeSet {
+        mode: arbor_core::ClarificationMode::Assume,
+    });
+    events.push(Event::Rewound { event_count: 2 });
+
+    let session = Session::replay(&events).unwrap();
+
+    assert_eq!(session.phase(), &Phase::PlanCheckpoint);
+    assert_eq!(
+        session.clarification_mode(),
+        Some(arbor_core::ClarificationMode::Assume)
+    );
+}
