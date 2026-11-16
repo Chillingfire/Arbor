@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
 use arbor_core::{Effect, Phase, Request, Tier};
-use arbor_git::{Repo, SessionBranch, Worktree};
+use arbor_git::{Repo, SESSIONS_DIR, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{
     Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, SessionEnd,
@@ -28,11 +28,10 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use tokio::sync::oneshot;
 
+use crate::startup;
+
 /// How often the screen redraws while waiting, so the spinner moves.
 const FRAME: Duration = Duration::from_millis(100);
-
-/// Where Sessions live, relative to the project root.
-const SESSIONS_DIR: &str = ".arbor/sessions";
 
 /// What the Session thread sends to the screen.
 enum DriverMessage {
@@ -125,6 +124,7 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    startup::check(&project.root, &project.config);
     let roles = &project.config.roles;
     let mut app = App::new(StatusInfo {
         models: [

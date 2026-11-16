@@ -3,6 +3,7 @@ mod cli;
 mod handover;
 mod init;
 mod live;
+mod startup;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;

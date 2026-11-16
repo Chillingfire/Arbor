@@ -1,6 +1,7 @@
 use arbor_core::WorkUnitId;
 use arbor_tiers::markers::{
-    MarkerError, Markers, Region, is_marker_line, is_well_formed_marker, splice, strip,
+    MarkerError, Markers, Region, is_begin_marker, is_marker_line, is_well_formed_marker,
+    marker_lines_of, splice, strip,
 };
 
 fn wu(n: u32) -> WorkUnitId {
@@ -307,4 +308,23 @@ fn regions_need_two_lines_between_them() {
 
     let two_apart = one_apart.replace("}\n// ARBOR:BEGIN WU-2", "}\n\n// ARBOR:BEGIN WU-2");
     assert_eq!(Markers::parse(&two_apart).errors(), []);
+}
+
+#[test]
+fn marker_lines_of_finds_only_that_work_units_well_formed_markers() {
+    let source = "// ARBOR:BEGIN WU-1
+// ARBOR:END WU-2
+x
+// ARBOR:END WU-1
+// ARBOR:END WU-1x
+";
+    assert_eq!(marker_lines_of(source, wu(1)), [0, 3]);
+    assert_eq!(marker_lines_of(source, wu(3)), Vec::<usize>::new());
+}
+
+#[test]
+fn only_a_well_formed_begin_opens_a_region() {
+    assert!(is_begin_marker("    # ARBOR:BEGIN WU-4"));
+    assert!(!is_begin_marker("    # ARBOR:END WU-4"));
+    assert!(!is_begin_marker("    # ARBOR:BEGIN WU-"));
 }
