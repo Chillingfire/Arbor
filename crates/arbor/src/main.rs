@@ -3,6 +3,7 @@ mod cli;
 mod handover;
 mod hooks;
 mod init;
+mod leaving;
 mod live;
 mod startup;
 
