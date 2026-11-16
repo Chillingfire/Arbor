@@ -1,6 +1,9 @@
-//! Searching the text of a repository's tracked files, as the Marker scan needs (ADR-0002).
+//! Searching and reading a repository's tracked files, as the Marker scan needs (ADR-0002).
 
-use crate::command::{Git, GitError, git};
+use std::fs;
+use std::io;
+
+use crate::command::{Git, GitError, git, git_succeeds};
 use crate::repo::Repo;
 
 /// Which content of the repository a search reads.
@@ -79,6 +82,29 @@ impl Repo {
             .split('\n')
             .filter_map(|grep_line| parse_match(grep_line, &path_prefix))
             .collect())
+    }
+
+    /// The text of `path`, relative to the top level, as `source` holds it, or `None` when it
+    /// has no such file.
+    pub fn read_file(&self, path: &str, source: &TreeSource) -> Result<Option<String>, GitError> {
+        let object = match source {
+            TreeSource::WorkingTree => {
+                return match fs::read(self.root().join(path)) {
+                    Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+                    Err(err) => Err(GitError::Spawn(err)),
+                };
+            }
+            TreeSource::Staged => format!(":{path}"),
+            TreeSource::Revision(revision) => format!("{}:{path}", self.tree_of(revision)?),
+        };
+        // In `:path` and `tree:path` everything after the colon is the path, so the object can't
+        // be peeled with `^{blob}`; `cat-file -e` checks it exists instead.
+        if !git_succeeds(self.root(), &["cat-file", "-e", &object])? {
+            return Ok(None);
+        }
+        let bytes = Git::new(self.root(), &["cat-file", "blob", &object]).bytes()?;
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     /// The tree hash of `revision`, so a name the operator typed is never passed to git as an

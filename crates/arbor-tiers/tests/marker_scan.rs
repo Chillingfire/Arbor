@@ -71,7 +71,7 @@ const MARKED: &str = "pub fn two() -> u32 {\n    // ARBOR:BEGIN WU-3\n    todo!(
 #[test]
 fn a_clean_tree_has_no_markers() {
     let project = Project::new();
-    assert!(project.scan(TreeSource::WorkingTree).is_empty());
+    assert_eq!(project.scan(TreeSource::WorkingTree), Vec::<String>::new());
     assert!(project.scan(TreeSource::Staged).is_empty());
     assert!(project.scan(TreeSource::Revision("HEAD".into())).is_empty());
 }
@@ -96,7 +96,7 @@ fn the_working_tree_scan_lists_every_marker_line_as_file_line_text() {
 fn untracked_files_are_left_out_of_the_working_tree_scan() {
     let project = Project::new();
     project.write("notes.rs", MARKED);
-    assert!(project.scan(TreeSource::WorkingTree).is_empty());
+    assert_eq!(project.scan(TreeSource::WorkingTree), Vec::<String>::new());
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn the_staged_scan_reads_the_index_not_the_disk() {
     project.write("src/two.rs", "pub fn two() -> u32 {\n    2\n}\n");
 
     assert_eq!(project.scan(TreeSource::Staged).len(), 2);
-    assert!(project.scan(TreeSource::WorkingTree).is_empty());
+    assert_eq!(project.scan(TreeSource::WorkingTree), Vec::<String>::new());
 }
 
 #[test]
@@ -176,4 +176,43 @@ fn only_a_begin_marker_opens_a_region() {
     let marker_lines = scan_markers(&repo, &TreeSource::WorkingTree).unwrap();
     let opening: Vec<bool> = marker_lines.iter().map(MarkerLine::opens_region).collect();
     assert_eq!(opening, [true, false]);
+}
+
+#[test]
+fn the_allowlist_is_read_from_the_same_source_as_the_scan() {
+    let project = Project::new();
+    project.write("tests/fixture.rs", MARKED);
+    project.write("src/two.rs", MARKED);
+    project.commit("Add Markers");
+    project.write(
+        ".arbor-markers-allowed",
+        "# Fixtures hold Markers.\ntests/\n",
+    );
+    git(project.root(), &["add", ".arbor-markers-allowed"]);
+    project.write(".arbor-markers-allowed", "tests/\nsrc/two.rs\n");
+
+    assert_eq!(project.scan(TreeSource::WorkingTree), Vec::<String>::new());
+    let staged = project.scan(TreeSource::Staged);
+    assert_eq!(staged.len(), 2);
+    assert!(staged.iter().all(|found| found.starts_with("src/two.rs:")));
+    assert_eq!(project.scan(TreeSource::Revision("HEAD".into())).len(), 4);
+    project.commit("Allow the fixtures");
+    assert!(project.scan(TreeSource::Revision("HEAD".into())).is_empty());
+    assert_eq!(project.scan(TreeSource::Revision("HEAD~1".into())).len(), 4);
+}
+
+#[test]
+fn an_allowlist_that_allows_everything_fails_the_scan() {
+    let project = Project::new();
+    project.write(".arbor-markers-allowed", "**\n");
+    let repo = Repo::open(project.root()).unwrap();
+
+    let refused = scan_markers(&repo, &TreeSource::WorkingTree).unwrap_err();
+
+    assert!(
+        refused
+            .to_string()
+            .starts_with(".arbor-markers-allowed line 1: `**` would allow"),
+        "{refused}"
+    );
 }

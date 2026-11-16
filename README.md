@@ -43,6 +43,13 @@ are any:
 arbor check-markers --rev HEAD
 ```
 
+If some files hold Markers on purpose, such as tests or docs about them, list their paths in a
+committed `.arbor-markers-allowed` file at the repository root: gitignore-style patterns, one per
+line, with `#` comments. The check reads the file from what it scans: the working tree, the index
+with `--staged`, or the tree at `--rev`. The list only narrows where the check looks; a pattern
+that would allow every path, such as `*` or `**`, is an error. Arbor's own checks that a Writer's
+Region was stripped, and the Marker check at the end of a Session, ignore the list.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or

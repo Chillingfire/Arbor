@@ -96,6 +96,32 @@ fn a_check_that_cannot_run_fails_with_status_2() {
 }
 
 #[test]
+fn an_allowlist_that_allows_everything_is_refused_with_status_2() {
+    let dir = project();
+    fs::write(dir.path().join(".arbor-markers-allowed"), "*\n").unwrap();
+
+    let checked = check_markers(dir.path(), &[]);
+
+    assert_eq!(checked.status.code(), Some(2), "{checked:?}");
+    let stderr = String::from_utf8_lossy(&checked.stderr);
+    assert!(
+        stderr.contains("would allow Markers everywhere"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn markers_in_allowed_paths_pass() {
+    let dir = project();
+    fs::create_dir_all(dir.path().join("tests")).unwrap();
+    fs::write(dir.path().join("tests/two.rs"), MARKED).unwrap();
+    fs::write(dir.path().join(".arbor-markers-allowed"), "tests/\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+
+    assert!(check_markers(dir.path(), &["--staged"]).status.success());
+}
+
+#[test]
 fn a_session_worktree_may_commit_markers_when_the_hook_allows_it() {
     let dir = project();
     let worktree = dir.path().join(".arbor/sessions/1-two/worktree");
