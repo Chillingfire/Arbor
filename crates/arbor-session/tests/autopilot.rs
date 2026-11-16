@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use arbor_config::Config;
-use arbor_core::{Effect, Event, Phase, Plan, Request, Task, Tier, Usd};
+use arbor_core::{Effect, Event, Phase, Plan, Request, RunOutcome, Task, Tier, Usd};
 use arbor_git::{Mainline, Repo, Worktree};
 use arbor_llm::{
     BoxFuture, ChatRequest, ChatResponse, FinishReason, LlmClient, LlmError, Message, ModelInfo,
@@ -495,4 +495,79 @@ async fn a_decision_that_does_not_fit_the_budget_checkpoint_is_an_error_not_a_se
 
     assert!(err.message.contains("Approve"), "{err}");
     assert_eq!(shown.borrow().len(), 1);
+}
+
+#[tokio::test]
+async fn a_resumed_session_shows_its_checkpoint_again_without_rewriting_the_log() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let plan = two_task_plan();
+    let first_model = ScriptedModel::new([submitted_plan(&plan)]);
+    let stopping = ScriptedOperator {
+        decisions: [Decision::Stop].into(),
+        ..ScriptedOperator::default()
+    };
+    let mut first_run = Autopilot::new(&worktree, &mainline, &first_model, config.clone())
+        .unwrap()
+        .with_operator(stopping);
+    let end = first_run.run(request()).await.unwrap();
+    assert_eq!(end.run_outcome(), Some(RunOutcome::Cancelled));
+    first_run.record_run_end(RunOutcome::Cancelled).unwrap();
+    let logged = first_run.events().to_vec();
+
+    let second_model = ScriptedModel::new([question("Which file?")]);
+    let rejecting = ScriptedOperator {
+        decisions: [Decision::Reject("Smaller Tasks".to_owned())].into(),
+        answers: [None].into(),
+        ..ScriptedOperator::default()
+    };
+    let shown = Rc::clone(&rejecting.shown);
+    let mut new_log = Vec::new();
+    let resumed_events = {
+        let mut resumed = Autopilot::new(&worktree, &mainline, &second_model, config)
+            .unwrap()
+            .with_operator(rejecting)
+            .log_events_to(&mut new_log);
+        let end = resumed.resume(logged.clone()).await.unwrap();
+        assert!(matches!(end, SessionEnd::TierStopped { .. }), "{end:?}");
+        resumed.events().to_vec()
+    };
+
+    assert_eq!(
+        shown.borrow()[0],
+        format!("{:?}", Checkpoint::Plan { plan })
+    );
+    assert_eq!(resumed_events[..logged.len()], logged[..]);
+    let rewritten = arbor_core::read_events(&new_log[..]).unwrap();
+    assert_eq!(rewritten, resumed_events[logged.len()..]);
+    assert_eq!(
+        rewritten[0],
+        Event::CheckpointRejected {
+            feedback: "Smaller Tasks".to_owned()
+        }
+    );
+}
+
+#[tokio::test]
+async fn resuming_redoes_the_model_call_that_was_in_flight() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let plan = two_task_plan();
+    let model = ScriptedModel::new([submitted_plan(&plan)]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::Stop].into(),
+        ..ScriptedOperator::default()
+    };
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    let crashed_log = vec![Event::SessionStarted { request: request() }];
+    let end = autopilot.resume(crashed_log).await.unwrap();
+
+    assert_eq!(end, SessionEnd::NeedsOperator(Effect::ShowPlanCheckpoint));
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    assert!(autopilot.session().usage().tier(Tier::Planner).cost > Usd::ZERO);
 }
