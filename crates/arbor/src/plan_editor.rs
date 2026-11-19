@@ -188,7 +188,10 @@ mod tests {
             assert!(editor_status.success(), "{editor}: {editor_status}");
         }
         let edited_text = fs::read_to_string(&plan_path).unwrap();
-        assert_eq!(edited_text.lines().collect::<Vec<_>>(), ["--wait", "--wait"]);
+        assert_eq!(
+            edited_text.lines().collect::<Vec<_>>(),
+            ["--wait", "--wait"]
+        );
     }
 
     #[test]
