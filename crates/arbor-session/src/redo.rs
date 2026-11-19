@@ -31,7 +31,7 @@ impl CommittingStep {
         match *self {
             Self::Skeleton => Event::SkeletonCommitted { commit: Some(hash) },
             Self::Revision => Event::RevisionCommitted { commit: Some(hash) },
-            Self::WorkUnit(id) => Event::WorkUnitPassed { id },
+            Self::WorkUnit(id) => Event::WorkUnitPassed { id, model: None },
         }
     }
 }

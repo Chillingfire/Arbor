@@ -811,7 +811,10 @@ async fn a_work_unit_committed_by_a_killed_writer_is_logged_as_passed_not_writte
     assert_eq!(
         autopilot.events()[killed_log.len()..killed_log.len() + 2],
         [
-            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitPassed {
+                id: WorkUnitId(1),
+                model: None
+            },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(1),
                 commit: written.clone()
