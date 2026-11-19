@@ -6,7 +6,9 @@ use std::fmt;
 
 use arbor_git::{GitError, LineMatch, Repo, TreeSource};
 
-use crate::marker_allowlist::{AllowlistError, MARKER_ALLOWLIST_FILE, MarkerAllowlist};
+use crate::marker_allowlist::{
+    AllowlistError, BroadPattern, MARKER_ALLOWLIST_FILE, MarkerAllowlist,
+};
 use crate::markers::{BEGIN, END, is_begin_marker, is_marker_line};
 
 #[derive(Debug)]
@@ -89,6 +91,12 @@ pub fn allowlist_at(repo: &Repo, commit: &str) -> Result<MarkerAllowlist, ScanEr
         }
         None => Ok(MarkerAllowlist::default()),
     }
+}
+
+/// The patterns of the Marker Allowlist at `commit` that allow most of that commit's files.
+pub fn broad_allowlist_patterns(repo: &Repo, commit: &str) -> Result<Vec<BroadPattern>, ScanError> {
+    let allowlist = allowlist_at(repo, commit)?;
+    Ok(allowlist.broad_patterns(&repo.files_at(commit)?))
 }
 
 fn marker_line(line_match: LineMatch) -> MarkerLine {

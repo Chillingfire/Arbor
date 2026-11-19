@@ -241,3 +241,24 @@ fn the_allowance_needs_both_a_session_branch_and_a_sessions_folder() {
     let in_folder_only = check_markers(&worktree, &["--staged", "--allow-session-worktree"]);
     assert_eq!(in_folder_only.status.code(), Some(1));
 }
+
+#[test]
+fn a_broad_allowlist_pattern_is_warned_about() {
+    let dir = project();
+    for module in 1..=10 {
+        fs::write(dir.path().join(format!("m{module}.rs")), "fn m() {}\n").unwrap();
+    }
+    fs::write(dir.path().join(".arbor-markers-allowed"), "*.rs\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+    git(dir.path(), &["commit", "--quiet", "-m", "Allow all Rust"]);
+
+    let checked = check_markers(dir.path(), &[]);
+
+    assert!(checked.status.success(), "{checked:?}");
+    let stderr = String::from_utf8_lossy(&checked.stderr);
+    assert!(
+        stderr
+            .contains("WARNING: .arbor-markers-allowed: `*.rs` allows 11 of the 12 tracked files"),
+        "{stderr}"
+    );
+}

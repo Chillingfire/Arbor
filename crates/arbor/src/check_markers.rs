@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use arbor_config::{Config, Platform, user_config_path};
 use arbor_git::{Repo, TreeSource};
-use arbor_tiers::scan_markers;
+use arbor_tiers::{broad_allowlist_patterns, scan_markers};
 
 use crate::cli::CheckMarkers;
 
@@ -43,6 +43,9 @@ pub fn run(check: &CheckMarkers) -> ExitCode {
         Ok(marker_lines) => marker_lines,
         Err(err) => return could_not_check(&err.to_string()),
     };
+    if let Some(commit) = &allowlist_commit {
+        warn_about_broad_patterns(&repo, commit);
+    }
     if marker_lines.is_empty() {
         return ExitCode::SUCCESS;
     }
@@ -82,6 +85,14 @@ fn configured_mainline(root: &Path) -> Option<String> {
     Config::load(user_config.as_deref(), root)
         .ok()
         .and_then(|config| config.mainline)
+}
+
+/// A broad pattern is legal, since only the operator knows where Markers belong, but it is said
+/// every time so it can't quietly switch the check off for most of the code.
+fn warn_about_broad_patterns(repo: &Repo, allowlist_commit: &str) {
+    for broad_pattern in broad_allowlist_patterns(repo, allowlist_commit).unwrap_or_default() {
+        eprintln!("arbor: WARNING: {broad_pattern}");
+    }
 }
 
 fn could_not_check(message: &str) -> ExitCode {

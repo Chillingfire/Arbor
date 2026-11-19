@@ -54,7 +54,9 @@ list takes effect for commits once it is committed, and for pushes and CI once i
 mainline. With no such commit, every path is checked.
 
 The list only narrows where the check looks; a pattern that would allow every path, such as `*` or
-`**`, is an error. Arbor's own checks that a Writer's Region was stripped, and the Marker check at
+`**`, is an error. Every file a pattern matches goes unchecked, so `arbor check-markers` warns each
+time a pattern allows more than half of the tracked files, such as `*.rs` or `src/`. Arbor's own
+checks that a Writer's Region was stripped, and the Marker check at
 the end of a Session, ignore the list.
 
 ## License
