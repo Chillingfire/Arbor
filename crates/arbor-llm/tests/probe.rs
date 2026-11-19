@@ -54,10 +54,10 @@ fn scripted(
 }
 
 #[test]
-fn the_probe_asks_for_a_single_token_at_the_temperature() {
+fn the_probe_asks_for_sixteen_tokens_at_the_temperature() {
     let request = probe_request(MODEL, 0.3);
     assert_eq!(request.model, MODEL);
-    assert_eq!(request.max_tokens, Some(1));
+    assert_eq!(request.max_tokens, Some(16));
     assert_eq!(request.temperature, Some(0.3));
     assert!(request.tools.is_empty());
 }
@@ -94,6 +94,59 @@ async fn a_refused_probe_fails_with_the_model_and_temperature() {
         "anthropic/claude-haiku-5.5 refused a call at temperature 0.3: request refused (400): \
          temperature must be at most 1"
     );
+}
+
+#[tokio::test]
+async fn an_unreachable_or_busy_openrouter_is_a_temporary_failure_not_a_refusal() {
+    let outage = LlmError::Server {
+        status: 503,
+        message: "upstream unavailable".to_owned(),
+    };
+    let client = scripted(&["temperature"], Err(outage));
+    let failure = probe_model(&client, MODEL, 0.3).await.unwrap_err();
+    assert!(failure.is_temporary());
+    assert_eq!(
+        failure.to_string(),
+        "Could not probe anthropic/claude-haiku-5.5 at temperature 0.3: server error (503): \
+         upstream unavailable"
+    );
+}
+
+#[test]
+fn only_errors_that_say_nothing_about_the_request_are_temporary() {
+    let temporary = [
+        LlmError::Network {
+            message: "connection refused".to_owned(),
+        },
+        LlmError::Server {
+            status: 502,
+            message: "bad gateway".to_owned(),
+        },
+        LlmError::RateLimited {
+            retry_after: None,
+            message: "slow down".to_owned(),
+        },
+        LlmError::InsufficientCredits {
+            message: "top up".to_owned(),
+        },
+    ];
+    let refusals = [
+        LlmError::Auth {
+            message: "No auth".to_owned(),
+        },
+        LlmError::BadRequest {
+            status: 400,
+            message: "temperature must be at most 1".to_owned(),
+        },
+        LlmError::UnknownModel {
+            id: "x/no-such-model".to_owned(),
+        },
+        LlmError::Decode {
+            message: "not JSON".to_owned(),
+        },
+    ];
+    assert!(temporary.iter().all(LlmError::is_temporary));
+    assert!(!refusals.iter().any(LlmError::is_temporary));
 }
 
 #[tokio::test]

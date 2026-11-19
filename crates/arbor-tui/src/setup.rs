@@ -346,7 +346,7 @@ fn api_key_hints(dialog: &ApiKeyDialog) -> &'static [(&'static str, &'static str
 fn models_lines(dialog: &ModelsDialog) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::raw("No model check is on record for this config. Each model is probed once with"),
-        Line::raw("a one-token call at its temperature before a Session uses it."),
+        Line::raw("a short call at its temperature before a Session uses it."),
         Line::default(),
     ];
     match &dialog.manual {
