@@ -16,7 +16,7 @@ pub use leaving::UnfinishedSession;
 pub use modal::{CheckpointModal, Modal, QuestionsModal, TaskRow};
 pub use setup::{
     ApiKeyDialog, KeyStorage, ManualRole, ManualRoles, ModelsDialog, SetupDialog, SetupOutcome,
-    draw_setup,
+    UncheckedKey, draw_setup,
 };
 pub use ui::{
     Confirmation, DetailTab, Focus, RunningActivity, StatusInfo, TreeNode, UiState, draw,

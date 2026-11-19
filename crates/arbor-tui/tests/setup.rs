@@ -76,6 +76,79 @@ fn esc_leaves_the_key_dialog_and_backs_out_of_the_storage_choice() {
 }
 
 #[test]
+fn a_key_openrouter_could_not_check_can_be_checked_again_or_used_unchecked() {
+    let unchecked = || {
+        SetupDialog::unchecked_api_key(
+            "network error: connection refused".to_owned(),
+            "sk-or-new1234".to_owned(),
+            KeyStorage::UserConfig,
+        )
+    };
+    let mut dialog = unchecked();
+    let shown = screen(&dialog);
+    assert!(shown.contains("network error: connection refused"));
+    assert!(shown.contains("use unchecked"));
+    assert!(shown.contains("1234"));
+    assert!(!shown.contains("sk-or-new"));
+    dialog.paste("typed over");
+    assert_eq!(press(&mut dialog, KeyCode::Char('x')), None);
+    assert_eq!(
+        press(&mut dialog, KeyCode::Enter),
+        Some(SetupOutcome::ApiKey {
+            api_key: "sk-or-new1234".to_owned(),
+            storage: KeyStorage::UserConfig,
+        })
+    );
+
+    let mut dialog = unchecked();
+    assert_eq!(
+        press(&mut dialog, KeyCode::Char('c')),
+        Some(SetupOutcome::UncheckedApiKey("sk-or-new1234".to_owned()))
+    );
+    assert_eq!(
+        press(&mut unchecked(), KeyCode::Esc),
+        Some(SetupOutcome::Quit)
+    );
+}
+
+#[test]
+fn roles_openrouter_could_not_probe_can_be_probed_again_or_used_unprobed() {
+    let unprobed = || {
+        SetupDialog::unprobed_models(
+            custom_roles(),
+            vec!["Could not probe x/writer at temperature 0.2: network error".to_owned()],
+        )
+    };
+    let shown = screen(&unprobed());
+    assert!(shown.contains("Chosen"));
+    assert!(shown.contains("x/writer  at 0.2"));
+    assert!(shown.contains("Could not probe x/writer"));
+    assert!(shown.contains("continue unprobed"));
+    assert_eq!(
+        press(&mut unprobed(), KeyCode::Enter),
+        Some(SetupOutcome::Roles(custom_roles()))
+    );
+    assert_eq!(
+        press(&mut unprobed(), KeyCode::Char('c')),
+        Some(SetupOutcome::UnprobedRoles(custom_roles()))
+    );
+    assert_eq!(
+        press(&mut unprobed(), KeyCode::Char('r')),
+        Some(SetupOutcome::Roles(Roles::recommended()))
+    );
+}
+
+#[test]
+fn a_refused_choice_offers_no_way_past_the_probe() {
+    let mut dialog = SetupDialog::models(
+        custom_roles(),
+        vec!["x/writer refused a call at temperature 0.2".to_owned()],
+    );
+    assert!(!screen(&dialog).contains("continue unprobed"));
+    assert_eq!(press(&mut dialog, KeyCode::Char('c')), None);
+}
+
+#[test]
 fn keys_are_ignored_while_checking() {
     let mut dialog = SetupDialog::models(custom_roles(), vec![]);
     dialog.set_checking(true);

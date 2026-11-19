@@ -42,20 +42,32 @@ fn settle_api_key(
     }
     let mut dialog = SetupDialog::api_key(None);
     loop {
-        let SetupOutcome::ApiKey { api_key, storage } = next_outcome(terminal, app, &mut dialog)?
-        else {
-            return Ok(ControlFlow::Break(()));
+        let (api_key, storage) = match next_outcome(terminal, app, &mut dialog)? {
+            SetupOutcome::ApiKey { api_key, storage } => (api_key, storage),
+            SetupOutcome::UncheckedApiKey(api_key) => {
+                app.view.push_note(
+                    "The API key is used unchecked and kept for this session only, so it is asked \
+                     for and checked again next run.",
+                    Tone::Failure,
+                );
+                project.typed_api_key = Some(api_key);
+                return Ok(ControlFlow::Continue(()));
+            }
+            _ => return Ok(ControlFlow::Break(())),
         };
         dialog.set_checking(true);
         let key_to_check = api_key.clone();
         let checked = wait_for(terminal, app, &dialog, move || {
             block_on(async move { OpenRouterClient::new(key_to_check).check_key().await })
-                .and_then(|key_check| key_check.map_err(|err| err.to_string()))
         })?;
         match checked {
             None => return Ok(ControlFlow::Break(())),
-            Some(Err(problem)) => dialog = SetupDialog::api_key(Some(problem)),
-            Some(Ok(())) => {
+            Some(Err(runtime_problem)) => dialog = SetupDialog::api_key(Some(runtime_problem)),
+            Some(Ok(Err(key_error))) if key_error.is_temporary() => {
+                dialog = SetupDialog::unchecked_api_key(key_error.to_string(), api_key, storage);
+            }
+            Some(Ok(Err(key_error))) => dialog = SetupDialog::api_key(Some(key_error.to_string())),
+            Some(Ok(Ok(()))) => {
                 if storage == KeyStorage::UserConfig {
                     save_key(app, project, &api_key);
                 }
@@ -105,8 +117,15 @@ fn settle_models(
     };
     let mut dialog = SetupDialog::models(project.config.roles.clone(), config_problems);
     loop {
-        let SetupOutcome::Roles(roles) = next_outcome(terminal, app, &mut dialog)? else {
-            return Ok(ControlFlow::Break(()));
+        let roles = match next_outcome(terminal, app, &mut dialog)? {
+            SetupOutcome::Roles(roles) => roles,
+            SetupOutcome::UnprobedRoles(roles) => {
+                app.view
+                    .push_note(unprobed_note(&cache.unprobed(&roles)), Tone::Failure);
+                use_roles(app, project, roles);
+                return Ok(ControlFlow::Continue(()));
+            }
+            _ => return Ok(ControlFlow::Break(())),
         };
         let chosen_problems = range_problems(&roles);
         if !chosen_problems.is_empty() {
@@ -122,9 +141,9 @@ fn settle_models(
         })?;
         let probe_round = match probed {
             None => return Ok(ControlFlow::Break(())),
-            Some(Err(problem)) => ProbeRound {
-                passed: Vec::new(),
-                failures: vec![problem],
+            Some(Err(runtime_problem)) => ProbeRound {
+                refusals: vec![runtime_problem],
+                ..ProbeRound::default()
             },
             Some(Ok(probe_round)) => probe_round,
         };
@@ -141,8 +160,14 @@ fn settle_models(
                 Tone::Failure,
             );
         }
-        if !probe_round.failures.is_empty() {
-            dialog = SetupDialog::models(roles, probe_round.failures);
+        if !probe_round.refusals.is_empty() {
+            let mut problems = probe_round.refusals;
+            problems.extend(probe_round.unreachable);
+            dialog = SetupDialog::models(roles, problems);
+            continue;
+        }
+        if !probe_round.unreachable.is_empty() {
+            dialog = SetupDialog::unprobed_models(roles, probe_round.unreachable);
             continue;
         }
         for note in probe_notes(&roles, &probe_round.passed) {
@@ -176,11 +201,13 @@ fn range_problems(roles: &Roles) -> Vec<String> {
         .collect()
 }
 
-/// The probes of one choice of roles: those that passed, and why the others failed.
+/// The probes of one choice of roles: those that passed, why the model refused the others, and
+/// why OpenRouter couldn't be reached to probe the rest.
 #[derive(Debug, Default, PartialEq)]
 struct ProbeRound {
     passed: Vec<(RoleConfig, ProbeReport)>,
-    failures: Vec<String>,
+    refusals: Vec<String>,
+    unreachable: Vec<String>,
 }
 
 async fn probe_all(client: &dyn LlmClient, unprobed: Vec<RoleConfig>) -> ProbeRound {
@@ -188,10 +215,24 @@ async fn probe_all(client: &dyn LlmClient, unprobed: Vec<RoleConfig>) -> ProbeRo
     for role in unprobed {
         match probe_model(client, &role.model, role.temperature).await {
             Ok(report) => probe_round.passed.push((role, report)),
-            Err(failure) => probe_round.failures.push(failure.to_string()),
+            Err(failure) if failure.is_temporary() => {
+                probe_round.unreachable.push(failure.to_string());
+            }
+            Err(failure) => probe_round.refusals.push(failure.to_string()),
         }
     }
     probe_round
+}
+
+fn unprobed_note(unprobed: &[RoleConfig]) -> String {
+    let models: Vec<String> = unprobed
+        .iter()
+        .map(|role| format!("{} at {}", role.model, role.temperature))
+        .collect();
+    format!(
+        "Continuing without probing {}, so they are probed again next run.",
+        models.join(", ")
+    )
 }
 
 /// The event log lines after the probes pass: the parameters a model doesn't list, and that a
@@ -359,39 +400,53 @@ mod tests {
     }
 
     #[test]
-    fn probing_keeps_the_passes_and_explains_each_failure() {
+    fn probing_keeps_the_passes_and_tells_refusals_from_an_unreachable_openrouter() {
         let roles = Roles::recommended();
         let refusal = LlmError::BadRequest {
             status: 400,
             message: "temperature out of range".to_owned(),
         };
+        let outage = LlmError::Network {
+            message: "connection refused".to_owned(),
+        };
         let client = ScriptedClient::new(Fixture {
             exchanges: vec![
                 probe_exchange(&roles.planner, Ok(probe_reply(&roles.planner.model))),
+                probe_exchange(&roles.scaffolder, Err(outage)),
                 probe_exchange(&roles.writer, Err(refusal)),
             ],
             models: vec![
                 model_info(&roles.planner.model, &["temperature"]),
+                model_info(&roles.scaffolder.model, &["temperature"]),
                 model_info(&roles.writer.model, &["temperature", "seed"]),
             ],
         });
 
-        let unprobed = vec![roles.planner.clone(), roles.writer.clone()];
+        let unprobed = vec![
+            roles.planner.clone(),
+            roles.scaffolder.clone(),
+            roles.writer.clone(),
+        ];
         let probe_round = block_on(probe_all(&client, unprobed)).unwrap();
 
         assert_eq!(
             probe_round.passed,
             vec![(roles.planner.clone(), report(true, false))]
         );
-        assert_eq!(probe_round.failures.len(), 1);
-        assert!(probe_round.failures[0].contains(&roles.writer.model));
-        assert!(probe_round.failures[0].contains("temperature out of range"));
+        assert_eq!(probe_round.refusals.len(), 1);
+        assert!(probe_round.refusals[0].contains(&roles.writer.model));
+        assert!(probe_round.refusals[0].contains("temperature out of range"));
+        assert_eq!(probe_round.unreachable.len(), 1);
+        assert!(probe_round.unreachable[0].starts_with("Could not probe"));
+        assert!(probe_round.unreachable[0].contains(&roles.scaffolder.model));
         assert_eq!(client.remaining(), 0);
     }
 
     #[test]
     fn the_notes_warn_about_unlisted_parameters_and_silent_clamping() {
-        let roles = Roles::recommended();
+        let mut roles = Roles::recommended();
+        roles.planner.temperature = 0.7;
+        roles.writer.temperature = 0.1;
         let passed = vec![
             (roles.planner.clone(), report(false, false)),
             (roles.scaffolder.clone(), report(true, false)),
@@ -400,12 +455,22 @@ mod tests {
         let notes = probe_notes(&roles, &passed);
         assert_eq!(notes.len(), 3);
         assert!(notes[0].starts_with("The Planner model"));
-        assert!(notes[0].contains("temperature"));
+        assert!(notes[0].contains("temperature 0.7"));
         assert!(notes[1].starts_with("The Writer model"));
         assert!(notes[1].contains("seed"));
         assert_eq!(
             notes[2],
             "Probed 3 models for $0.0003. A provider may still clamp a temperature silently."
+        );
+    }
+
+    #[test]
+    fn continuing_unprobed_names_the_models_that_are_probed_next_run() {
+        let roles = Roles::recommended();
+        assert_eq!(
+            unprobed_note(&[roles.planner.clone(), roles.writer.clone()]),
+            "Continuing without probing anthropic/claude-opus-5.5 at 0.5, \
+             anthropic/claude-haiku-5.5 at 0, so they are probed again next run."
         );
     }
 
