@@ -236,10 +236,17 @@ fn unprobed_note(unprobed: &[RoleConfig]) -> String {
 }
 
 /// The event log lines after the probes pass: the parameters a model doesn't list, and that a
-/// passed probe can't show a silent clamp.
+/// passed probe can't show a silent clamp. A role left at its recommendation gets no parameter
+/// warning: the Operator chose nothing there, and the warning would repeat on every first run.
 fn probe_notes(roles: &Roles, passed: &[(RoleConfig, ProbeReport)]) -> Vec<String> {
     let mut notes = Vec::new();
-    for (role_name, role) in roles.named() {
+    let recommended = Roles::recommended();
+    for ((role_name, role), (_, recommended_role)) in
+        roles.named().into_iter().zip(recommended.named())
+    {
+        if role == recommended_role {
+            continue;
+        }
         let Some((_, report)) = passed.iter().find(|(probed, _)| probed == role) else {
             continue;
         };
@@ -461,6 +468,20 @@ mod tests {
         assert_eq!(
             notes[2],
             "Probed 3 models for $0.0003. A provider may still clamp a temperature silently."
+        );
+    }
+
+    #[test]
+    fn the_recommended_roles_raise_no_warnings_about_themselves() {
+        let roles = Roles::recommended();
+        let passed = vec![
+            (roles.planner.clone(), report(false, false)),
+            (roles.scaffolder.clone(), report(false, false)),
+            (roles.writer.clone(), report(false, false)),
+        ];
+        assert_eq!(
+            probe_notes(&roles, &passed),
+            vec!["Probed 3 models for $0.0003. A provider may still clamp a temperature silently."]
         );
     }
 
