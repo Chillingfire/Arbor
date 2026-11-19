@@ -47,21 +47,28 @@ fn scan_checkout_and_mainline(repo: &Repo, config: &Config) -> Vec<Finding> {
             Some(branch) => format!("your checkout ({branch})"),
             None => "your checkout".to_owned(),
         };
-        findings.extend(scan(repo, place, &TreeSource::WorkingTree));
+        let head = repo.head_commit();
+        findings.extend(scan(repo, place, &TreeSource::WorkingTree, head.as_deref()));
     }
     match repo.mainline(config.mainline.as_deref()) {
         Ok(mainline) => {
             let start_point = mainline.start_point();
             let place = format!("the mainline {start_point}");
-            findings.extend(scan(repo, place, &TreeSource::Revision(start_point)));
+            let source = TreeSource::Revision(start_point.clone());
+            findings.extend(scan(repo, place, &source, Some(&start_point)));
         }
         Err(err) => eprintln!("arbor: could not check the mainline for Markers: {err}"),
     }
     findings
 }
 
-fn scan(repo: &Repo, place: String, source: &TreeSource) -> Option<Finding> {
-    match scan_markers(repo, source) {
+fn scan(
+    repo: &Repo,
+    place: String,
+    source: &TreeSource,
+    allowlist_commit: Option<&str>,
+) -> Option<Finding> {
+    match scan_markers(repo, source, allowlist_commit) {
         Ok(marker_lines) if marker_lines.is_empty() => None,
         Ok(marker_lines) => Some(Finding {
             place,
