@@ -167,7 +167,7 @@ fn the_listing_shows_status_cost_age_and_time_until_pruned() {
 }
 
 #[test]
-fn the_listing_counts_markers_at_the_branch_tip() {
+fn the_listing_counts_markers_at_the_branch_tip_outside_the_operators_allowlist() {
     let project = Project::new();
     let folder = project.session("Markers", 1, &[started("Markers")], DAY);
     commit_in(
@@ -180,6 +180,12 @@ fn the_listing_counts_markers_at_the_branch_tip() {
     assert_eq!(summaries[0].pruned_in, None);
 
     commit_in(&folder, ".arbor-markers-allowed", "lib.rs\n");
+    let summaries = list_sessions(&project.repo, 0, SystemTime::now()).unwrap();
+    assert_eq!(summaries[0].markers_at_tip, Some(2));
+
+    fs::write(project.root().join(".arbor-markers-allowed"), "lib.rs\n").unwrap();
+    git(project.root(), &["add", "--all"]);
+    git(project.root(), &["commit", "--quiet", "-m", "Allow lib.rs"]);
     let summaries = list_sessions(&project.repo, 0, SystemTime::now()).unwrap();
     assert_eq!(summaries[0].markers_at_tip, Some(0));
 }

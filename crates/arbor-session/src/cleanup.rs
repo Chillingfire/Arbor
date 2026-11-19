@@ -13,14 +13,14 @@ use crate::store::{
     summarize,
 };
 
-/// The Marker lines at the tip of `branch`, outside the paths its Marker Allowlist names, or
-/// `None` when the branch is gone or can't be scanned.
+/// The Marker lines at the tip of `branch`, outside the paths the Marker Allowlist at the
+/// operator's `HEAD` names, or `None` when the branch is gone or can't be scanned.
 pub fn branch_markers(repo: &Repo, branch: &str) -> Option<usize> {
     if !repo.branch_exists(branch).ok()? {
         return None;
     }
     let tip = TreeSource::Revision(format!("refs/heads/{branch}"));
-    scan_markers(repo, &tip)
+    scan_markers(repo, &tip, repo.head_commit().as_deref())
         .ok()
         .map(|marker_lines| marker_lines.len())
 }

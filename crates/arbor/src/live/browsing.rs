@@ -196,7 +196,13 @@ fn claim(
 fn note_open_regions(app: &mut App, folder: &SessionFolder) {
     let scanned = Repo::open(folder.worktree_path())
         .map_err(ScanError::Git)
-        .and_then(|repo| scan_markers(&repo, &TreeSource::WorkingTree));
+        .and_then(|repo| {
+            scan_markers(
+                &repo,
+                &TreeSource::WorkingTree,
+                repo.head_commit().as_deref(),
+            )
+        });
     match scanned {
         Ok(marker_lines) => app
             .view
