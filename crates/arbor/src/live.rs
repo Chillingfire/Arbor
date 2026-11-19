@@ -231,6 +231,7 @@ fn event_loop(
     }
     loop {
         run.follow(app);
+        app.ui_state.nothing_running = run.session.is_none();
         terminal.draw(|frame| app.draw(frame))?;
         // Take every event already waiting before drawing again, so a paste doesn't trail behind.
         let mut event_waiting = event::poll(FRAME)?;

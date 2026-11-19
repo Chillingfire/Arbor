@@ -346,6 +346,26 @@ fn rendered_with(view: &SessionView, ui_state: &UiState) -> String {
 }
 
 #[test]
+fn the_prompt_asks_for_the_next_request_once_nothing_runs() {
+    let view = SessionView::from_events(&events()).unwrap();
+    let running = rendered_with(&view, &UiState::default());
+    assert!(
+        running.contains("A new Request can start once this Session ends"),
+        "{running}"
+    );
+
+    let ended = UiState {
+        nothing_running: true,
+        ..UiState::default()
+    };
+    let ended_screen = rendered_with(&view, &ended);
+    assert!(
+        ended_screen.contains("Describe the next change you want"),
+        "{ended_screen}"
+    );
+}
+
+#[test]
 fn the_selection_stays_on_its_task_when_work_units_arrive_above_it() {
     let mut view = SessionView::from_events(&events()[..3]).unwrap();
     let mut ui_state = UiState {
