@@ -196,18 +196,61 @@ pub fn problems(repo: &Repo) -> Result<Vec<HookProblem>, String> {
     Ok(hook_problems)
 }
 
-/// Writes Arbor's hooks again over the ones in `hook_problems`. The operator asked for it.
-pub fn reinstall(repo: &Repo, hook_problems: &[HookProblem]) -> Result<(), String> {
+/// Writes Arbor's hooks again over the ones in `hook_problems`. The operator asked for it. An
+/// edited hook is first copied aside, and the copies' paths are returned.
+pub fn reinstall(repo: &Repo, hook_problems: &[HookProblem]) -> Result<Vec<PathBuf>, String> {
     let hooks_dir = default_hooks_dir(repo)?;
+    let mut kept_copies = Vec::new();
     for hook_problem in hook_problems {
         let (HookProblem::Missing(name) | HookProblem::Edited(name)) = hook_problem else {
             continue;
         };
-        if let Some(hook) = MARKER_HOOKS.iter().find(|hook| hook.name == *name) {
-            write_hook(&hooks_dir.join(hook.name), hook)?;
+        let Some(hook) = MARKER_HOOKS.iter().find(|hook| hook.name == *name) else {
+            continue;
+        };
+        let hook_path = hooks_dir.join(hook.name);
+        if matches!(hook_problem, HookProblem::Edited(_)) {
+            kept_copies.push(keep_copy(&hook_path)?);
         }
+        write_hook(&hook_path, hook)?;
     }
-    Ok(())
+    Ok(kept_copies)
+}
+
+/// Copies an edited hook to `<name>.arbor-replaced`, or a numbered name if that is taken, so
+/// the operator's changes survive the reinstall.
+fn keep_copy(hook_path: &Path) -> Result<PathBuf, String> {
+    let failed = |err: io::Error| format!("{}: {err}", hook_path.display());
+    let file_name = hook_path.file_name().unwrap_or_default().to_string_lossy();
+    let copy_path = (0..)
+        .map(|attempt| {
+            let suffix = if attempt == 0 {
+                String::new()
+            } else {
+                format!(".{attempt}")
+            };
+            hook_path.with_file_name(format!("{file_name}.arbor-replaced{suffix}"))
+        })
+        .find(|copy_path| !copy_path.exists())
+        .unwrap_or_default();
+    fs::copy(hook_path, &copy_path).map_err(failed)?;
+    Ok(copy_path)
+}
+
+/// Replacing a hook the operator changed needs a yes typed out; a missing one is reinstalled on
+/// Enter.
+fn reinstall_question(hook_problems: &[HookProblem]) -> (&'static str, bool) {
+    if hook_problems
+        .iter()
+        .any(|hook_problem| matches!(hook_problem, HookProblem::Edited(_)))
+    {
+        (
+            "Reinstall them? A changed hook is kept as <name>.arbor-replaced. [y/N] ",
+            false,
+        )
+    } else {
+        ("Reinstall them? [Y/n] ", true)
+    }
 }
 
 /// Warns about broken hooks on stderr and, at a terminal, offers to reinstall them.
@@ -229,24 +272,41 @@ pub fn check_health(repo: &Repo) {
     if !hook_problems.iter().any(HookProblem::can_reinstall) || !io::stdin().is_terminal() {
         return;
     }
-    if !ask_yes("Reinstall them? [Y/n] ") {
+    let (question, default_yes) = reinstall_question(&hook_problems);
+    if !ask(question, default_yes) {
         return;
     }
     match reinstall(repo, &hook_problems) {
-        Ok(()) => eprintln!("arbor: reinstalled the hooks."),
+        Ok(kept_copies) => {
+            eprintln!("arbor: reinstalled the hooks.");
+            for kept_copy in kept_copies {
+                eprintln!(
+                    "arbor: your changed hook is kept as {}",
+                    kept_copy.display()
+                );
+            }
+        }
         Err(err) => eprintln!("arbor: could not reinstall the hooks: {err}"),
     }
 }
 
-/// Reads a yes or no from stdin. An empty answer, or none at all, is yes.
-pub fn ask_yes(question: &str) -> bool {
+/// Reads a yes or no from stdin. An empty answer, or none at all, is `default_yes`.
+pub fn ask(question: &str, default_yes: bool) -> bool {
     eprint!("{question}");
     let _ = io::stderr().flush();
     let mut answer = String::new();
     if io::stdin().lock().read_line(&mut answer).is_err() {
-        return true;
+        return default_yes;
     }
-    !matches!(answer.trim().to_ascii_lowercase().as_str(), "n" | "no")
+    answer_means_yes(&answer, default_yes)
+}
+
+fn answer_means_yes(answer: &str, default_yes: bool) -> bool {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => true,
+        "n" | "no" => false,
+        _ => default_yes,
+    }
 }
 
 fn default_hooks_dir(repo: &Repo) -> Result<PathBuf, String> {
@@ -343,8 +403,49 @@ mod tests {
                 HookProblem::Missing("pre-push")
             ]
         );
-        reinstall(&repo, &hook_problems).unwrap();
+        let kept_copies = reinstall(&repo, &hook_problems).unwrap();
         assert_eq!(problems(&repo).unwrap(), []);
+        assert_eq!(kept_copies, [hook_path(&repo, "pre-commit.arbor-replaced")]);
+        assert_eq!(
+            fs::read_to_string(&kept_copies[0]).unwrap(),
+            "#!/bin/sh\nexit 0\n"
+        );
+    }
+
+    #[test]
+    fn a_second_reinstall_keeps_the_earlier_copy() {
+        let (_dir, repo) = repository();
+        install(&repo).unwrap();
+        for edit in ["first", "second"] {
+            fs::write(hook_path(&repo, "pre-commit"), edit).unwrap();
+            reinstall(&repo, &problems(&repo).unwrap()).unwrap();
+        }
+        let kept = |name| fs::read_to_string(hook_path(&repo, name)).unwrap();
+        assert_eq!(kept("pre-commit.arbor-replaced"), "first");
+        assert_eq!(kept("pre-commit.arbor-replaced.1"), "second");
+    }
+
+    #[test]
+    fn replacing_a_changed_hook_needs_a_typed_yes() {
+        let (question, default_yes) = reinstall_question(&[
+            HookProblem::Missing("pre-push"),
+            HookProblem::Edited("pre-commit"),
+        ]);
+        assert!(question.ends_with("[y/N] "), "{question}");
+        assert!(!default_yes);
+        let (question, default_yes) = reinstall_question(&[HookProblem::Missing("pre-push")]);
+        assert!(question.ends_with("[Y/n] "), "{question}");
+        assert!(default_yes);
+    }
+
+    #[test]
+    fn an_empty_or_unclear_answer_takes_the_default() {
+        for default_yes in [true, false] {
+            assert_eq!(answer_means_yes("\n", default_yes), default_yes);
+            assert_eq!(answer_means_yes("maybe\n", default_yes), default_yes);
+            assert!(answer_means_yes(" Yes\n", default_yes));
+            assert!(!answer_means_yes("N\n", default_yes));
+        }
     }
 
     #[test]

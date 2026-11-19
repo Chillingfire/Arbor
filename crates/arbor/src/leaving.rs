@@ -19,7 +19,9 @@ impl StartedSession {
     /// worktree that is gone.
     pub fn unfinished(&self, running: bool) -> Option<UnfinishedSession> {
         let repo = Repo::open(&self.worktree).ok()?;
-        let marker_lines = scan_markers(&repo, &TreeSource::WorkingTree).unwrap_or_default();
+        let head = repo.head_commit();
+        let marker_lines =
+            scan_markers(&repo, &TreeSource::WorkingTree, head.as_deref()).unwrap_or_default();
         if self.finished && !running && marker_lines.is_empty() {
             return None;
         }

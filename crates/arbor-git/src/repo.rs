@@ -46,6 +46,15 @@ impl Repo {
         git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok()
     }
 
+    /// The commit `HEAD` points at, or `None` before the first commit.
+    pub fn head_commit(&self) -> Option<String> {
+        git(
+            &self.root,
+            &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+        )
+        .ok()
+    }
+
     /// Whether this checkout is a Session's worktree: on an `arbor/` branch and inside a
     /// [`SESSIONS_DIR`]. Its commits hold Markers by design (ADR-0002).
     pub fn is_session_worktree(&self) -> bool {

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use arbor_git::{Repo, TreeSource};
-use arbor_tiers::{MarkerLine, scan_markers};
+use arbor_tiers::{MarkerLine, allowlist_at, scan_markers};
 use tempfile::{TempDir, tempdir};
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -57,7 +57,7 @@ impl Project {
 
     fn scan(&self, source: TreeSource) -> Vec<String> {
         let repo = Repo::open(self.root()).unwrap();
-        scan_markers(&repo, &source)
+        scan_markers(&repo, &source, None)
             .unwrap()
             .iter()
             .map(MarkerLine::to_string)
@@ -160,7 +160,7 @@ fn a_revision_that_is_not_a_commit_or_looks_like_an_option_is_refused() {
     let project = Project::new();
     let repo = Repo::open(project.root()).unwrap();
     for revision in ["no-such-branch", "--output=x", ""] {
-        let scanned = scan_markers(&repo, &TreeSource::Revision(revision.into()));
+        let scanned = scan_markers(&repo, &TreeSource::Revision(revision.into()), None);
         assert!(scanned.is_err(), "{revision:?}");
     }
 }
@@ -170,44 +170,55 @@ fn only_a_begin_marker_opens_a_region() {
     let project = Project::new();
     project.write("src/two.rs", MARKED);
     let repo = Repo::open(project.root()).unwrap();
-    let marker_lines = scan_markers(&repo, &TreeSource::WorkingTree).unwrap();
+    let marker_lines = scan_markers(&repo, &TreeSource::WorkingTree, None).unwrap();
     assert!(marker_lines.is_empty());
     git(project.root(), &["add", "src/two.rs"]);
-    let marker_lines = scan_markers(&repo, &TreeSource::WorkingTree).unwrap();
+    let marker_lines = scan_markers(&repo, &TreeSource::WorkingTree, None).unwrap();
     let opening: Vec<bool> = marker_lines.iter().map(MarkerLine::opens_region).collect();
     assert_eq!(opening, [true, false]);
 }
 
 #[test]
-fn the_allowlist_is_read_from_the_same_source_as_the_scan() {
+fn the_allowlist_is_read_from_the_named_commit_not_from_the_scanned_tree() {
     let project = Project::new();
     project.write("tests/fixture.rs", MARKED);
-    project.write("src/two.rs", MARKED);
-    project.commit("Add Markers");
     project.write(
         ".arbor-markers-allowed",
         "# Fixtures hold Markers.\ntests/\n",
     );
-    git(project.root(), &["add", ".arbor-markers-allowed"]);
-    project.write(".arbor-markers-allowed", "tests/\nsrc/two.rs\n");
-
-    assert_eq!(project.scan(TreeSource::WorkingTree), Vec::<String>::new());
-    let staged = project.scan(TreeSource::Staged);
-    assert_eq!(staged.len(), 2);
-    assert!(staged.iter().all(|found| found.starts_with("src/two.rs:")));
-    assert_eq!(project.scan(TreeSource::Revision("HEAD".into())).len(), 4);
     project.commit("Allow the fixtures");
-    assert!(project.scan(TreeSource::Revision("HEAD".into())).is_empty());
-    assert_eq!(project.scan(TreeSource::Revision("HEAD~1".into())).len(), 4);
+    project.write("src/two.rs", MARKED);
+    project.write(".arbor-markers-allowed", "tests/\nsrc/two.rs\n");
+    project.commit("Add two and allow it");
+    let repo = Repo::open(project.root()).unwrap();
+    let scan_head = |allowlist_commit| {
+        let source = TreeSource::Revision("HEAD".into());
+        scan_markers(&repo, &source, allowlist_commit)
+            .unwrap()
+            .len()
+    };
+
+    assert_eq!(scan_head(None), 4);
+    assert_eq!(scan_head(Some("HEAD~1")), 2);
+    assert_eq!(scan_head(Some("HEAD")), 0);
+}
+
+#[test]
+fn a_commit_without_an_allowlist_allows_nothing() {
+    let project = Project::new();
+    let repo = Repo::open(project.root()).unwrap();
+    let allowlist = allowlist_at(&repo, "HEAD").unwrap();
+    assert!(!allowlist.allows("tests/fixture.rs"));
 }
 
 #[test]
 fn an_allowlist_that_allows_everything_fails_the_scan() {
     let project = Project::new();
     project.write(".arbor-markers-allowed", "**\n");
+    project.commit("Allow everything");
     let repo = Repo::open(project.root()).unwrap();
 
-    let refused = scan_markers(&repo, &TreeSource::WorkingTree).unwrap_err();
+    let refused = scan_markers(&repo, &TreeSource::WorkingTree, Some("HEAD")).unwrap_err();
 
     assert!(
         refused

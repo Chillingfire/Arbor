@@ -1,12 +1,14 @@
 //! The Marker scan Arbor runs at startup, and `arbor check-markers` runs for git hooks and CI:
 //! every line of a tree that holds a Marker, well-formed or not, outside the paths the Marker
-//! allowlist names (ADR-0002).
+//! Allowlist of a trusted commit names (ADR-0002).
 
 use std::fmt;
 
 use arbor_git::{GitError, LineMatch, Repo, TreeSource};
 
-use crate::marker_allowlist::{AllowlistError, MARKER_ALLOWLIST_FILE, MarkerAllowlist};
+use crate::marker_allowlist::{
+    AllowlistError, BroadPattern, MARKER_ALLOWLIST_FILE, MarkerAllowlist,
+};
 use crate::markers::{BEGIN, END, is_begin_marker, is_marker_line};
 
 #[derive(Debug)]
@@ -56,12 +58,17 @@ impl MarkerLine {
 }
 
 /// Every Marker line in the tracked text files of `source`, in file order, except in the paths
-/// the Marker allowlist in that same `source` names.
-pub fn scan_markers(repo: &Repo, source: &TreeSource) -> Result<Vec<MarkerLine>, ScanError> {
-    let allowlist = match repo.read_file(MARKER_ALLOWLIST_FILE, source)? {
-        Some(allowlist_text) => {
-            MarkerAllowlist::parse(&allowlist_text).map_err(ScanError::Allowlist)?
-        }
+/// the Marker Allowlist at `allowlist_commit` names. With no commit, every path is checked.
+///
+/// The list comes from a commit the caller trusts, never from `source` itself, so a change can't
+/// allowlist its own Markers.
+pub fn scan_markers(
+    repo: &Repo,
+    source: &TreeSource,
+    allowlist_commit: Option<&str>,
+) -> Result<Vec<MarkerLine>, ScanError> {
+    let allowlist = match allowlist_commit {
+        Some(commit) => allowlist_at(repo, commit)?,
         None => MarkerAllowlist::default(),
     };
     // git narrows the search to likely lines; `is_marker_line` decides, so both agree on what a
@@ -73,6 +80,23 @@ pub fn scan_markers(repo: &Repo, source: &TreeSource) -> Result<Vec<MarkerLine>,
         .filter(|candidate| is_marker_line(&candidate.text) && !allowlist.allows(&candidate.file))
         .map(marker_line)
         .collect())
+}
+
+/// The Marker Allowlist committed at `commit`; empty when it has none.
+pub fn allowlist_at(repo: &Repo, commit: &str) -> Result<MarkerAllowlist, ScanError> {
+    let committed = TreeSource::Revision(commit.to_owned());
+    match repo.read_file(MARKER_ALLOWLIST_FILE, &committed)? {
+        Some(allowlist_text) => {
+            MarkerAllowlist::parse(&allowlist_text).map_err(ScanError::Allowlist)
+        }
+        None => Ok(MarkerAllowlist::default()),
+    }
+}
+
+/// The patterns of the Marker Allowlist at `commit` that allow most of that commit's files.
+pub fn broad_allowlist_patterns(repo: &Repo, commit: &str) -> Result<Vec<BroadPattern>, ScanError> {
+    let allowlist = allowlist_at(repo, commit)?;
+    Ok(allowlist.broad_patterns(&repo.files_at(commit)?))
 }
 
 fn marker_line(line_match: LineMatch) -> MarkerLine {

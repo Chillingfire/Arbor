@@ -99,6 +99,8 @@ fn a_check_that_cannot_run_fails_with_status_2() {
 fn an_allowlist_that_allows_everything_is_refused_with_status_2() {
     let dir = project();
     fs::write(dir.path().join(".arbor-markers-allowed"), "*\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+    git(dir.path(), &["commit", "--quiet", "-m", "Allow everything"]);
 
     let checked = check_markers(dir.path(), &[]);
 
@@ -114,11 +116,77 @@ fn an_allowlist_that_allows_everything_is_refused_with_status_2() {
 fn markers_in_allowed_paths_pass() {
     let dir = project();
     fs::create_dir_all(dir.path().join("tests")).unwrap();
-    fs::write(dir.path().join("tests/two.rs"), MARKED).unwrap();
     fs::write(dir.path().join(".arbor-markers-allowed"), "tests/\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+    git(dir.path(), &["commit", "--quiet", "-m", "Allow tests"]);
+    fs::write(dir.path().join("tests/two.rs"), MARKED).unwrap();
     git(dir.path(), &["add", "--all"]);
 
     assert!(check_markers(dir.path(), &["--staged"]).status.success());
+    assert!(check_markers(dir.path(), &[]).status.success());
+}
+
+#[test]
+fn a_change_cannot_allowlist_its_own_markers() {
+    let dir = project();
+    fs::write(dir.path().join("two.rs"), MARKED).unwrap();
+    fs::write(dir.path().join(".arbor-markers-allowed"), "two.rs\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+
+    assert_eq!(
+        check_markers(dir.path(), &["--staged"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(check_markers(dir.path(), &[]).status.code(), Some(1));
+    git(dir.path(), &["switch", "--quiet", "-c", "feature"]);
+    git(
+        dir.path(),
+        &["commit", "--quiet", "-m", "Add two and allow it"],
+    );
+    let pushed = check_markers(dir.path(), &["--rev", "feature"]);
+    assert_eq!(pushed.status.code(), Some(1), "{pushed:?}");
+    let trusting_itself = check_markers(
+        dir.path(),
+        &["--rev", "feature", "--allowlist-rev", "feature"],
+    );
+    assert!(trusting_itself.status.success(), "{trusting_itself:?}");
+}
+
+#[test]
+fn a_revision_is_checked_against_the_mainline_allowlist() {
+    let dir = project();
+    fs::write(dir.path().join(".arbor-markers-allowed"), "tests/\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+    git(dir.path(), &["commit", "--quiet", "-m", "Allow tests"]);
+    git(dir.path(), &["switch", "--quiet", "-c", "feature"]);
+    fs::create_dir_all(dir.path().join("tests")).unwrap();
+    fs::write(dir.path().join("tests/two.rs"), MARKED).unwrap();
+    fs::write(dir.path().join("two.rs"), MARKED).unwrap();
+    fs::write(
+        dir.path().join(".arbor-markers-allowed"),
+        "tests/\ntwo.rs\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "--all"]);
+    git(
+        dir.path(),
+        &["commit", "--quiet", "--no-verify", "-m", "Add two"],
+    );
+
+    let checked = check_markers(dir.path(), &["--rev", "feature"]);
+
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&checked.stdout),
+        "two.rs:2: // ARBOR:BEGIN WU-2\ntwo.rs:4: // ARBOR:END WU-2\n"
+    );
+}
+
+#[test]
+fn an_allowlist_rev_that_is_not_a_commit_fails_with_status_2() {
+    let dir = project();
+    let checked = check_markers(dir.path(), &["--allowlist-rev", "no-such-branch"]);
+    assert_eq!(checked.status.code(), Some(2), "{checked:?}");
 }
 
 #[test]
@@ -172,4 +240,25 @@ fn the_allowance_needs_both_a_session_branch_and_a_sessions_folder() {
     git(&worktree, &["add", "two.rs"]);
     let in_folder_only = check_markers(&worktree, &["--staged", "--allow-session-worktree"]);
     assert_eq!(in_folder_only.status.code(), Some(1));
+}
+
+#[test]
+fn a_broad_allowlist_pattern_is_warned_about() {
+    let dir = project();
+    for module in 1..=10 {
+        fs::write(dir.path().join(format!("m{module}.rs")), "fn m() {}\n").unwrap();
+    }
+    fs::write(dir.path().join(".arbor-markers-allowed"), "*.rs\n").unwrap();
+    git(dir.path(), &["add", "--all"]);
+    git(dir.path(), &["commit", "--quiet", "-m", "Allow all Rust"]);
+
+    let checked = check_markers(dir.path(), &[]);
+
+    assert!(checked.status.success(), "{checked:?}");
+    let stderr = String::from_utf8_lossy(&checked.stderr);
+    assert!(
+        stderr
+            .contains("WARNING: .arbor-markers-allowed: `*.rs` allows 11 of the 12 tracked files"),
+        "{stderr}"
+    );
 }
