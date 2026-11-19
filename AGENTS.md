@@ -14,7 +14,7 @@ How to write code here. Each bold term is a principle name: when a human says "a
 
 ## Code style
 
-- **Zero comments.** Code carries its intent through names and structure, tests included. When a line seems to need a comment, rename, extract a function, or reshape the data until it reads plainly. The one exception is the why a reader can't see in the code, such as a non-obvious constraint, a workaround, or the ADR behind a decision. Never write comment blocks that restate what a function, field, or type does. A one-line doc comment on a public item is fine when it adds something its name doesn't.
+- **Zero comments.** Code carries its intent through names and structure, tests included. When a line seems to need a comment, rename, extract a function, or reshape the data until it reads plainly.
 - **Descriptive names.** Every variable, parameter, and callback argument says what it holds: `teamOne`, `mapIndex`, `interaction`, `serverId`, in loops and callbacks too. In this Rust codebase that means `chat_response`, `check_output`, `tool_results`, or `file_text`, not `response`, `output`, `results`, or `text`. Avoid single letters outside short numeric ranges, and don't use `value`, `data`, `item`, `result`, `tmp`, `buf`, or `out` as names. Struct fields that mirror an external format, such as a JSON key or a logged event, keep that format's name.
 - **Boring code.** Plain if-chains, early returns, and small named helpers. Choose the version a tired reviewer understands in one read over a clever table, curried function, or generated regex.
 - **Reuse before writing.** Existing dependencies, runtime built-ins, and project helpers come first. Add a dependency only when the human agrees it earns its place.
