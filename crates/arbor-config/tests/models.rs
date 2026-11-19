@@ -2,7 +2,7 @@ use std::fs;
 
 use arbor_config::{
     Config, ProbeCache, RoleConfig, Roles, max_temperature, probe_cache_path, save_api_key,
-    save_roles,
+    save_changed_roles,
 };
 use tempfile::tempdir;
 
@@ -131,10 +131,11 @@ fn saved_roles_load_back_and_keep_the_rest_of_the_user_config() {
         fs::read_to_string(&user_config).unwrap() + "[roles.writer]\nmodel = \"x/old\"\n",
     )
     .unwrap();
-    let mut roles = Roles::recommended();
+    let previous = Config::load(Some(&user_config), dir.path()).unwrap().roles;
+    let mut roles = previous.clone();
     roles.writer = role("x/writer", 0.2);
 
-    save_roles(&user_config, &roles).unwrap();
+    save_changed_roles(&user_config, &roles, &previous).unwrap();
 
     let saved_toml = fs::read_to_string(&user_config).unwrap();
     assert!(saved_toml.contains("sk-or-kept"));
@@ -143,10 +144,48 @@ fn saved_roles_load_back_and_keep_the_rest_of_the_user_config() {
 }
 
 #[test]
+fn saving_roles_writes_only_the_roles_that_changed() {
+    let dir = tempdir().unwrap();
+    let user_config = dir.path().join("config.toml");
+    let previous = Roles::recommended();
+    let mut roles = previous.clone();
+    roles.writer.temperature = 0.2;
+
+    save_changed_roles(&user_config, &roles, &previous).unwrap();
+
+    let saved_toml = fs::read_to_string(&user_config).unwrap();
+    assert!(saved_toml.contains("writer"));
+    assert!(!saved_toml.contains("planner"));
+    assert!(!saved_toml.contains("scaffolder"));
+}
+
+#[test]
+fn a_role_set_back_to_its_recommendation_loses_its_entry() {
+    let dir = tempdir().unwrap();
+    let user_config = dir.path().join("config.toml");
+    fs::write(
+        &user_config,
+        "api_key = \"sk-or-kept\"\n\n[roles.planner]\nmodel = \"x/planner\"\ntemperature = 0.9\n",
+    )
+    .unwrap();
+    let previous = Config::load(Some(&user_config), dir.path()).unwrap().roles;
+
+    save_changed_roles(&user_config, &Roles::recommended(), &previous).unwrap();
+
+    let saved_toml = fs::read_to_string(&user_config).unwrap();
+    assert!(!saved_toml.contains("roles"));
+    assert!(saved_toml.contains("sk-or-kept"));
+    let config = Config::load(Some(&user_config), dir.path()).unwrap();
+    assert_eq!(config.roles, Roles::recommended());
+}
+
+#[test]
 fn saving_roles_never_overwrites_an_unreadable_config() {
     let dir = tempdir().unwrap();
     let user_config = dir.path().join("config.toml");
     fs::write(&user_config, "api_key = ").unwrap();
-    assert!(save_roles(&user_config, &Roles::recommended()).is_err());
+    let mut roles = Roles::recommended();
+    roles.writer.temperature = 0.2;
+    assert!(save_changed_roles(&user_config, &roles, &Roles::recommended()).is_err());
     assert_eq!(fs::read_to_string(&user_config).unwrap(), "api_key = ");
 }

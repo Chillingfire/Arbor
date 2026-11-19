@@ -16,7 +16,7 @@ pub use config::{
 pub use detect::{
     Detection, PROJECT_TYPES, ProjectType, detect_project_type, detect_project_type_in,
 };
-pub use files::{PROJECT_CONFIG_FILE, save_api_key, save_project_checks, save_roles};
+pub use files::{PROJECT_CONFIG_FILE, save_api_key, save_changed_roles, save_project_checks};
 pub use paths::{Platform, user_config_path};
 pub use probes::{PROBE_CACHE_FILE, ProbeCache, probe_cache_path};
 pub use temperature::{TemperatureOutOfRange, max_temperature};

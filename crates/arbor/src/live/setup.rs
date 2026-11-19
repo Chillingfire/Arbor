@@ -7,7 +7,9 @@ use std::ops::ControlFlow;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
-use arbor_config::{ProbeCache, RoleConfig, Roles, probe_cache_path, save_api_key, save_roles};
+use arbor_config::{
+    ProbeCache, RoleConfig, Roles, probe_cache_path, save_api_key, save_changed_roles,
+};
 use arbor_llm::{LlmClient, OpenRouterClient, ProbeReport, probe_model};
 use arbor_tui::{App, KeyStorage, SetupDialog, SetupOutcome, Tone, draw_setup};
 use ratatui::DefaultTerminal;
@@ -155,7 +157,7 @@ fn settle_models(
 fn use_roles(app: &mut App, project: &mut Project, roles: Roles) {
     if roles != project.config.roles
         && let Some(user_config) = &project.user_config
-        && let Err(err) = save_roles(user_config, &roles)
+        && let Err(err) = save_changed_roles(user_config, &roles, &project.config.roles)
     {
         app.view.push_note(
             format!("Could not save the models to the user config, so they hold for this run only: {err}"),
