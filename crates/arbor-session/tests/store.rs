@@ -133,7 +133,8 @@ fn the_listing_shows_status_cost_age_and_time_until_pruned() {
         &[started("Add a flag\nwith details"), spent(40), cancelled()],
         3 * DAY,
     );
-    project.session("Crashed run", 2, &[started("Crashed run")], DAY);
+    let crashed = project.session("Crashed run", 2, &[started("Crashed run")], DAY);
+    fs::write(crashed.worktree_path().join("hand-edit.txt"), "by hand\n").unwrap();
     let running = project.session("Running one", 3, &[started("Running one")], Duration::ZERO);
     let _lock = running.lock_run().unwrap();
 
@@ -143,12 +144,14 @@ fn the_listing_shows_status_cost_age_and_time_until_pruned() {
     assert_eq!(statuses[0], &SessionStatus::Running);
     assert!(matches!(statuses[1], SessionStatus::Failed(_)));
     assert_eq!(statuses[2], &SessionStatus::Cancelled);
+    assert!(summaries[1].uncommitted_changes);
     // The listing finds the folders under git's canonical root, which can differ from the
     // temporary path the test made them under, e.g. `/private/var` on macOS.
     let summary = summaries
         .iter()
         .find(|summary| summary.folder.id() == cancelled_session.id())
         .unwrap();
+    assert!(!summary.uncommitted_changes);
     assert_eq!(summary.request, "Add a flag");
     assert_eq!(summary.branch, "arbor/add-a-flag");
     assert_eq!(summary.cost, Usd::from_nanos(40));

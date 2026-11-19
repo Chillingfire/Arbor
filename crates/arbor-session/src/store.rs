@@ -154,6 +154,14 @@ impl SessionFolder {
         }
     }
 
+    /// Whether the worktree holds uncommitted changes. A worktree that is gone or can't be read
+    /// has none to lose.
+    pub fn has_uncommitted_changes(&self) -> bool {
+        Worktree::open(self.worktree_path())
+            .and_then(|worktree| worktree.has_uncommitted_changes())
+            .unwrap_or(false)
+    }
+
     /// Claims the Session for one run until the lock is dropped, so no other run, prune or
     /// delete touches it meanwhile.
     pub fn lock_run(&self) -> Result<RunLock, StoreError> {
@@ -248,6 +256,8 @@ pub struct SessionSummary {
     /// Marker lines at the branch tip outside the paths its Marker Allowlist names, or `None`
     /// when unknown.
     pub markers_at_tip: Option<usize>,
+    /// Whether the worktree holds changes that Resume, Rewind or Delete would discard.
+    pub uncommitted_changes: bool,
 }
 
 impl SessionSummary {
@@ -280,6 +290,7 @@ pub fn summarize(
     let pruned_in = retention(retention_days).map(|kept_for| kept_for.saturating_sub(idle));
     let branch = folder.branch();
     let markers = markers_at_tip(&branch);
+    let uncommitted_changes = folder.has_uncommitted_changes();
     let replayed = folder.read_events().and_then(|events| {
         Ok((
             Session::replay(&events).map_err(StoreError::Replay)?,
@@ -318,6 +329,7 @@ pub fn summarize(
         idle,
         pruned_in,
         markers_at_tip: markers,
+        uncommitted_changes,
     }
 }
 

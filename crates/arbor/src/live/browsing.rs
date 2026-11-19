@@ -72,8 +72,12 @@ pub(super) fn act(
         BrowserOutcome::Delete(folder) => delete(app, project, &folder).map(|()| None),
         _ if running_here => Err("Stop the running Session first.".to_owned()),
         BrowserOutcome::Inspect(folder) => inspect(app, &folder).map(|()| None),
-        BrowserOutcome::Resume(folder) => claim(app, folder, None).map(Some),
-        BrowserOutcome::Rewind(folder, point) => claim(app, folder, Some(&point)).map(Some),
+        BrowserOutcome::Resume(folder) => check_changes_were_listed(app, project, &folder)
+            .and_then(|()| claim(app, folder, None))
+            .map(Some),
+        BrowserOutcome::Rewind(folder, point) => check_changes_were_listed(app, project, &folder)
+            .and_then(|()| claim(app, folder, Some(&point)))
+            .map(Some),
     };
     outcome_result.unwrap_or_else(|message| {
         if let Some(browser) = &mut app.ui_state.browser {
@@ -81,6 +85,38 @@ pub(super) fn act(
         }
         None
     })
+}
+
+/// Refuses when the worktree holds uncommitted changes the listing didn't show, since the Human
+/// Operator wasn't asked about discarding them. The listing is refreshed so the next try asks.
+fn check_changes_were_listed(
+    app: &mut App,
+    project: &Project,
+    folder: &SessionFolder,
+) -> Result<(), String> {
+    let listed_with_changes = app
+        .ui_state
+        .browser
+        .as_ref()
+        .and_then(|browser| {
+            browser
+                .sessions()
+                .iter()
+                .find(|summary| summary.folder == *folder)
+        })
+        .is_some_and(|summary| summary.uncommitted_changes);
+    if listed_with_changes || !folder.has_uncommitted_changes() {
+        return Ok(());
+    }
+    let sessions = list(project)?;
+    if let Some(browser) = &mut app.ui_state.browser {
+        browser.refresh(sessions);
+    }
+    Err(format!(
+        "Session {}'s worktree has gained uncommitted changes since it was listed. Choose again \
+         to see whether they would be discarded.",
+        folder.id()
+    ))
 }
 
 fn read_events(folder: &SessionFolder) -> Result<Vec<Event>, String> {
