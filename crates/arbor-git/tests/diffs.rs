@@ -67,6 +67,20 @@ fn a_diff_covers_commits_and_uncommitted_changes_since_the_base() {
 }
 
 #[test]
+fn a_diff_c_quotes_non_ascii_paths_whatever_the_operators_quote_path_config() {
+    let session = Session::new();
+    git(
+        session.worktree.path(),
+        &["config", "core.quotePath", "false"],
+    );
+    let base = session.worktree.head().unwrap();
+    session.commit_file("\u{e9}.rs", "fn a() {}\n");
+
+    let diff = session.worktree.diff_from(&base).unwrap();
+    assert!(diff.contains("+++ \"b/\\303\\251.rs\"\n"), "{diff}");
+}
+
+#[test]
 fn a_committed_diff_leaves_out_uncommitted_changes() {
     let session = Session::new();
     let base = session.worktree.head().unwrap();

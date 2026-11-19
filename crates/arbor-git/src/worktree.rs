@@ -95,6 +95,8 @@ impl Worktree {
         // Every option the operator's diff config could change is pinned, so the text is the
         // same on every machine.
         let mut diff_args = vec![
+            "-c",
+            "core.quotePath=true",
             "diff",
             "--no-color",
             "--no-ext-diff",
