@@ -6,6 +6,9 @@ use std::fmt;
 use crate::client::LlmClient;
 use crate::types::{ChatRequest, ContentPart, LlmError, Message};
 
+/// Some routes refuse a smaller output limit: OpenAI's Responses API takes at least 16.
+const PROBE_MAX_TOKENS: u32 = 16;
+
 /// The cheapest call that still shows whether the model accepts the request.
 pub fn probe_request(model: &str, temperature: f64) -> ChatRequest {
     ChatRequest {
@@ -14,7 +17,7 @@ pub fn probe_request(model: &str, temperature: f64) -> ChatRequest {
             content: vec![ContentPart::text("Reply with OK.")],
         }],
         temperature: Some(temperature),
-        max_tokens: Some(1),
+        max_tokens: Some(PROBE_MAX_TOKENS),
         ..ChatRequest::default()
     }
 }
@@ -42,6 +45,11 @@ impl fmt::Display for ProbeFailure {
             LlmError::UnknownModel { .. } => {
                 write!(f, "OpenRouter has no model {}", self.model)
             }
+            error if error.is_temporary() => write!(
+                f,
+                "Could not probe {} at temperature {}: {error}",
+                self.model, self.temperature
+            ),
             error => write!(
                 f,
                 "{} refused a call at temperature {}: {error}",
@@ -51,9 +59,16 @@ impl fmt::Display for ProbeFailure {
     }
 }
 
+impl ProbeFailure {
+    /// The probe didn't get an answer about the model, so trying again later may pass.
+    pub fn is_temporary(&self) -> bool {
+        self.error.is_temporary()
+    }
+}
+
 impl std::error::Error for ProbeFailure {}
 
-/// Looks the model up, then makes one `max_tokens: 1` call at `temperature`.
+/// Looks the model up, then makes one short call at `temperature`.
 pub async fn probe_model(
     client: &dyn LlmClient,
     model: &str,

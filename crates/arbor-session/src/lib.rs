@@ -5,6 +5,7 @@
 
 mod cleanup;
 mod operator;
+mod redo;
 mod store;
 
 use std::fmt;
@@ -36,6 +37,7 @@ pub use cleanup::{
 pub use operator::{
     ApproveEverything, Checkpoint, Decision, Operator, Pending, StrongerWriterOffer,
 };
+pub use redo::resume_resets_worktree;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 pub use store::{
@@ -279,29 +281,6 @@ impl<'a> Autopilot<'a> {
             return Ok(());
         }
         self.apply(Event::RunEnded { outcome }).map(drop)
-    }
-
-    /// Puts the worktree where the in-flight step expects it. A Writer, a first Scaffolder run, or
-    /// a Revision starts from the last commit, so edits a killed run left are undone; a Scaffolder
-    /// rerun with feedback revises the rejected Skeleton in place, so it is kept. A Work Unit that
-    /// passed was committed by its Writer, so that commit is `HEAD`.
-    fn prepare_to_redo(&mut self) -> Result<(), AutopilotError> {
-        match self.session.phase() {
-            Phase::Writing { .. }
-            | Phase::Revising { .. }
-            | Phase::Scaffolding { feedback: None, .. } => {
-                let head = self.worktree.head().map_err(failed("reading HEAD"))?;
-                self.worktree
-                    .reset_to(&head)
-                    .map_err(failed("undoing the unfinished step's edits"))?;
-            }
-            Phase::Committing { .. } => {
-                let head = self.worktree.head().map_err(failed("reading HEAD"))?;
-                self.passed_commit = Some(head);
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     async fn carry_out_from(

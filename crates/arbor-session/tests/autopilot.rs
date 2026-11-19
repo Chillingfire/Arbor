@@ -8,7 +8,8 @@ use std::sync::Mutex;
 
 use arbor_config::Config;
 use arbor_core::{
-    ClarificationMode, Effect, Event, Phase, Plan, Request, RunOutcome, Task, Tier, Usd,
+    ClarificationMode, Effect, Event, Phase, Plan, Request, RunOutcome, Task, Tier, Usd, WorkUnit,
+    WorkUnitId,
 };
 use arbor_git::{Mainline, Repo, Worktree};
 use arbor_llm::{
@@ -18,6 +19,7 @@ use arbor_llm::{
 use arbor_session::{
     Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, SessionEnd,
 };
+use arbor_tiers::commit_subject;
 use tempfile::tempdir;
 
 /// A model that answers every call with the same clarifying question and no tool call.
@@ -691,4 +693,153 @@ async fn resuming_redoes_the_model_call_that_was_in_flight() {
     assert_eq!(end, SessionEnd::NeedsOperator(Effect::ShowPlanCheckpoint));
     assert_eq!(model.requests.lock().unwrap().len(), 1);
     assert!(autopilot.session().usage().tier(Tier::Planner).cost > Usd::ZERO);
+}
+
+/// A model that is reachable but fails every call, so a run stops at its first model call.
+struct UnreachableChat;
+
+impl LlmClient for UnreachableChat {
+    fn chat<'a>(
+        &'a self,
+        _request: &'a ChatRequest,
+    ) -> BoxFuture<'a, Result<ChatResponse, LlmError>> {
+        Box::pin(async {
+            Err(LlmError::Server {
+                status: 503,
+                message: "down".to_owned(),
+            })
+        })
+    }
+
+    fn model<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<ModelInfo, LlmError>> {
+        AskingModel.model(id)
+    }
+}
+
+fn work_unit(id: u32, file: &str, spec: &str) -> WorkUnit {
+    WorkUnit {
+        id: WorkUnitId(id),
+        file: file.to_owned(),
+        spec: spec.to_owned(),
+        context: Vec::new(),
+        acceptance_criteria: Vec::new(),
+        test_filter: file.to_owned(),
+    }
+}
+
+fn region(id: u32) -> String {
+    format!("// ARBOR:BEGIN WU-{id}\ntodo!()\n// ARBOR:END WU-{id}\n")
+}
+
+/// The log up to committing the first Task's Skeleton, whose two Work Units fill `a.rs` and
+/// `b.rs`.
+fn log_until_the_skeleton_commit() -> Vec<Event> {
+    vec![
+        Event::SessionStarted { request: request() },
+        Event::PlanSubmitted {
+            plan: two_task_plan(),
+        },
+        Event::PlanApproved {
+            task_order: vec![0, 1],
+        },
+        Event::WorkUnitsSubmitted {
+            work_units: vec![
+                work_unit(1, "a.rs", "Greet the user."),
+                work_unit(2, "b.rs", "Say goodbye."),
+            ],
+        },
+        Event::ScaffoldChecksPassed,
+        Event::ScaffoldApproved,
+    ]
+}
+
+fn commit_all(worktree: &Worktree, subject: &str) -> String {
+    let message = arbor_git::CommitMessage::new(subject).unwrap();
+    worktree
+        .commit(&message)
+        .unwrap()
+        .unwrap()
+        .as_str()
+        .to_owned()
+}
+
+fn write_skeleton(worktree: &Worktree) {
+    std::fs::write(worktree.path().join("a.rs"), region(1)).unwrap();
+    std::fs::write(worktree.path().join("b.rs"), region(2)).unwrap();
+}
+
+#[tokio::test]
+async fn a_skeleton_committed_by_a_killed_run_is_logged_with_its_hash_not_committed_again() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    write_skeleton(&worktree);
+    let skeleton = commit_all(&worktree, "Parse the flag (structure and tests)");
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &UnreachableChat, config).unwrap();
+
+    let resumed = autopilot.resume(log_until_the_skeleton_commit()).await;
+
+    assert!(resumed.is_err(), "the Writer's model call should fail");
+    assert!(
+        autopilot.events().contains(&Event::SkeletonCommitted {
+            commit: Some(skeleton.clone())
+        }),
+        "{:?}",
+        autopilot.events()
+    );
+    assert_eq!(worktree.head().unwrap().as_str(), skeleton);
+}
+
+#[tokio::test]
+async fn a_work_unit_committed_by_a_killed_writer_is_logged_as_passed_not_written_again() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    write_skeleton(&worktree);
+    let skeleton = commit_all(&worktree, "Parse the flag (structure and tests)");
+    std::fs::write(worktree.path().join("a.rs"), "println!(\"hello\");\n").unwrap();
+    let written = commit_all(&worktree, &commit_subject("Greet the user.", "a.rs"));
+    let mut killed_log = log_until_the_skeleton_commit();
+    killed_log.push(Event::SkeletonCommitted {
+        commit: Some(skeleton),
+    });
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &UnreachableChat, config).unwrap();
+
+    let resumed = autopilot.resume(killed_log.clone()).await;
+
+    assert!(resumed.is_err(), "the next Writer's model call should fail");
+    assert_eq!(
+        autopilot.events()[killed_log.len()..killed_log.len() + 2],
+        [
+            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitCommitted {
+                id: WorkUnitId(1),
+                commit: written.clone()
+            },
+        ]
+    );
+    assert_eq!(worktree.head().unwrap().as_str(), written);
+}
+
+#[tokio::test]
+async fn a_writer_killed_before_committing_is_redone_from_the_last_commit() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    write_skeleton(&worktree);
+    let skeleton = commit_all(&worktree, "Parse the flag (structure and tests)");
+    std::fs::write(worktree.path().join("a.rs"), "half written\n").unwrap();
+    let mut killed_log = log_until_the_skeleton_commit();
+    killed_log.push(Event::SkeletonCommitted {
+        commit: Some(skeleton.clone()),
+    });
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &UnreachableChat, config).unwrap();
+
+    let resumed = autopilot.resume(killed_log.clone()).await;
+
+    assert!(resumed.is_err(), "the Writer's model call should fail");
+    assert_eq!(autopilot.events().len(), killed_log.len());
+    let file_text = std::fs::read_to_string(worktree.path().join("a.rs")).unwrap();
+    assert!(file_text.contains("ARBOR:BEGIN WU-1"), "{file_text}");
+    assert!(!file_text.contains("half written"), "{file_text}");
 }

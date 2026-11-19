@@ -24,6 +24,7 @@ fn summary(id: &str, status: SessionStatus, phase: Phase) -> SessionSummary {
         idle: 50 * HOUR,
         pruned_in: Some(26 * 24 * HOUR),
         markers_at_tip: Some(3),
+        uncommitted_changes: false,
     }
 }
 
@@ -198,4 +199,79 @@ fn durations_read_in_the_largest_whole_unit() {
     assert_eq!(duration_label(Duration::from_secs(59)), "0m");
     assert_eq!(duration_label(3 * HOUR), "3h");
     assert_eq!(duration_label(49 * HOUR), "2d");
+}
+
+#[test]
+fn control_and_alt_letters_do_nothing_in_the_list() {
+    let mut browser = browser();
+    assert_eq!(browser.handle_key(ctrl('r')), None);
+    assert_eq!(browser.handle_key(ctrl('d')), None);
+    let alt_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT);
+    assert_eq!(browser.handle_key(alt_w), None);
+    assert_eq!(
+        browser.handle_key(key(KeyCode::Char('r'))),
+        Some(BrowserOutcome::Resume(folder("2-cancelled")))
+    );
+}
+
+fn browser_with_uncommitted_changes(phase: Phase) -> SessionBrowser {
+    let mut dirty_session = summary("3-dirty", SessionStatus::Cancelled, phase);
+    dirty_session.uncommitted_changes = true;
+    SessionBrowser::new(vec![dirty_session])
+}
+
+#[test]
+fn resuming_asks_first_when_it_would_discard_uncommitted_changes() {
+    let mut browser = browser_with_uncommitted_changes(Phase::Writing { task: 0, unit: 0 });
+    assert_eq!(browser.handle_key(key(KeyCode::Char('r'))), None);
+    let ui_state = UiState {
+        browser: Some(browser.clone()),
+        ..UiState::default()
+    };
+    let shown = screen(&ui_state);
+    assert!(shown.contains("uncommitted changes in"), "{shown}");
+    assert!(shown.contains("discard them and resume"), "{shown}");
+    assert_eq!(
+        browser.clone().handle_key(key(KeyCode::Char('r'))),
+        None,
+        "only Ctrl+R confirms"
+    );
+    assert_eq!(
+        browser.handle_key(ctrl('r')),
+        Some(BrowserOutcome::Resume(folder("3-dirty")))
+    );
+
+    let mut at_checkpoint = browser_with_uncommitted_changes(Phase::PlanCheckpoint);
+    assert_eq!(
+        at_checkpoint.handle_key(key(KeyCode::Char('r'))),
+        Some(BrowserOutcome::Resume(folder("3-dirty"))),
+        "resuming at a Checkpoint keeps the worktree as it is"
+    );
+}
+
+#[test]
+fn delete_and_rewind_warn_about_uncommitted_changes() {
+    let mut browser = browser_with_uncommitted_changes(Phase::PlanCheckpoint);
+    browser.handle_key(key(KeyCode::Char('d')));
+    let ui_state = UiState {
+        browser: Some(browser),
+        ..UiState::default()
+    };
+    let shown = screen(&ui_state);
+    assert!(shown.contains("are lost too"), "{shown}");
+
+    let mut browser = browser_with_uncommitted_changes(Phase::PlanCheckpoint);
+    browser.choose_rewind(vec![RewindPoint {
+        event_count: 2,
+        phase: Phase::PlanCheckpoint,
+        head: None,
+        reviewed_edits: None,
+    }]);
+    browser.handle_key(key(KeyCode::Enter));
+    let ui_state = UiState {
+        browser: Some(browser),
+        ..UiState::default()
+    };
+    let shown = screen(&ui_state);
+    assert!(shown.contains("are lost too"), "{shown}");
 }

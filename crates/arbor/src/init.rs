@@ -63,9 +63,9 @@ fn offer_hooks(root: &Path) {
     let Ok(repo) = Repo::open(root) else {
         return;
     };
-    if !hooks::ask_yes(
-        "
-Install git hooks that refuse commits, merges and pushes holding Markers? [Y/n] ",
+    if !hooks::ask(
+        "\nInstall git hooks that refuse commits, merges and pushes holding Markers? [Y/n] ",
+        true,
     ) {
         return;
     }

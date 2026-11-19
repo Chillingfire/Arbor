@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use arbor_core::{Phase, RewindPoint};
-use arbor_session::{SessionFolder, SessionStatus, SessionSummary};
+use arbor_session::{SessionFolder, SessionStatus, SessionSummary, resume_resets_worktree};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -34,6 +34,8 @@ enum Mode {
     #[default]
     List,
     ConfirmDelete,
+    /// Resuming resets the worktree, which holds uncommitted changes.
+    ConfirmResume,
     ChooseRewind {
         points: Vec<RewindPoint>,
         selected: usize,
@@ -97,6 +99,10 @@ impl SessionBrowser {
                 let folder = self.selected()?.folder.clone();
                 is_ctrl(key, 'd').then_some(BrowserOutcome::Delete(folder))
             }
+            Mode::ConfirmResume => {
+                let folder = self.selected()?.folder.clone();
+                is_ctrl(key, 'r').then_some(BrowserOutcome::Resume(folder))
+            }
             Mode::ChooseRewind { points, selected } => {
                 self.handle_rewind_key(key, points, selected)
             }
@@ -109,6 +115,12 @@ impl SessionBrowser {
 
     fn handle_list_key(&mut self, key: KeyEvent) -> Option<BrowserOutcome> {
         self.note = None;
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('b' | 'q') => return Some(BrowserOutcome::Close),
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
@@ -118,7 +130,7 @@ impl SessionBrowser {
             KeyCode::Enter => {
                 return Some(BrowserOutcome::Inspect(self.selected()?.folder.clone()));
             }
-            KeyCode::Char('r') => return self.runnable(false).map(BrowserOutcome::Resume),
+            KeyCode::Char('r') => return self.resume(),
             KeyCode::Char('w') => {
                 return self.runnable(true).map(BrowserOutcome::ListRewindPoints);
             }
@@ -149,6 +161,20 @@ impl SessionBrowser {
         };
         self.mode = Mode::ChooseRewind { points, selected };
         None
+    }
+
+    /// Resumes the selected Session, asking first when resuming would discard uncommitted
+    /// changes in its worktree.
+    fn resume(&mut self) -> Option<BrowserOutcome> {
+        let folder = self.runnable(false)?;
+        let summary = self.selected()?;
+        let discards_changes = summary.uncommitted_changes
+            && summary.phase.as_ref().is_some_and(resume_resets_worktree);
+        if discards_changes {
+            self.mode = Mode::ConfirmResume;
+            return None;
+        }
+        Some(BrowserOutcome::Resume(folder))
     }
 
     /// The selected Session's folder, if it can run again: not running and with a log that
@@ -257,6 +283,16 @@ fn rewind_point_label(point: &RewindPoint) -> String {
     )
 }
 
+fn uncommitted_warning(summary: &SessionSummary) -> String {
+    if !summary.uncommitted_changes {
+        return String::new();
+    }
+    format!(
+        " The uncommitted changes in {} are lost too.",
+        summary.folder.worktree_path().display()
+    )
+}
+
 fn hints(pairs: &[(&str, &str)]) -> Line<'static> {
     let mut spans = Vec::new();
     for (keys, action) in pairs {
@@ -301,14 +337,33 @@ fn footer_lines(browser: &SessionBrowser) -> Vec<Line<'static>> {
                 lines.push(Line::styled(
                     format!(
                         "Delete Session {} and its branch {}? Its worktree and event log go too, \
-                         and the branch can't be brought back.",
+                         and the branch can't be brought back.{}",
                         summary.folder.id(),
-                        summary.branch
+                        summary.branch,
+                        uncommitted_warning(summary)
                     ),
                     Style::new().fg(RED).bold(),
                 ));
             }
             lines.push(hints(&[("Ctrl+D", "delete"), ("any other key", "keep it")]));
+        }
+        Mode::ConfirmResume => {
+            if let Some(summary) = browser.selected() {
+                lines.push(Line::styled(
+                    format!(
+                        "Resume Session {}? It redoes its unfinished step from the last commit, \
+                         so the uncommitted changes in {} are discarded. Commit or stash them \
+                         first to keep them.",
+                        summary.folder.id(),
+                        summary.folder.worktree_path().display()
+                    ),
+                    Style::new().fg(RED).bold(),
+                ));
+            }
+            lines.push(hints(&[
+                ("Ctrl+R", "discard them and resume"),
+                ("any other key", "back"),
+            ]));
         }
         Mode::ChooseRewind { points, selected } => {
             lines.push(Line::styled(
@@ -329,8 +384,11 @@ fn footer_lines(browser: &SessionBrowser) -> Vec<Line<'static>> {
             lines.push(Line::styled(
                 format!(
                     "Rewind to {}? The worktree is reset to that Checkpoint and the work done \
-                     since is discarded; the event log keeps its transcript.",
-                    rewind_point_label(point)
+                     since is discarded; the event log keeps its transcript.{}",
+                    rewind_point_label(point),
+                    browser
+                        .selected()
+                        .map_or(String::new(), uncommitted_warning)
                 ),
                 Style::new().fg(RED).bold(),
             ));

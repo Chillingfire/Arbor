@@ -43,6 +43,13 @@ fn uncommitted_changes_include_untracked_files() {
 }
 
 #[test]
+fn the_head_subject_is_the_last_commit_message_first_line() {
+    let setup = session_setup();
+    commit(&setup.worktree, "lib.rs", "fn main() {}\n");
+    assert_eq!(setup.worktree.head_subject().unwrap(), "Change a file.");
+}
+
+#[test]
 fn removing_a_worktree_keeps_its_branch() {
     let setup = session_setup();
     let path = setup.place.path().join("worktree");

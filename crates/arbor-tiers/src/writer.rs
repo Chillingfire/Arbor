@@ -166,13 +166,6 @@ pub enum WriterError {
     NotCommitted {
         file: String,
     },
-    /// Stripping the Region left a Marker for the Work Unit in its file, so nothing was committed.
-    MarkersLeft {
-        file: String,
-        id: WorkUnitId,
-        /// 1-based.
-        lines: Vec<usize>,
-    },
     /// A Check couldn't run at all, e.g. its command wasn't found.
     Check(String),
     Finished,
@@ -201,14 +194,6 @@ impl fmt::Display for WriterError {
                 f,
                 "git found nothing to commit after {file} was filled; it may be ignored by git"
             ),
-            Self::MarkersLeft { file, id, lines } => {
-                let lines: Vec<String> = lines.iter().map(usize::to_string).collect();
-                write!(
-                    f,
-                    "{file} still holds a Marker for {id} on line {} after its Region was                      stripped, so it wasn't committed",
-                    lines.join(", ")
-                )
-            }
             Self::Check(message) => write!(f, "a Check couldn't run: {message}"),
             Self::Finished => f.write_str("the Writer has already finished"),
             Self::NoAttemptsLeft => write!(
@@ -446,13 +431,20 @@ impl Writer {
         let unit = &self.work_unit;
         let region = self.intact_region(spliced)?;
         let stripped = strip(spliced, &region);
+        // `intact_region` already refuses every other Marker for this Work Unit; this guards the
+        // commit should the two ever disagree, and goes to a Revision like any broken Region.
         let lines_left = marker_lines_of(&stripped, unit.id);
         if !lines_left.is_empty() {
-            return Err(WriterError::MarkersLeft {
-                file: unit.file.clone(),
-                id: unit.id,
-                lines: lines_left.iter().map(|line| line + 1).collect(),
-            });
+            let lines: Vec<String> = lines_left
+                .iter()
+                .map(|line| (line + 1).to_string())
+                .collect();
+            let problem = format!(
+                "a Marker for {} is still on line {} after its Region was stripped",
+                unit.id,
+                lines.join(", ")
+            );
+            return Err(self.region_broken(problem, spliced));
         }
         write(path, &stripped)?;
         let message = CommitMessage::new(&commit_subject(&unit.spec, &unit.file))?;

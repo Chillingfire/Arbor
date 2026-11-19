@@ -107,6 +107,30 @@ impl Repo {
         Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
+    /// The paths of the files tracked in the tree of `revision`, relative to the top level.
+    pub fn files_at(&self, revision: &str) -> Result<Vec<String>, GitError> {
+        let tree = self.tree_of(revision)?;
+        let listing = Git::new(
+            self.root(),
+            &[
+                "-c",
+                "core.quotePath=false",
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                "--full-tree",
+                &tree,
+            ],
+        )
+        .bytes()?;
+        Ok(String::from_utf8_lossy(&listing)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+
     /// The tree hash of `revision`, so a name the operator typed is never passed to git as an
     /// option.
     fn tree_of(&self, revision: &str) -> Result<String, GitError> {

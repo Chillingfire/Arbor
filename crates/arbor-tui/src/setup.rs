@@ -23,9 +23,17 @@ pub struct ApiKeyDialog {
     pub typed_key: String,
     /// Once a key is typed, the Operator picks where it is kept.
     pub choosing_storage: bool,
-    /// Why the last key was refused.
+    /// Why the last key was refused or couldn't be checked.
     pub problem: Option<String>,
     pub checking: bool,
+    /// The key OpenRouter couldn't be reached to check, which can be checked again or used as is.
+    pub unchecked: Option<UncheckedKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UncheckedKey {
+    pub api_key: String,
+    pub storage: KeyStorage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +45,9 @@ pub struct ModelsDialog {
     /// Why the last choice failed its range check or probe.
     pub problems: Vec<String>,
     pub checking: bool,
+    /// Set when OpenRouter couldn't be reached to probe `current`, which can be probed again or
+    /// used unprobed.
+    pub unreachable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +79,10 @@ pub enum SetupOutcome {
         storage: KeyStorage,
     },
     Roles(Roles),
+    /// The key, used for this run without a check because OpenRouter couldn't be reached.
+    UncheckedApiKey(String),
+    /// The roles, used without a probe because OpenRouter couldn't be reached.
+    UnprobedRoles(Roles),
 }
 
 const FIELD_COUNT: usize = 6;
@@ -79,6 +94,18 @@ impl SetupDialog {
             choosing_storage: false,
             problem,
             checking: false,
+            unchecked: None,
+        })
+    }
+
+    /// The key dialog after OpenRouter couldn't be reached to check `api_key`.
+    pub fn unchecked_api_key(problem: String, api_key: String, storage: KeyStorage) -> Self {
+        Self::ApiKey(ApiKeyDialog {
+            typed_key: api_key.clone(),
+            choosing_storage: false,
+            problem: Some(problem),
+            checking: false,
+            unchecked: Some(UncheckedKey { api_key, storage }),
         })
     }
 
@@ -88,6 +115,18 @@ impl SetupDialog {
             manual: None,
             problems,
             checking: false,
+            unreachable: false,
+        }))
+    }
+
+    /// The models dialog after OpenRouter couldn't be reached to probe `chosen`.
+    pub fn unprobed_models(chosen: Roles, problems: Vec<String>) -> Self {
+        Self::Models(Box::new(ModelsDialog {
+            current: chosen,
+            manual: None,
+            problems,
+            checking: false,
+            unreachable: true,
         }))
     }
 
@@ -110,7 +149,9 @@ impl SetupDialog {
     pub fn paste(&mut self, pasted: &str) {
         let single_line = pasted.trim();
         match self {
-            Self::ApiKey(dialog) if !dialog.checking && !dialog.choosing_storage => {
+            Self::ApiKey(dialog)
+                if !dialog.checking && !dialog.choosing_storage && dialog.unchecked.is_none() =>
+            {
                 dialog.typed_key.push_str(single_line);
             }
             Self::Models(dialog) if !dialog.checking => {
@@ -125,6 +166,19 @@ impl SetupDialog {
 
 impl ApiKeyDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<SetupOutcome> {
+        if let Some(unchecked) = &self.unchecked {
+            return match key.code {
+                KeyCode::Enter => Some(SetupOutcome::ApiKey {
+                    api_key: unchecked.api_key.clone(),
+                    storage: unchecked.storage,
+                }),
+                KeyCode::Char('c') => {
+                    Some(SetupOutcome::UncheckedApiKey(unchecked.api_key.clone()))
+                }
+                KeyCode::Esc => Some(SetupOutcome::Quit),
+                _ => None,
+            };
+        }
         if self.choosing_storage {
             let storage = match key.code {
                 KeyCode::Char('s') => KeyStorage::UserConfig,
@@ -157,6 +211,12 @@ impl ModelsDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<SetupOutcome> {
         let Some(manual) = &mut self.manual else {
             return match key.code {
+                KeyCode::Enter if self.unreachable => {
+                    Some(SetupOutcome::Roles(self.current.clone()))
+                }
+                KeyCode::Char('c') if self.unreachable => {
+                    Some(SetupOutcome::UnprobedRoles(self.current.clone()))
+                }
                 KeyCode::Char('r') => Some(SetupOutcome::Roles(Roles::recommended())),
                 KeyCode::Char('m') | KeyCode::Enter => {
                     self.manual = Some(ManualRoles::from(&self.current));
@@ -312,6 +372,11 @@ fn api_key_lines(dialog: &ApiKeyDialog) -> Vec<Line<'static>> {
     lines.push(Line::default());
     lines.push(if dialog.checking {
         Line::styled("Checking the key with OpenRouter…", Style::new().fg(YELLOW))
+    } else if dialog.unchecked.is_some() {
+        Line::raw(
+            "OpenRouter couldn't be reached to check it. Try again, or use it unchecked for this \
+             session only.",
+        )
     } else if dialog.choosing_storage {
         Line::raw("Save it to the user config, or use it for this session only?")
     } else {
@@ -336,6 +401,12 @@ fn masked(typed_key: &str) -> String {
 fn api_key_hints(dialog: &ApiKeyDialog) -> &'static [(&'static str, &'static str)] {
     if dialog.checking {
         &[]
+    } else if dialog.unchecked.is_some() {
+        &[
+            ("Enter", "try again"),
+            ("c", "use unchecked"),
+            ("Esc", "quit"),
+        ]
     } else if dialog.choosing_storage {
         &[("s", "save"), ("o", "this session only"), ("Esc", "back")]
     } else {
@@ -346,13 +417,17 @@ fn api_key_hints(dialog: &ApiKeyDialog) -> &'static [(&'static str, &'static str
 fn models_lines(dialog: &ModelsDialog) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::raw("No model check is on record for this config. Each model is probed once with"),
-        Line::raw("a one-token call at its temperature before a Session uses it."),
+        Line::raw("a short call at its temperature before a Session uses it."),
         Line::default(),
     ];
     match &dialog.manual {
         Some(manual) => lines.extend(manual_lines(manual)),
         None => {
-            lines.push(heading_line("Current"));
+            lines.push(heading_line(if dialog.unreachable {
+                "Chosen"
+            } else {
+                "Current"
+            }));
             lines.extend(role_lines(&dialog.current));
             lines.push(Line::default());
             lines.push(heading_line("Recommended"));
@@ -362,6 +437,13 @@ fn models_lines(dialog: &ModelsDialog) -> Vec<Line<'static>> {
     for problem in &dialog.problems {
         lines.push(Line::default());
         lines.push(Line::styled(problem.clone(), Style::new().fg(RED)));
+    }
+    if dialog.unreachable && dialog.manual.is_none() {
+        lines.push(Line::default());
+        lines.push(Line::raw(
+            "OpenRouter couldn't be reached to probe them. Try again, or continue without the \
+             probe: they are probed again next run.",
+        ));
     }
     if dialog.checking {
         lines.push(Line::default());
@@ -418,6 +500,14 @@ fn models_hints(dialog: &ModelsDialog) -> &'static [(&'static str, &'static str)
         &[]
     } else if dialog.manual.is_some() {
         &[("↑↓", "field"), ("Enter", "probe"), ("Esc", "back")]
+    } else if dialog.unreachable {
+        &[
+            ("Enter", "try again"),
+            ("c", "continue unprobed"),
+            ("m", "set by hand"),
+            ("r", "use recommended"),
+            ("Esc", "quit"),
+        ]
     } else {
         &[
             ("m", "set by hand"),
