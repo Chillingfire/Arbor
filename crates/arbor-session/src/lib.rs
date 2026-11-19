@@ -48,6 +48,8 @@ pub use store::{
 pub enum SessionEnd {
     /// The Session finished: every Task is done and no Markers are left.
     Finished,
+    /// The Session reached its end, but without these Tasks, skipped at the Escalation Checkpoint.
+    FinishedWithSkippedTasks { skipped_tasks: Vec<usize> },
     /// The Human Operator stopped the Session at the Budget Checkpoint. The branch is kept.
     StoppedAtBudget,
     /// The Human Operator aborted the Session at the Escalation Checkpoint. The branch is kept.
@@ -65,7 +67,7 @@ impl SessionEnd {
     /// aborted, which its own events already record.
     pub fn run_outcome(&self) -> Option<RunOutcome> {
         match self {
-            Self::Finished | Self::Aborted => None,
+            Self::Finished | Self::FinishedWithSkippedTasks { .. } | Self::Aborted => None,
             Self::StoppedAtBudget | Self::NeedsOperator(_) => Some(RunOutcome::Cancelled),
             Self::TierStopped { tier, reason } => Some(RunOutcome::Failed {
                 reason: format!("the {tier:?} {reason}"),
@@ -409,6 +411,11 @@ impl<'a> Autopilot<'a> {
             }
             Effect::EndSession if *self.session.phase() == Phase::Aborted => {
                 return Ok(Step::End(SessionEnd::Aborted));
+            }
+            Effect::EndSession if !self.session.skipped_tasks().is_empty() => {
+                return Ok(Step::End(SessionEnd::FinishedWithSkippedTasks {
+                    skipped_tasks: self.session.skipped_tasks().to_vec(),
+                }));
             }
             Effect::EndSession => return Ok(Step::End(SessionEnd::Finished)),
         };

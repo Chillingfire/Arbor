@@ -714,6 +714,9 @@ fn cancelled_ending(phase: &Phase, worktree: &Worktree) -> DriverMessage {
 fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> DriverMessage {
     let (message, tone) = match session_end {
         Ok(SessionEnd::Finished) => ("Session finished.".to_owned(), Tone::Success),
+        Ok(SessionEnd::FinishedWithSkippedTasks { skipped_tasks }) => {
+            (skipped_tasks_ending(&skipped_tasks), Tone::Operator)
+        }
         Ok(SessionEnd::NeedsOperator(effect)) => (
             format!(
                 "Stopped at {}. The branch and worktree are kept.",
@@ -742,6 +745,22 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
         Err(err) => (format!("Stopped: {err}"), Tone::Failure),
     };
     DriverMessage::Ended(message, tone)
+}
+
+fn skipped_tasks_ending(skipped_tasks: &[usize]) -> String {
+    let task_numbers: Vec<String> = skipped_tasks
+        .iter()
+        .map(|task| (task + 1).to_string())
+        .collect();
+    let tasks = if task_numbers.len() == 1 {
+        "Task"
+    } else {
+        "Tasks"
+    };
+    format!(
+        "Session finished with {tasks} {} skipped; the branch lacks that part of the Request.",
+        task_numbers.join(", ")
+    )
 }
 
 /// The event log line for the Human Operator's decision at a Checkpoint.
@@ -842,4 +861,24 @@ fn exclude_sessions(repo: &Repo) -> Result<(), String> {
     };
     fs::write(&exclude_path, format!("{existing}{separator}{pattern}\n"))
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_with_skipped_tasks_ends_naming_them_not_as_plainly_finished() {
+        let skipped_end = Ok(SessionEnd::FinishedWithSkippedTasks {
+            skipped_tasks: vec![1, 2],
+        });
+        let DriverMessage::Ended(message, tone) = ending(skipped_end) else {
+            panic!("a finished Session ends the run");
+        };
+        assert_eq!(
+            message,
+            "Session finished with Tasks 2, 3 skipped; the branch lacks that part of the Request."
+        );
+        assert!(matches!(tone, Tone::Operator));
+    }
 }

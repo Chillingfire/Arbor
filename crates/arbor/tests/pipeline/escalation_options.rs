@@ -39,7 +39,12 @@ async fn a_skipped_task_is_reset_and_the_session_finishes_without_it() {
     let (pipeline, end) = run_with_operator(&sample, &client, Some(operator)).await;
 
     client.finish();
-    assert_eq!(end, SessionEnd::Finished);
+    assert_eq!(
+        end,
+        SessionEnd::FinishedWithSkippedTasks {
+            skipped_tasks: vec![0]
+        }
+    );
     assert_replays(&pipeline);
     assert_eq!(pipeline.session().skipped_tasks(), [0]);
     assert!(pipeline.events().contains(&Event::TaskSkipped));

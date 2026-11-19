@@ -88,6 +88,27 @@ fn each_session_shows_status_age_time_until_pruned_cost_markers_and_branch() {
 }
 
 #[test]
+fn a_session_finished_with_skipped_tasks_shows_how_many_and_only_rewinds() {
+    let mut browser = SessionBrowser::new(vec![summary(
+        "1-skipped",
+        SessionStatus::FinishedWithSkippedTasks(2),
+        Phase::Done,
+    )]);
+    let ui_state = UiState {
+        browser: Some(browser.clone()),
+        ..UiState::default()
+    };
+    let shown = screen(&ui_state);
+    assert!(shown.contains("2 skipped"), "{shown}");
+
+    assert_eq!(browser.handle_key(key(KeyCode::Char('r'))), None);
+    assert_eq!(
+        browser.handle_key(key(KeyCode::Char('w'))),
+        Some(BrowserOutcome::ListRewindPoints(folder("1-skipped")))
+    );
+}
+
+#[test]
 fn b_opens_the_browser_and_esc_closes_it() {
     let mut ui_state = UiState::default();
     let view = SessionView::new();

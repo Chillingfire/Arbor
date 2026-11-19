@@ -160,6 +160,9 @@ impl SessionBrowser {
             (_, None) => Some("This Session's event log can't be replayed."),
             _ if rewinding => None,
             (SessionStatus::Finished, _) => Some("This Session is finished; rewind it instead."),
+            (SessionStatus::FinishedWithSkippedTasks(_), _) => {
+                Some("This Session finished with skipped Tasks; rewind it instead.")
+            }
             (_, Some(Phase::Stopped)) => {
                 Some("This Session was stopped at the Budget Cap; rewind it instead.")
             }
@@ -192,11 +195,12 @@ pub fn duration_label(duration: Duration) -> String {
 
 fn status_span(status: &SessionStatus) -> Span<'static> {
     let (label, color) = match status {
-        SessionStatus::Running => ("running", ACCENT),
-        SessionStatus::Cancelled => ("cancelled", YELLOW),
-        SessionStatus::Failed(_) => ("failed", RED),
-        SessionStatus::Finished => ("finished", GREEN),
-        SessionStatus::Aborted => ("aborted", MUTED),
+        SessionStatus::Running => ("running".to_owned(), ACCENT),
+        SessionStatus::Cancelled => ("cancelled".to_owned(), YELLOW),
+        SessionStatus::Failed(_) => ("failed".to_owned(), RED),
+        SessionStatus::Finished => ("finished".to_owned(), GREEN),
+        SessionStatus::FinishedWithSkippedTasks(skipped) => (format!("{skipped} skipped"), YELLOW),
+        SessionStatus::Aborted => ("aborted".to_owned(), MUTED),
     };
     Span::styled(format!("{label:<10}"), Style::new().fg(color).bold())
 }

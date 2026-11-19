@@ -374,3 +374,27 @@ fn an_aborted_session_is_listed_as_aborted_not_cancelled_or_failed() {
     assert_eq!(summaries[0].status, SessionStatus::Aborted);
     assert_eq!(summaries[0].phase, Some(Phase::Aborted));
 }
+
+#[test]
+fn a_session_that_skipped_its_last_task_is_not_listed_as_plainly_finished() {
+    let project = Project::new();
+    let mut events = aborted_events();
+    events.pop();
+    events.extend([
+        Event::TaskSkipped,
+        Event::TaskReset,
+        Event::MarkersChecked {
+            remaining: Vec::new(),
+        },
+    ]);
+    project.session("Skip it", 1, &events, DAY);
+
+    let summaries = list_sessions(&project.repo, 30, SystemTime::now()).unwrap();
+
+    assert_eq!(summaries[0].phase, Some(Phase::Done));
+    assert_eq!(
+        summaries[0].status,
+        SessionStatus::FinishedWithSkippedTasks(1)
+    );
+    assert!(!summaries[0].is_finished());
+}

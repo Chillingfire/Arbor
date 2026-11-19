@@ -214,6 +214,9 @@ pub enum SessionStatus {
     /// Why, when the log says.
     Failed(String),
     Finished,
+    /// Done, but this many Tasks were skipped at the Escalation Checkpoint, so the branch lacks
+    /// part of the Request.
+    FinishedWithSkippedTasks(usize),
     /// The Human Operator aborted it at the Escalation Checkpoint; only a Rewind carries it on.
     Aborted,
 }
@@ -312,6 +315,9 @@ pub fn summarize(
 /// was killed or crashed.
 fn status_from_log(session: &Session, events: &[Event]) -> SessionStatus {
     match (session.phase(), events.last()) {
+        (Phase::Done, _) if !session.skipped_tasks().is_empty() => {
+            SessionStatus::FinishedWithSkippedTasks(session.skipped_tasks().len())
+        }
         (Phase::Done, _) => SessionStatus::Finished,
         (Phase::Stopped, _) => SessionStatus::Cancelled,
         (Phase::Aborted, _) => SessionStatus::Aborted,
