@@ -26,13 +26,17 @@ pub use agent::{
 pub use check_proposal::{
     CheckProposalRun, ProposedChecks, SUBMIT_CHECKS, validate_proposed_checks,
 };
-pub use checkpoint_commits::{commit_revision, commit_skeleton, discard_revision};
+pub use checkpoint_commits::{
+    commit_revision, commit_skeleton, discard_revision, revision_subject, skeleton_subject,
+};
 pub use init::{
     AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
     ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,
 };
-pub use marker_allowlist::{AllowlistError, MARKER_ALLOWLIST_FILE, MarkerAllowlist};
-pub use marker_scan::{MarkerLine, ScanError, scan_markers};
+pub use marker_allowlist::{AllowlistError, BroadPattern, MARKER_ALLOWLIST_FILE, MarkerAllowlist};
+pub use marker_scan::{
+    MarkerLine, ScanError, allowlist_at, broad_allowlist_patterns, scan_markers,
+};
 pub use planner::{PlannerRun, Rejection, SUBMIT_PLAN, validate_plan};
 pub use replan::{ReplanRun, SUBMIT_REPLAN, validate_replan};
 pub use revision::{RevisionRun, SUBMIT_REVISION};

@@ -19,7 +19,10 @@ pub struct UnfinishedSession {
 impl UnfinishedSession {
     /// The warning, one paragraph per line.
     pub fn warning(&self) -> Vec<String> {
-        let worktree = self.worktree.display();
+        // Rebuilt from its components so a path joined from `.arbor/sessions` shows one kind of
+        // separator on Windows.
+        let worktree: PathBuf = self.worktree.components().collect();
+        let worktree = worktree.display();
         let branch = &self.branch;
         let state = if self.running {
             "Leaving stops the running Session."

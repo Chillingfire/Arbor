@@ -58,7 +58,7 @@ A comment carrying a Work Unit's ID that bounds a Region in the file. It exists 
 _Avoid_: Tag, anchor
 
 **Marker Allowlist**:
-The committed `.arbor-markers-allowed` file naming the paths where Markers are expected, such as tests and docs about them. The Marker scan skips those paths; the list narrows the scan and can never turn it off.
+The committed `.arbor-markers-allowed` file naming the paths where Markers are expected, such as tests and docs about them. The Marker scan skips those paths, reading the list from a commit the scanned change can't touch: `HEAD` for a commit, the mainline tip for a push. The list narrows the scan and can never turn it off everywhere, though each path it names goes unchecked.
 _Avoid_: Ignore file, exclusions
 
 **Context Pack**:

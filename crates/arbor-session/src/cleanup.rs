@@ -2,6 +2,7 @@
 //! Delete is the only path that removes one.
 
 use std::fs;
+use std::io;
 use std::time::{Duration, SystemTime};
 
 use arbor_git::{Repo, TreeSource, Worktree};
@@ -12,14 +13,14 @@ use crate::store::{
     summarize,
 };
 
-/// The Marker lines at the tip of `branch`, outside the paths its Marker Allowlist names, or
-/// `None` when the branch is gone or can't be scanned.
+/// The Marker lines at the tip of `branch`, outside the paths the Marker Allowlist at the
+/// operator's `HEAD` names, or `None` when the branch is gone or can't be scanned.
 pub fn branch_markers(repo: &Repo, branch: &str) -> Option<usize> {
     if !repo.branch_exists(branch).ok()? {
         return None;
     }
     let tip = TreeSource::Revision(format!("refs/heads/{branch}"));
-    scan_markers(repo, &tip)
+    scan_markers(repo, &tip, repo.head_commit().as_deref())
         .ok()
         .map(|marker_lines| marker_lines.len())
 }
@@ -145,8 +146,7 @@ pub fn prune_sessions(repo: &Repo, retention_days: u32, now: SystemTime) -> Prun
     report
 }
 
-/// `None` when the worktree has uncommitted changes and is kept. The lock is let go just before
-/// the folder goes, since Windows can't remove a folder with an open file in it.
+/// `None` when the worktree has uncommitted changes and is kept.
 fn prune_one(
     repo: &Repo,
     folder: &SessionFolder,
@@ -161,8 +161,7 @@ fn prune_one(
     }
     let branch = folder.branch();
     let markers_at_tip = branch_markers(repo, &branch);
-    drop(lock);
-    remove_folder(repo, folder)?;
+    remove_folder(repo, folder, lock)?;
     Ok(Some(PrunedSession {
         id: folder.id(),
         branch,
@@ -176,16 +175,25 @@ fn prune_one(
 pub fn delete_session(repo: &Repo, folder: &SessionFolder) -> Result<(), StoreError> {
     let lock = folder.lock_run()?;
     let branch = folder.branch();
-    drop(lock);
-    remove_folder(repo, folder)?;
+    remove_folder(repo, folder, lock)?;
     if repo.branch_exists(&branch)? {
         repo.delete_session_branch(&branch)?;
     }
     Ok(())
 }
 
-fn remove_folder(repo: &Repo, folder: &SessionFolder) -> Result<(), StoreError> {
+/// The worktree and event log go while the lock is held, so no run can claim the Session
+/// halfway. The lock file and the folder go after, since Windows can't remove an open file.
+fn remove_folder(repo: &Repo, folder: &SessionFolder, lock: RunLock) -> Result<(), StoreError> {
     repo.remove_worktree(&folder.worktree_path())?;
+    let event_log_path = folder.event_log_path();
+    match fs::remove_file(&event_log_path) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => {
+            return Err(io_error(&event_log_path)(err));
+        }
+        _ => {}
+    }
+    drop(lock);
     fs::remove_dir_all(folder.dir()).map_err(io_error(folder.dir()))
 }
 

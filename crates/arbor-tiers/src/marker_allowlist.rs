@@ -33,6 +33,7 @@ pub struct MarkerAllowlist {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pattern {
+    text: String,
     segments: Vec<String>,
     /// Matched at the top level only, not at any depth.
     anchored: bool,
@@ -80,6 +81,55 @@ impl MarkerAllowlist {
             .iter()
             .any(|pattern| pattern.matches(&path_segments))
     }
+
+    /// The patterns that each allow more than half of `tracked_files`, such as `*.rs` or `src/`,
+    /// so the Marker check skips most of the code. Too few files to judge gives none.
+    pub fn broad_patterns(&self, tracked_files: &[String]) -> Vec<BroadPattern> {
+        if tracked_files.len() < MIN_FILES_TO_JUDGE_BREADTH {
+            return Vec::new();
+        }
+        let split_files: Vec<Vec<&str>> = tracked_files
+            .iter()
+            .map(|file| file.split('/').collect())
+            .collect();
+        self.patterns
+            .iter()
+            .filter_map(|pattern| {
+                let allowed_files = split_files
+                    .iter()
+                    .filter(|path_segments| pattern.matches(path_segments))
+                    .count();
+                (allowed_files * 2 > tracked_files.len()).then(|| BroadPattern {
+                    pattern: pattern.text.clone(),
+                    allowed_files,
+                    tracked_files: tracked_files.len(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// A repository with fewer tracked files than this is too small for a share of them to say a
+/// pattern is broad.
+const MIN_FILES_TO_JUDGE_BREADTH: usize = 10;
+
+/// An allowlist pattern that allows most of the tracked files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BroadPattern {
+    pub pattern: String,
+    pub allowed_files: usize,
+    pub tracked_files: usize,
+}
+
+impl fmt::Display for BroadPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{MARKER_ALLOWLIST_FILE}: `{}` allows {} of the {} tracked files, so the Marker check \
+             skips them all; name only the paths where Markers are expected",
+            self.pattern, self.allowed_files, self.tracked_files
+        )
+    }
 }
 
 impl Pattern {
@@ -93,6 +143,7 @@ impl Pattern {
             .map(str::to_owned)
             .collect();
         Self {
+            text: pattern_text.to_owned(),
             segments,
             anchored,
             directory_only,

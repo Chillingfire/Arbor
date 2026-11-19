@@ -6,7 +6,8 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use arbor_core::{
     ApplyError, Event, EventLog, Phase, ReadError, RewindPoint, RunOutcome, Session, Usd,
@@ -19,6 +20,11 @@ const WORKTREE_DIR: &str = "worktree";
 const RUN_LOCK_FILE: &str = "run.lock";
 const BRANCH_PREFIX: &str = "arbor/";
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+/// How long a claim waits for a lock let go only a moment ago. On Unix the lock belongs to the
+/// open file, and a child process spawned while the lock was held, say a git call from another
+/// thread, shares that file until its exec closes it, so the lock can outlive its `RunLock`.
+const LOCK_RELEASE_GRACE: Duration = Duration::from_millis(250);
+const LOCK_RETRY_PAUSE: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -148,6 +154,14 @@ impl SessionFolder {
         }
     }
 
+    /// Whether the worktree holds uncommitted changes. A worktree that is gone or can't be read
+    /// has none to lose.
+    pub fn has_uncommitted_changes(&self) -> bool {
+        Worktree::open(self.worktree_path())
+            .and_then(|worktree| worktree.has_uncommitted_changes())
+            .unwrap_or(false)
+    }
+
     /// Claims the Session for one run until the lock is dropped, so no other run, prune or
     /// delete touches it meanwhile.
     pub fn lock_run(&self) -> Result<RunLock, StoreError> {
@@ -158,12 +172,20 @@ impl SessionFolder {
             .write(true)
             .open(&path)
             .map_err(io_error(&path))?;
-        match lock_file.try_lock() {
-            Ok(()) => Ok(RunLock {
-                _lock_file: lock_file,
-            }),
-            Err(TryLockError::WouldBlock) => Err(StoreError::Running { id: self.id() }),
-            Err(TryLockError::Error(source)) => Err(StoreError::Io { path, source }),
+        let started = Instant::now();
+        loop {
+            match lock_file.try_lock() {
+                Ok(()) => {
+                    return Ok(RunLock {
+                        _lock_file: lock_file,
+                    });
+                }
+                Err(TryLockError::WouldBlock) if started.elapsed() < LOCK_RELEASE_GRACE => {
+                    thread::sleep(LOCK_RETRY_PAUSE);
+                }
+                Err(TryLockError::WouldBlock) => return Err(StoreError::Running { id: self.id() }),
+                Err(TryLockError::Error(source)) => return Err(StoreError::Io { path, source }),
+            }
         }
     }
 
@@ -231,8 +253,11 @@ pub struct SessionSummary {
     pub idle: Duration,
     /// Time until startup prunes the Session, or `None` when retention is off.
     pub pruned_in: Option<Duration>,
-    /// Marker lines the branch tip adds to the mainline, or `None` when unknown.
+    /// Marker lines at the branch tip outside the paths its Marker Allowlist names, or `None`
+    /// when unknown.
     pub markers_at_tip: Option<usize>,
+    /// Whether the worktree holds changes that Resume, Rewind or Delete would discard.
+    pub uncommitted_changes: bool,
 }
 
 impl SessionSummary {
@@ -265,6 +290,7 @@ pub fn summarize(
     let pruned_in = retention(retention_days).map(|kept_for| kept_for.saturating_sub(idle));
     let branch = folder.branch();
     let markers = markers_at_tip(&branch);
+    let uncommitted_changes = folder.has_uncommitted_changes();
     let replayed = folder.read_events().and_then(|events| {
         Ok((
             Session::replay(&events).map_err(StoreError::Replay)?,
@@ -303,6 +329,7 @@ pub fn summarize(
         idle,
         pruned_in,
         markers_at_tip: markers,
+        uncommitted_changes,
     }
 }
 

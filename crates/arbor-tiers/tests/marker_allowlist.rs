@@ -71,3 +71,34 @@ fn a_negated_pattern_is_refused() {
     let refused = MarkerAllowlist::parse("!src/lib.rs\n").unwrap_err();
     assert!(refused.to_string().contains("negates"), "{refused}");
 }
+
+fn tracked_files() -> Vec<String> {
+    let mut files: Vec<String> = (1..=8).map(|n| format!("src/module{n}.rs")).collect();
+    files.extend(["tests/markers.rs", "docs/markers.md", "README.md"].map(String::from));
+    files
+}
+
+#[test]
+fn a_pattern_allowing_most_tracked_files_is_broad() {
+    let broad = allowlist("*.rs\ntests/\nsrc/\n").broad_patterns(&tracked_files());
+    let flagged: Vec<(&str, usize)> = broad
+        .iter()
+        .map(|broad_pattern| (broad_pattern.pattern.as_str(), broad_pattern.allowed_files))
+        .collect();
+    assert_eq!(flagged, [("*.rs", 9), ("src/", 8)]);
+    assert!(
+        broad[0]
+            .to_string()
+            .contains("`*.rs` allows 9 of the 11 tracked files"),
+        "{}",
+        broad[0]
+    );
+}
+
+#[test]
+fn narrow_patterns_and_small_repositories_have_no_broad_patterns() {
+    let narrow = allowlist("tests/\ndocs/\n/README.md\n");
+    assert_eq!(narrow.broad_patterns(&tracked_files()), []);
+    let few_files = ["src/lib.rs".to_owned(), "README.md".to_owned()];
+    assert_eq!(allowlist("*.rs\n").broad_patterns(&few_files), []);
+}
