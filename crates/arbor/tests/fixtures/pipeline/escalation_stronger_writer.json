@@ -1038,7 +1038,7 @@
         ],
         "tools": [],
         "tool_choice": null,
-        "temperature": 0.0,
+        "temperature": 0.3,
         "seed": null,
         "max_tokens": null,
         "require_parameters": true,

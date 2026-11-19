@@ -10,7 +10,7 @@ mod store;
 use std::fmt;
 use std::io::Write;
 
-use arbor_config::Config;
+use arbor_config::{Config, RoleConfig, max_temperature};
 use arbor_core::{
     ClarificationMode, Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, RunOutcome,
     Session, StrongerWriter, Task, Tier, Usd, WorkUnit, WorkUnitFailure, WorkUnitId,
@@ -870,10 +870,13 @@ impl<'a> Autopilot<'a> {
                 work_unit: &work_unit,
             })
             .map_err(failed("rendering the Writer prompt"))?;
-        let role = self.config.roles.writer.clone();
         let stronger = self.session.stronger_writer(id).cloned();
         let escalation_notes = self.escalation_notes(id, stronger.as_ref());
-        let model_id = stronger.map_or(role.model, |stronger| stronger.model);
+        let role = match &stronger {
+            Some(stronger) => stronger_writer_role(&self.config.roles.scaffolder, &stronger.model),
+            None => self.config.roles.writer.clone(),
+        };
+        let model_id = role.model;
         let supported_parameters = self.model(&model_id).await?.supported_parameters;
         let mut writer = WriterRun {
             prompt: &prompt,
@@ -1159,6 +1162,16 @@ impl<'a> Autopilot<'a> {
 /// The reply length a stronger Writer's estimated cost assumes: a Region with its context lines.
 const ESTIMATED_WRITER_REPLY_TOKENS: u32 = 1_000;
 
+/// The stronger Writer runs at the Scaffolder's temperature, the pair the model probe checked, not
+/// the Writer's. A model logged before the Scaffolder's was changed keeps that temperature within
+/// its own range.
+fn stronger_writer_role(scaffolder: &RoleConfig, model: &str) -> RoleConfig {
+    RoleConfig {
+        model: model.to_owned(),
+        temperature: scaffolder.temperature.clamp(0.0, max_temperature(model)),
+    }
+}
+
 fn misplaced(checkpoint: &Checkpoint, decision: &Decision) -> AutopilotError {
     AutopilotError {
         step: "reading the Operator's decision",
@@ -1169,4 +1182,29 @@ fn misplaced(checkpoint: &Checkpoint, decision: &Decision) -> AutopilotError {
 enum Submitted<T> {
     Accepted(T, Event),
     Stopped(SessionEnd),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scaffolder(temperature: f64) -> RoleConfig {
+        RoleConfig {
+            model: "openai/gpt-6".to_owned(),
+            temperature,
+        }
+    }
+
+    #[test]
+    fn a_stronger_writer_takes_the_scaffolders_temperature_with_its_model() {
+        let role = stronger_writer_role(&scaffolder(1.5), "openai/gpt-6");
+        assert_eq!(role.model, "openai/gpt-6");
+        assert_eq!(role.temperature, 1.5);
+    }
+
+    #[test]
+    fn a_stronger_writer_temperature_stays_in_its_models_range() {
+        let role = stronger_writer_role(&scaffolder(1.5), "anthropic/claude-sonnet-5.5");
+        assert_eq!(role.temperature, 1.0);
+    }
 }

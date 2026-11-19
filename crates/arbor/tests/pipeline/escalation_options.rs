@@ -96,6 +96,8 @@ async fn a_stronger_writer_gets_a_failure_brief_and_its_pass_is_tagged_with_its_
 
     let stronger_request = client.sent().pop().unwrap();
     assert_eq!(stronger_request.model, STRONGER_MODEL);
+    let scaffolder = Config::load(None, sample.path()).unwrap().roles.scaffolder;
+    assert_eq!(stronger_request.temperature, Some(scaffolder.temperature));
     let inputs = user_inputs(&stronger_request);
     assert!(inputs.contains("# Failure Brief"), "{inputs}");
     assert!(inputs.contains(MISSING_ITEM), "{inputs}");
