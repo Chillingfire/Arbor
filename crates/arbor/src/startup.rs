@@ -39,27 +39,66 @@ pub fn check(root: &Path, config: &Config) {
 }
 
 fn scan_checkout_and_mainline(repo: &Repo, config: &Config) -> Vec<Finding> {
-    let mut findings = Vec::new();
     let branch = repo.current_branch();
     let on_session_branch = branch.as_deref().is_some_and(is_session_branch);
-    if !on_session_branch {
+    let checkout_finding = if on_session_branch {
+        None
+    } else {
         let place = match &branch {
             Some(branch) => format!("your checkout ({branch})"),
             None => "your checkout".to_owned(),
         };
         let head = repo.head_commit();
-        findings.extend(scan(repo, place, &TreeSource::WorkingTree, head.as_deref()));
-    }
-    match repo.mainline(config.mainline.as_deref()) {
+        scan(repo, place, &TreeSource::WorkingTree, head.as_deref())
+    };
+    let mainline_finding = match repo.mainline(config.mainline.as_deref()) {
         Ok(mainline) => {
             let start_point = mainline.start_point();
             let place = format!("the mainline {start_point}");
             let source = TreeSource::Revision(start_point.clone());
-            findings.extend(scan(repo, place, &source, Some(&start_point)));
+            scan(repo, place, &source, Some(&start_point))
         }
-        Err(err) => eprintln!("arbor: could not check the mainline for Markers: {err}"),
-    }
-    findings
+        Err(err) => {
+            eprintln!("arbor: could not check the mainline for Markers: {err}");
+            None
+        }
+    };
+    combine_findings(checkout_finding, mainline_finding)
+}
+
+/// A checkout on the mainline holds the same Marker lines as its tip, so lines found in both
+/// places are listed once, under both names.
+fn combine_findings(checkout: Option<Finding>, mainline: Option<Finding>) -> Vec<Finding> {
+    let (checkout, mainline) = match (checkout, mainline) {
+        (Some(checkout), Some(mainline)) => (checkout, mainline),
+        (checkout, mainline) => return checkout.into_iter().chain(mainline).collect(),
+    };
+    let (shared_lines, checkout_lines): (Vec<MarkerLine>, Vec<MarkerLine>) = checkout
+        .marker_lines
+        .into_iter()
+        .partition(|marker_line| mainline.marker_lines.contains(marker_line));
+    let mainline_lines = mainline
+        .marker_lines
+        .into_iter()
+        .filter(|marker_line| !shared_lines.contains(marker_line))
+        .collect();
+    [
+        Finding {
+            place: format!("{} and {}", checkout.place, mainline.place),
+            marker_lines: shared_lines,
+        },
+        Finding {
+            place: checkout.place,
+            marker_lines: checkout_lines,
+        },
+        Finding {
+            place: mainline.place,
+            marker_lines: mainline_lines,
+        },
+    ]
+    .into_iter()
+    .filter(|finding| !finding.marker_lines.is_empty())
+    .collect()
 }
 
 fn scan(
@@ -126,6 +165,66 @@ mod tests {
             line,
             text: "// ARBOR:BEGIN WU-1".to_owned(),
         }
+    }
+
+    fn finding(place: &str, lines: &[usize]) -> Finding {
+        Finding {
+            place: place.to_owned(),
+            marker_lines: lines.iter().copied().map(marker_line).collect(),
+        }
+    }
+
+    fn places_and_lines(findings: &[Finding]) -> Vec<(&str, Vec<usize>)> {
+        findings
+            .iter()
+            .map(|finding| {
+                let lines = finding
+                    .marker_lines
+                    .iter()
+                    .map(|marker_line| marker_line.line);
+                (finding.place.as_str(), lines.collect())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lines_in_both_the_checkout_and_the_mainline_are_listed_once() {
+        let combined = combine_findings(
+            Some(finding("your checkout (main)", &[1, 2, 5])),
+            Some(finding("the mainline origin/main", &[1, 2, 9])),
+        );
+
+        assert_eq!(
+            places_and_lines(&combined),
+            [
+                (
+                    "your checkout (main) and the mainline origin/main",
+                    vec![1, 2]
+                ),
+                ("your checkout (main)", vec![5]),
+                ("the mainline origin/main", vec![9]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_checkout_matching_the_mainline_is_one_place_in_the_warning() {
+        let combined = combine_findings(
+            Some(finding("your checkout (main)", &[1, 2])),
+            Some(finding("the mainline origin/main", &[1, 2])),
+        );
+        assert_eq!(
+            places_and_lines(&combined),
+            [(
+                "your checkout (main) and the mainline origin/main",
+                vec![1, 2]
+            )]
+        );
+        let checkout_only = combine_findings(Some(finding("your checkout (main)", &[3])), None);
+        assert_eq!(
+            places_and_lines(&checkout_only),
+            [("your checkout (main)", vec![3])]
+        );
     }
 
     #[test]

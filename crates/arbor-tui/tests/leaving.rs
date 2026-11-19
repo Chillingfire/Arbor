@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use arbor_config::ClarificationMode;
 use arbor_tui::{Confirmation, SessionView, StatusInfo, UiState, UnfinishedSession, draw};
@@ -44,7 +44,11 @@ fn the_warning_counts_markers_and_placeholders_and_says_how_to_resume_or_delete(
     );
     assert!(warning[2].starts_with("To resume,"));
     assert!(warning[3].contains("git branch -D arbor/add-login"));
-    assert!(warning[3].contains("git worktree remove --force /work/.arbor/sessions"));
+    let worktree: PathBuf = Path::new("/work/.arbor/sessions/1-add-login/worktree")
+        .components()
+        .collect();
+    let remove_command = format!("git worktree remove --force {}", worktree.display());
+    assert!(warning[3].contains(&remove_command), "{}", warning[3]);
 }
 
 #[test]
@@ -68,4 +72,19 @@ fn the_quit_confirmation_shows_the_whole_warning() {
     assert!(screen.contains("Your own checkout and the mainline are untouched."));
     assert!(screen.contains("arbor/add-login"), "{screen}");
     assert!(screen.contains("Ctrl+Q"), "{screen}");
+}
+
+#[cfg(windows)]
+#[test]
+fn the_worktree_path_uses_one_kind_of_separator_on_windows() {
+    let mut session = unfinished(false);
+    session.worktree = PathBuf::from(r"C:\work").join(".arbor/sessions/1-add-login/worktree");
+
+    let warning = session.warning().join("\n");
+
+    assert!(
+        warning.contains(r"C:\work\.arbor\sessions\1-add-login\worktree"),
+        "{warning}"
+    );
+    assert!(!warning.contains(".arbor/"), "{warning}");
 }
