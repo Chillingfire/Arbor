@@ -3,15 +3,18 @@
 //! and a Tier's clarifying questions go to an [`Operator`]; by default [`ApproveEverything`]. The
 //! run stops where the Operator says so.
 
+mod cleanup;
 mod operator;
+mod redo;
+mod store;
 
 use std::fmt;
 use std::io::Write;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session, Task, Tier, Usd,
-    WorkUnit, WorkUnitId,
+    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, RunOutcome, Session, Task, Tier,
+    Usd, WorkUnit, WorkUnitId,
 };
 use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
@@ -28,9 +31,17 @@ use arbor_tiers::{
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
+pub use cleanup::{
+    PruneReport, PrunedSession, branch_markers, delete_session, list_sessions, prune_sessions,
+};
 pub use operator::{ApproveEverything, Checkpoint, Decision, Operator, Pending};
+pub use redo::resume_resets_worktree;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+pub use store::{
+    RunLock, SessionFolder, SessionStatus, SessionSummary, StoreError, retention, rewind_session,
+    session_folders, summarize,
+};
 
 /// How an [`Autopilot`] run ended.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +56,25 @@ pub enum SessionEnd {
     TierStopped { tier: Tier, reason: String },
     /// The Scaffold Check failed on a Skeleton the Scaffolder had already checked.
     ScaffoldChecksFailed { check_output: String },
+}
+
+impl SessionEnd {
+    /// What the log records about how the run ended, or `None` when the Session finished.
+    pub fn run_outcome(&self) -> Option<RunOutcome> {
+        match self {
+            Self::Finished => None,
+            Self::StoppedAtBudget | Self::NeedsOperator(_) => Some(RunOutcome::Cancelled),
+            Self::TierStopped { tier, reason } => Some(RunOutcome::Failed {
+                reason: format!("the {tier:?} {reason}"),
+            }),
+            Self::ScaffoldChecksFailed { check_output } => Some(RunOutcome::Failed {
+                reason: format!(
+                    "the Scaffold Check failed: {}",
+                    check_output.lines().last().unwrap_or_default()
+                ),
+            }),
+        }
+    }
 }
 
 /// A step the run couldn't carry out, such as a failed model call or git command.
@@ -220,6 +250,32 @@ impl<'a> Autopilot<'a> {
         for setting in self.configured_settings() {
             effects = self.apply(setting)?;
         }
+        self.carry_out_from(effects).await
+    }
+
+    /// Carries on the Session whose log holds `events`, which aren't written again. Work that
+    /// was in flight, such as a model call, is redone from the last commit, and its cost counted
+    /// again. The settings from the config are left as the log has them.
+    pub async fn resume(&mut self, events: Vec<Event>) -> Result<SessionEnd, AutopilotError> {
+        self.session = Session::replay(&events).map_err(failed("replaying the event log"))?;
+        self.events = events;
+        self.prepare_to_redo()?;
+        let effects = self.session.pending();
+        self.carry_out_from(effects).await
+    }
+
+    /// Records in the log why the run ended, unless the Session has finished or never started.
+    pub fn record_run_end(&mut self, outcome: RunOutcome) -> Result<(), AutopilotError> {
+        if matches!(self.session.phase(), Phase::NotStarted | Phase::Done) {
+            return Ok(());
+        }
+        self.apply(Event::RunEnded { outcome }).map(drop)
+    }
+
+    async fn carry_out_from(
+        &mut self,
+        mut effects: Vec<Effect>,
+    ) -> Result<SessionEnd, AutopilotError> {
         loop {
             let [effect] = effects.as_slice() else {
                 return Err(AutopilotError {
