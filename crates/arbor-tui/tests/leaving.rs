@@ -42,13 +42,17 @@ fn the_warning_counts_markers_and_placeholders_and_says_how_to_resume_or_delete(
         warning[1],
         "Your own checkout and the mainline are untouched."
     );
-    assert!(warning[2].starts_with("To resume,"));
-    assert!(warning[3].contains("git branch -D arbor/add-login"));
+    assert!(warning[2].starts_with("To resume, rewind or delete it,"));
+    assert!(warning[2].contains("press b to open the Session browser"));
     let worktree: PathBuf = Path::new("/work/.arbor/sessions/1-add-login/worktree")
         .components()
         .collect();
-    let remove_command = format!("git worktree remove --force {}", worktree.display());
-    assert!(warning[3].contains(&remove_command), "{}", warning[3]);
+    assert!(
+        warning[2].contains(&worktree.display().to_string()),
+        "{}",
+        warning[2]
+    );
+    assert_eq!(warning.len(), 3);
 }
 
 #[test]
