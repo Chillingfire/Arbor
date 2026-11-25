@@ -183,20 +183,17 @@ fn event_loop(
     loop {
         run.follow(app);
         terminal.draw(|frame| app.draw(frame))?;
-        // Take every event already waiting before drawing again, so a paste doesn't trail behind.
-        let mut event_waiting = event::poll(FRAME)?;
-        while event_waiting {
-            let terminal_event = event::read()?;
-            event_waiting = event::poll(Duration::ZERO)?;
+        let waiting_events = read_waiting_events()?;
+        for (position, terminal_event) in waiting_events.iter().enumerate() {
             let key = match terminal_event {
                 TerminalEvent::Paste(pasted) => {
-                    app.ui_state.paste(&pasted);
+                    app.ui_state.paste(pasted);
                     continue;
                 }
-                TerminalEvent::Key(key) if key.kind == KeyEventKind::Press => key,
+                TerminalEvent::Key(key) if key.kind == KeyEventKind::Press => *key,
                 _ => continue,
             };
-            let key = if event_waiting {
+            let key = if enter_is_pasted(&waiting_events[position + 1..]) {
                 as_pasted(key, app.ui_state.focus)
             } else {
                 key
@@ -212,8 +209,27 @@ fn event_loop(
     }
 }
 
+/// Every event already waiting once the next frame's wait ends, so a paste doesn't trail behind.
+fn read_waiting_events() -> io::Result<Vec<TerminalEvent>> {
+    let mut waiting_events = Vec::new();
+    let mut event_waiting = event::poll(FRAME)?;
+    while event_waiting {
+        waiting_events.push(event::read()?);
+        event_waiting = event::poll(Duration::ZERO)?;
+    }
+    Ok(waiting_events)
+}
+
+/// Windows reports key releases too, and a single Enter's release is often already waiting, so
+/// only a later press counts as more of a paste.
+fn enter_is_pasted(later_events: &[TerminalEvent]) -> bool {
+    later_events.iter().any(|later_event| {
+        matches!(later_event, TerminalEvent::Key(key) if key.kind == KeyEventKind::Press)
+    })
+}
+
 /// Where bracketed paste isn't available, a paste arrives as keys all at once. An Enter with more
-/// keys right behind it is a pasted newline, not the Human Operator sending the prompt.
+/// key presses right behind it is a pasted newline, not the Human Operator sending the prompt.
 fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
     if focus == Focus::Prompt && key.code == KeyCode::Enter && key.modifiers.is_empty() {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
@@ -619,4 +635,64 @@ fn exclude_sessions(repo: &Repo) -> Result<(), String> {
     };
     fs::write(&exclude_path, format!("{existing}{separator}{pattern}\n"))
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyEventState;
+
+    fn key_event(code: KeyCode, kind: KeyEventKind) -> TerminalEvent {
+        TerminalEvent::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    #[test]
+    fn a_lone_enter_is_not_pasted() {
+        assert!(!enter_is_pasted(&[]));
+    }
+
+    #[test]
+    fn an_enter_followed_only_by_its_own_release_is_not_pasted() {
+        let later_events = [key_event(KeyCode::Enter, KeyEventKind::Release)];
+        assert!(!enter_is_pasted(&later_events));
+    }
+
+    #[test]
+    fn an_enter_followed_by_releases_repeats_and_focus_changes_is_not_pasted() {
+        let later_events = [
+            key_event(KeyCode::Enter, KeyEventKind::Release),
+            key_event(KeyCode::Enter, KeyEventKind::Repeat),
+            TerminalEvent::FocusLost,
+            key_event(KeyCode::Char('a'), KeyEventKind::Release),
+        ];
+        assert!(!enter_is_pasted(&later_events));
+    }
+
+    #[test]
+    fn an_enter_followed_by_another_key_press_is_pasted() {
+        let later_events = [key_event(KeyCode::Char('b'), KeyEventKind::Press)];
+        assert!(enter_is_pasted(&later_events));
+    }
+
+    #[test]
+    fn an_enter_whose_release_comes_before_the_next_press_is_pasted() {
+        let later_events = [
+            key_event(KeyCode::Enter, KeyEventKind::Release),
+            key_event(KeyCode::Char('b'), KeyEventKind::Press),
+            key_event(KeyCode::Char('b'), KeyEventKind::Release),
+        ];
+        assert!(enter_is_pasted(&later_events));
+    }
+
+    #[test]
+    fn a_pasted_enter_in_the_prompt_becomes_a_newline() {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let newline = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(as_pasted(enter, Focus::Prompt), newline);
+    }
 }
