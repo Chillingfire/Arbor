@@ -26,7 +26,9 @@ pub use agent::{
 pub use check_proposal::{
     CheckProposalRun, ProposedChecks, SUBMIT_CHECKS, validate_proposed_checks,
 };
-pub use checkpoint_commits::{commit_revision, commit_skeleton, discard_revision};
+pub use checkpoint_commits::{
+    commit_revision, commit_skeleton, discard_revision, revision_subject, skeleton_subject,
+};
 pub use init::{
     AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
     ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,

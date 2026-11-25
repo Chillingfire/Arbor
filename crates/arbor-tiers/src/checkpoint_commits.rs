@@ -14,8 +14,7 @@ pub fn commit_skeleton(worktree: &Worktree, task: &Task) -> Result<Event, GitErr
 /// Commits the edits of a Revision that was accepted, by review or at its Checkpoint, and returns
 /// `RevisionCommitted`.
 pub fn commit_revision(worktree: &Worktree, task: &Task) -> Result<Event, GitError> {
-    let subject = format!("{} (revised structure and tests)", title(task));
-    let commit = commit_all(worktree, &subject)?;
+    let commit = commit_all(worktree, &revision_subject(task))?;
     Ok(Event::RevisionCommitted { commit })
 }
 
@@ -28,8 +27,12 @@ pub fn discard_revision(worktree: &Worktree) -> Result<Event, GitError> {
 }
 
 /// Like every commit, it doesn't mention Arbor (ADR-0009).
-fn skeleton_subject(task: &Task) -> String {
+pub fn skeleton_subject(task: &Task) -> String {
     format!("{} (structure and tests)", title(task))
+}
+
+pub fn revision_subject(task: &Task) -> String {
+    format!("{} (revised structure and tests)", title(task))
 }
 
 fn title(task: &Task) -> &str {

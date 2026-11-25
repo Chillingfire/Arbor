@@ -40,6 +40,11 @@ impl Worktree {
         git(&self.path, &["rev-parse", "HEAD"]).map(CommitId::from)
     }
 
+    /// The first line of `HEAD`'s commit message.
+    pub fn head_subject(&self) -> Result<String, GitError> {
+        git(&self.path, &["log", "-1", "--format=%s", "HEAD"])
+    }
+
     /// Commits every change in the worktree, including new and deleted files, with the
     /// operator's git identity. Returns `None` without committing if nothing changed.
     pub fn commit(&self, message: &CommitMessage) -> Result<Option<CommitId>, GitError> {
@@ -116,7 +121,7 @@ impl Worktree {
 
     /// The commit's hash, once it is known to name a commit here. The hash may come from the
     /// event log, so it is never passed to git as an option or a range.
-    fn verified<'a>(&self, commit: &'a CommitId) -> Result<&'a str, GitError> {
+    pub(crate) fn verified<'a>(&self, commit: &'a CommitId) -> Result<&'a str, GitError> {
         let hash = commit.as_str();
         let is_hash =
             (7..=64).contains(&hash.len()) && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
