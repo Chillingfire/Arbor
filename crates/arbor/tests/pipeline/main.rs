@@ -3,6 +3,7 @@
 //! `cargo test`). Each scenario's model replies are in `tests/fixtures/pipeline/<scenario>.json`;
 //! `fixture_client.rs` says how to record them again.
 
+mod escalation_options;
 mod fixture_client;
 mod sample_repo;
 
