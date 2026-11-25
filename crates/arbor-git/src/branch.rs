@@ -55,3 +55,8 @@ impl fmt::Display for SessionBranch {
         f.write_str(&self.0)
     }
 }
+
+/// Whether `branch` is a Session branch, e.g. `arbor/add-oauth-login`.
+pub fn is_session_branch(branch: &str) -> bool {
+    branch.starts_with(PREFIX)
+}

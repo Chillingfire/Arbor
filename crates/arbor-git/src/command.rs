@@ -88,7 +88,7 @@ impl<'a> Git<'a> {
         Ok(self.run()?.status.success())
     }
 
-    fn run(self) -> Result<Output, GitError> {
+    pub(crate) fn run(self) -> Result<Output, GitError> {
         let mut command = Command::new("git");
         command
             .args(self.git_args)

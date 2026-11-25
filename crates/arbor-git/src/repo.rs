@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use crate::branch::SessionBranch;
+use crate::branch::{PREFIX, SessionBranch};
 use crate::changes;
 use crate::command::{GitError, git, git_succeeds};
 use crate::mainline::Mainline;
 use crate::worktree::Worktree;
+
+/// Where Sessions live, relative to the project root. Each one's worktree is inside it.
+pub const SESSIONS_DIR: &str = ".arbor/sessions";
 
 /// The local mainline names tried, in order, when there is no remote and none was chosen.
 const LOCAL_MAINLINE_GUESSES: &[&str] = &["main", "master"];
@@ -38,6 +41,31 @@ impl Repo {
         &self.root
     }
 
+    /// The branch checked out here, or `None` on a detached `HEAD`.
+    pub fn current_branch(&self) -> Option<String> {
+        git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok()
+    }
+
+    /// The commit `HEAD` points at, or `None` before the first commit.
+    pub fn head_commit(&self) -> Option<String> {
+        git(
+            &self.root,
+            &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+        )
+        .ok()
+    }
+
+    /// Whether this checkout is a Session's worktree: on an `arbor/` branch and inside a
+    /// [`SESSIONS_DIR`]. Its commits hold Markers by design (ADR-0002).
+    pub fn is_session_worktree(&self) -> bool {
+        let root = self.root.to_string_lossy().replace('\\', "/");
+        let in_sessions_dir = root.contains(&format!("/{SESSIONS_DIR}/"));
+        in_sessions_dir
+            && self
+                .current_branch()
+                .is_some_and(|branch| branch.starts_with(PREFIX))
+    }
+
     /// The git directory every worktree of the repository shares, e.g. for `info/exclude`. From
     /// a linked worktree this is the main checkout's `.git`, not the worktree's own.
     pub fn common_dir(&self) -> Result<PathBuf, GitError> {
@@ -46,6 +74,14 @@ impl Repo {
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
         Ok(PathBuf::from(common_dir))
+    }
+
+    /// The `core.hooksPath` setting, if the operator set one. Git then runs hooks from there
+    /// instead of the `hooks` folder in [`Self::common_dir`].
+    pub fn configured_hooks_path(&self) -> Option<String> {
+        git(&self.root, &["config", "--get", "core.hooksPath"])
+            .ok()
+            .filter(|hooks_path| !hooks_path.is_empty())
     }
 
     /// Fetches `origin`. This is read-only for the remote, so it needs no approval (ADR-0006).

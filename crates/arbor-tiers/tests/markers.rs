@@ -1,6 +1,7 @@
 use arbor_core::WorkUnitId;
 use arbor_tiers::markers::{
-    MarkerError, Markers, Region, is_marker_line, is_well_formed_marker, splice, strip,
+    MarkerError, Markers, Region, is_begin_marker, is_marker_line, is_well_formed_marker,
+    marker_lines_of, splice, strip,
 };
 
 fn wu(n: u32) -> WorkUnitId {
@@ -307,4 +308,64 @@ fn regions_need_two_lines_between_them() {
 
     let two_apart = one_apart.replace("}\n// ARBOR:BEGIN WU-2", "}\n\n// ARBOR:BEGIN WU-2");
     assert_eq!(Markers::parse(&two_apart).errors(), []);
+}
+
+#[test]
+fn marker_lines_of_finds_only_that_work_units_well_formed_markers() {
+    let source = "// ARBOR:BEGIN WU-1
+// ARBOR:END WU-2
+x
+// ARBOR:END WU-1
+// ARBOR:END WU-1x
+";
+    assert_eq!(marker_lines_of(source, wu(1)), [0, 3]);
+    assert_eq!(marker_lines_of(source, wu(3)), Vec::<usize>::new());
+}
+
+#[test]
+fn only_a_well_formed_begin_opens_a_region() {
+    assert!(is_begin_marker("    # ARBOR:BEGIN WU-4"));
+    assert!(!is_begin_marker("    # ARBOR:END WU-4"));
+    assert!(!is_begin_marker("    # ARBOR:BEGIN WU-"));
+}
+
+/// The Writer refuses to commit a file that still holds a Marker for its Work Unit once the
+/// Region is stripped. Every such Marker is already a problem with the Region, so that refusal is
+/// a guard, never the first to fire.
+#[test]
+fn an_intact_region_leaves_no_marker_for_its_work_unit_once_stripped() {
+    let stray_markers = [
+        "// ARBOR:BEGIN WU-1",
+        "// ARBOR:END WU-1",
+        "// ARBOR:BEGIN WU-1 // ARBOR:END WU-1",
+        "// ARBOR:BEGIN WU-2",
+        "// ARBOR:END WU-2",
+    ];
+    let region_text = [
+        "a",
+        "// ARBOR:BEGIN WU-1",
+        "todo!()",
+        "// ARBOR:END WU-1",
+        "b",
+    ];
+    for stray in stray_markers {
+        for position in 0..=region_text.len() {
+            let mut lines = region_text.to_vec();
+            lines.insert(position, stray);
+            let source = lines.join("\n");
+            let markers = Markers::parse(&source);
+            let Some(region) = markers.region(wu(1)) else {
+                continue;
+            };
+            if !markers.problems_for(wu(1)).is_empty() {
+                continue;
+            }
+            let stripped = strip(&source, region);
+            assert_eq!(
+                marker_lines_of(&stripped, wu(1)),
+                Vec::<usize>::new(),
+                "{source}"
+            );
+        }
+    }
 }

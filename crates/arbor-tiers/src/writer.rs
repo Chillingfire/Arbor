@@ -13,7 +13,7 @@ use arbor_prompts::{Prompt, estimate_tokens};
 use arbor_tools::{CheckName, run_check};
 
 use crate::agent::{core_usage, supports};
-use crate::markers::{Markers, Region, splice, strip};
+use crate::markers::{Markers, Region, marker_lines_of, splice, strip};
 use crate::reply::{CodeReply, ReplyError, WriterReply, parse_reply};
 use crate::writer_cap::{with_margin, writer_input_tokens};
 
@@ -423,7 +423,23 @@ impl Writer {
     fn commit(&self, path: &Path, spliced: &str) -> Result<CommitId, WriterError> {
         let unit = &self.work_unit;
         let region = self.intact_region(spliced)?;
-        write(path, &strip(spliced, &region))?;
+        let stripped = strip(spliced, &region);
+        // `intact_region` already refuses every other Marker for this Work Unit; this guards the
+        // commit should the two ever disagree, and goes to a Revision like any broken Region.
+        let lines_left = marker_lines_of(&stripped, unit.id);
+        if !lines_left.is_empty() {
+            let lines: Vec<String> = lines_left
+                .iter()
+                .map(|line| (line + 1).to_string())
+                .collect();
+            let problem = format!(
+                "a Marker for {} is still on line {} after its Region was stripped",
+                unit.id,
+                lines.join(", ")
+            );
+            return Err(self.region_broken(problem, spliced));
+        }
+        write(path, &stripped)?;
         let message = CommitMessage::new(&commit_subject(&unit.spec, &unit.file))?;
         Worktree::open(&self.worktree)?
             .commit(&message)?
