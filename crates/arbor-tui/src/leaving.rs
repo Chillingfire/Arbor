@@ -37,12 +37,8 @@ impl UnfinishedSession {
             ),
             "Your own checkout and the mainline are untouched.".to_owned(),
             format!(
-                "To resume, finish the Regions by hand in {worktree}; arbor can't resume a \
-                 Session yet."
-            ),
-            format!(
-                "To delete the Session: git worktree remove --force {worktree} && git branch -D \
-                 {branch}"
+                "To resume, rewind or delete it, run arbor here and press b to open the Session \
+                 browser; or finish the Regions by hand in {worktree}."
             ),
         ]
     }
