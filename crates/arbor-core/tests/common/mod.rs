@@ -61,12 +61,18 @@ pub fn full_session_events() -> Vec<arbor_core::Event> {
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
         Event::SkeletonCommitted { commit: None },
-        Event::WorkUnitPassed { id: WorkUnitId(1) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(1),
+            model: None,
+        },
         Event::WorkUnitCommitted {
             id: WorkUnitId(1),
             commit: "c1".into(),
         },
-        Event::WorkUnitPassed { id: WorkUnitId(2) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(2),
+            model: None,
+        },
         Event::WorkUnitCommitted {
             id: WorkUnitId(2),
             commit: "c2".into(),

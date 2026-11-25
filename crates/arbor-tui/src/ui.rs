@@ -125,6 +125,8 @@ pub struct UiState {
     pub modal_hidden: bool,
     /// The Session browser, while open. It takes the keys.
     pub browser: Option<SessionBrowser>,
+    /// The Session on screen has no run behind it, so the prompt takes a new Request.
+    pub nothing_running: bool,
 }
 
 impl UiState {
@@ -831,6 +833,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     let content = if ui_state.prompt.is_empty() {
         let placeholder = match view.session().phase() {
             Phase::NotStarted => "Describe the change you want, then press Enter",
+            _ if ui_state.nothing_running => "Describe the next change you want, then press Enter",
             _ => "A new Request can start once this Session ends",
         };
         Line::from(vec![
@@ -857,6 +860,7 @@ fn key_hints(focus: Focus) -> &'static [(&'static str, &'static str)] {
             ("←→", "fold"),
             ("/", "prompt"),
             ("b", "sessions"),
+            ("m", "mode"),
             ("q", "quit"),
         ],
         Focus::Detail => &[
@@ -919,10 +923,12 @@ pub(crate) fn phase_name(phase: &Phase) -> String {
         Phase::Replanning { .. } => "Replanning",
         Phase::ReplanCheckpoint { .. } => "Replan Checkpoint",
         Phase::ResettingTask { .. } => "Resetting Task",
+        Phase::SkippingTask { .. } => "Skipping Task",
         Phase::CheckingMarkers => "Marker check",
         Phase::MarkerCheckpoint { .. } => "Marker Checkpoint",
         Phase::Done => "Done",
         Phase::Stopped => "Stopped",
+        Phase::Aborted => "Aborted",
     };
     format!("{name}{task}")
 }

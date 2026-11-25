@@ -131,6 +131,7 @@ fn start_writer(
         checks,
         cap_tokens,
         missing_response_allowed,
+        escalation_notes: None,
     }
     .start()
 }
@@ -224,6 +225,7 @@ async fn a_model_without_temperature_or_seed_gets_neither_so_a_provider_can_stil
         checks: checks(),
         cap_tokens: CAP_TOKENS,
         missing_response_allowed: true,
+        escalation_notes: None,
     }
     .start();
     writer.attempt(&client).await.unwrap();

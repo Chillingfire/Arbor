@@ -60,6 +60,7 @@ async fn the_planner_replaces_the_failed_task_with_revised_ones() {
         clarification_mode: ClarificationMode::Assume,
         tools: Tools::new(dir.path(), Toolset::Planner, Checks::default()),
         feedback: Some("Keep the logger separate"),
+        hint: None,
     }
     .start()
     .unwrap();
@@ -102,6 +103,36 @@ async fn the_planner_replaces_the_failed_task_with_revised_ones() {
     assert!(
         !names.contains(&"write_file"),
         "the Planner stays read-only"
+    );
+}
+
+#[test]
+fn a_hint_from_the_escalation_checkpoint_follows_the_replan_inputs() {
+    let dir = TempDir::new().unwrap();
+    let prompt = replan_prompt(&dir);
+    let planner = ReplanRun {
+        prompt: &prompt,
+        model: model(200_000, true),
+        temperature: 0.5,
+        clarification_mode: ClarificationMode::Assume,
+        tools: Tools::new(dir.path(), Toolset::Planner, Checks::default()),
+        feedback: None,
+        hint: Some("Split the logger into its own Task"),
+    }
+    .start()
+    .unwrap();
+
+    let Some(Message::User { content }) = planner.messages().last() else {
+        panic!("expected the inputs last");
+    };
+    let hint_part = &content.last().unwrap().text;
+    assert!(
+        hint_part.starts_with("# The Human Operator's hint"),
+        "{hint_part}"
+    );
+    assert!(
+        hint_part.ends_with("Split the logger into its own Task"),
+        "{hint_part}"
     );
 }
 

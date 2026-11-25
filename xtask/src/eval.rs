@@ -229,7 +229,7 @@ async fn run_cases(options: &EvalOptions) -> Result<PathBuf, String> {
     }
     let user_config =
         arbor_config::user_config_path(Platform::current(), |name| env::var(name).ok());
-    let api_key = load_api_key(user_config.as_deref())
+    let api_key = load_api_key(user_config.as_deref(), |name| env::var(name).ok())
         .map_err(|err| err.to_string())?
         .ok_or_else(|| format!("set {API_KEY_ENV} or api_key in the user config"))?;
     let client = OpenRouterClient::new(api_key.expose());
@@ -389,7 +389,12 @@ async fn run_case(
             escalations.operator_stops = 1;
             (false, format!("stopped for the operator at {effect:?}"))
         }
+        Ok(SessionEnd::FinishedWithSkippedTasks { skipped_tasks }) => (
+            false,
+            format!("finished without skipped Tasks {skipped_tasks:?}"),
+        ),
         Ok(SessionEnd::StoppedAtBudget) => (false, "stopped at the Budget Cap".to_owned()),
+        Ok(SessionEnd::Aborted) => (false, "aborted by the operator".to_owned()),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
             escalations.operator_stops = 1;
             (false, format!("the {tier:?} stopped: {reason}"))

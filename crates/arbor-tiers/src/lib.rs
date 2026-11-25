@@ -3,6 +3,7 @@
 mod agent;
 mod check_proposal;
 mod checkpoint_commits;
+mod failure_brief;
 mod init;
 mod marker_allowlist;
 mod marker_scan;
@@ -29,6 +30,7 @@ pub use check_proposal::{
 pub use checkpoint_commits::{
     commit_revision, commit_skeleton, discard_revision, revision_subject, skeleton_subject,
 };
+pub use failure_brief::{failure_brief, hint_input};
 pub use init::{
     AutoDetection, CheckRun, ConfirmChecks, Confirmation, InitError, InitOutcome, ProposalError,
     ProposeChecks, ScaffolderProposer, detect_checks, init, validate_checks,

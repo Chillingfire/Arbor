@@ -2,6 +2,8 @@
 //! thread with the Autopilot and streams its updates to the screen. At a Checkpoint or a Tier's
 //! questions it waits for the Human Operator's reply from a modal.
 
+mod setup;
+
 use std::env;
 use std::fs;
 use std::io;
@@ -12,8 +14,10 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
-use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
-use arbor_core::{Effect, Event, Phase, Request, RunOutcome, Tier};
+use arbor_config::{
+    API_KEY_ENV, ClarificationMode, Config, ConfigError, Platform, load_api_key, user_config_path,
+};
+use arbor_core::{Effect, Event, Phase, Plan, Request, RunOutcome, Tier};
 use arbor_git::{Mainline, Repo, SESSIONS_DIR, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{
@@ -32,6 +36,7 @@ use tokio::sync::oneshot;
 mod browsing;
 
 use crate::leaving::{self, StartedSession};
+use crate::plan_editor::{PlanEdit, edit_plan};
 use crate::startup;
 
 /// How often the screen redraws while waiting, so the spinner moves.
@@ -79,6 +84,7 @@ enum AwaitedReply {
 /// Session waits for the reply.
 struct ScreenOperator {
     sender: Sender<DriverMessage>,
+    mode_switches: Receiver<ClarificationMode>,
 }
 
 /// Without a screen left to reply, the Session waits until it is cancelled rather than go on
@@ -109,6 +115,10 @@ impl Operator for ScreenOperator {
         });
         Box::pin(screen_reply(replied))
     }
+
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        self.mode_switches.try_iter().last()
+    }
 }
 
 /// The Session running behind the screen.
@@ -117,6 +127,7 @@ struct RunningSession {
     cancel: Option<oneshot::Sender<()>>,
     driver: JoinHandle<()>,
     awaited_reply: Option<AwaitedReply>,
+    mode_switches: Sender<ClarificationMode>,
     /// Set once the Session's branch and worktree exist.
     started: Option<StartedSession>,
 }
@@ -125,12 +136,17 @@ struct Project {
     root: PathBuf,
     config: Config,
     user_config: Option<PathBuf>,
+    /// A key the Operator typed at startup, used ahead of the configured one.
+    typed_api_key: Option<String>,
 }
 
 impl Project {
     /// Read again for each Session, so a key set after a failed start is picked up.
     fn api_key(&self) -> Result<Option<String>, ConfigError> {
-        let api_key = load_api_key(self.user_config.as_deref())?;
+        if let Some(typed_api_key) = &self.typed_api_key {
+            return Ok(Some(typed_api_key.clone()));
+        }
+        let api_key = load_api_key(self.user_config.as_deref(), |name| env::var(name).ok())?;
         Ok(api_key.map(|key| key.expose().to_owned()))
     }
 
@@ -140,7 +156,7 @@ impl Project {
 }
 
 pub fn run(initial_request: Option<Request>) -> ExitCode {
-    let project = match load_project() {
+    let mut project = match load_project() {
         Ok(project) => project,
         Err(message) => {
             eprintln!("arbor: {message}");
@@ -163,7 +179,12 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
     let outcome = ratatui::run(|terminal| {
         // The legacy Windows console can't do bracketed paste; there a paste arrives as keys.
         let _ = execute!(io::stdout(), EnableBracketedPaste);
-        let looped = event_loop(terminal, &mut app, &project, initial_request);
+        let looped = match setup::settle(terminal, &mut app, &mut project) {
+            Ok(ControlFlow::Continue(())) => {
+                event_loop(terminal, &mut app, &project, initial_request)
+            }
+            settled => settled.map(|_| Vec::new()),
+        };
         let _ = execute!(io::stdout(), DisableBracketedPaste);
         looped
     });
@@ -191,6 +212,7 @@ fn load_project() -> Result<Project, String> {
         root,
         config,
         user_config,
+        typed_api_key: None,
     };
     project.api_key().map_err(|err| err.to_string())?;
     Ok(project)
@@ -209,6 +231,7 @@ fn event_loop(
     }
     loop {
         run.follow(app);
+        app.ui_state.nothing_running = run.session.is_none();
         terminal.draw(|frame| app.draw(frame))?;
         let waiting_events = read_waiting_events()?;
         for (position, terminal_event) in waiting_events.iter().enumerate() {
@@ -225,7 +248,11 @@ fn event_loop(
             } else {
                 key
             };
-            if run.handle_key(app, project, key).is_break() {
+            let key_flow = run.handle_key(app, project, key);
+            if let Some(plan) = run.plan_to_edit.take() {
+                run.send_edited_plan(app, edit_plan(terminal, &plan)?);
+            }
+            if key_flow.is_break() {
                 app.view
                     .push_note("Stopping the Session before leaving…", Tone::Operator);
                 terminal.draw(|frame| app.draw(frame))?;
@@ -269,6 +296,8 @@ fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
 #[derive(Default)]
 struct Run {
     session: Option<RunningSession>,
+    /// The Plan the Human Operator asked to edit at its Checkpoint, until the editor opens.
+    plan_to_edit: Option<Plan>,
     /// The Sessions that have ended, to warn about any left unfinished.
     started_sessions: Vec<StartedSession>,
 }
@@ -382,6 +411,8 @@ impl Run {
             ),
             KeyOutcome::Decided(decision) => self.send_decision(app, decision),
             KeyOutcome::Answered(answers) => self.send_answers(app, answers),
+            KeyOutcome::SwitchClarificationMode => self.switch_clarification_mode(app),
+            KeyOutcome::EditPlan(plan) => self.plan_to_edit = Some(plan),
             KeyOutcome::OpenBrowser => browsing::open(app, project),
             KeyOutcome::Browser(outcome) => {
                 let running_here = self.session.is_some();
@@ -391,6 +422,39 @@ impl Run {
             }
         }
         ControlFlow::Continue(())
+    }
+
+    /// An edited Plan goes back to the Plan Checkpoint, which shows it again. An edit that changed
+    /// nothing or can't be used leaves the modal open.
+    fn send_edited_plan(&mut self, app: &mut App, plan_edit: PlanEdit) {
+        match plan_edit {
+            Ok(Some(edited)) => {
+                app.ui_state.modal = None;
+                self.send_decision(app, Decision::EditPlan(edited));
+            }
+            Ok(None) => app.view.push_note("The Plan is unchanged.", Tone::Progress),
+            Err(message) => app.view.push_note(message, Tone::Failure),
+        }
+    }
+
+    /// A running Session takes the new mode from its next Planner or Scaffolder run; otherwise
+    /// the next Session starts with it.
+    fn switch_clarification_mode(&mut self, app: &mut App) {
+        let mode = match app.status.clarification_mode {
+            ClarificationMode::Ask => ClarificationMode::Assume,
+            ClarificationMode::Assume => ClarificationMode::Ask,
+        };
+        app.status.clarification_mode = mode;
+        let applies_from = match &self.session {
+            Some(session) if session.mode_switches.send(mode).is_ok() => {
+                "the next Planner or Scaffolder run"
+            }
+            _ => "the next Session",
+        };
+        app.view.push_note(
+            format!("Clarification Mode {mode:?} from {applies_from}."),
+            Tone::Operator,
+        );
     }
 
     fn take_awaited_reply(&mut self) -> Option<AwaitedReply> {
@@ -491,10 +555,16 @@ fn start_session(app: &mut App, project: &Project, start: SessionStart) -> Optio
     };
     let (sender, messages) = mpsc::channel();
     let (cancel, cancelled) = oneshot::channel();
+    let (mode_switches, switched_modes) = mpsc::channel();
     let root = project.root.clone();
-    let config = project.config.clone();
+    let mut config = project.config.clone();
+    config.clarification_mode = app.status.clarification_mode;
     let driver = thread::spawn(move || {
-        let ending = drive(&root, config, &api_key, start, &sender, cancelled);
+        let operator = ScreenOperator {
+            sender: sender.clone(),
+            mode_switches: switched_modes,
+        };
+        let ending = drive(&root, config, &api_key, start, operator, cancelled);
         let _ = sender.send(ending);
     });
     Some(RunningSession {
@@ -502,6 +572,7 @@ fn start_session(app: &mut App, project: &Project, start: SessionStart) -> Optio
         cancel: Some(cancel),
         driver,
         awaited_reply: None,
+        mode_switches,
         started: None,
     })
 }
@@ -512,10 +583,10 @@ fn drive(
     config: Config,
     api_key: &str,
     start: SessionStart,
-    sender: &Sender<DriverMessage>,
+    operator: ScreenOperator,
     cancelled: oneshot::Receiver<()>,
 ) -> DriverMessage {
-    try_drive(root, config, api_key, start, sender, cancelled)
+    try_drive(root, config, api_key, start, operator, cancelled)
         .unwrap_or_else(|message| DriverMessage::Ended(message, Tone::Failure))
 }
 
@@ -550,9 +621,10 @@ fn try_drive(
     config: Config,
     api_key: &str,
     start: SessionStart,
-    sender: &Sender<DriverMessage>,
+    operator: ScreenOperator,
     cancelled: oneshot::Receiver<()>,
 ) -> Result<DriverMessage, String> {
+    let sender = operator.sender.clone();
     let repo = Repo::open(root).map_err(|err| format!("Could not open the repository: {err}"))?;
     let mainline = repo
         .mainline(config.mainline.as_deref())
@@ -582,9 +654,6 @@ fn try_drive(
 
     let client = OpenRouterClient::new(api_key);
     let observer_sender = sender.clone();
-    let operator = ScreenOperator {
-        sender: sender.clone(),
-    };
     let mut autopilot = Autopilot::new(&worktree, &mainline, &client, config)
         .map_err(|err| err.to_string())?
         .with_operator(operator)
@@ -662,6 +731,9 @@ fn cancelled_ending(phase: &Phase, worktree: &Worktree) -> DriverMessage {
 fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> DriverMessage {
     let (message, tone) = match session_end {
         Ok(SessionEnd::Finished) => ("Session finished.".to_owned(), Tone::Success),
+        Ok(SessionEnd::FinishedWithSkippedTasks { skipped_tasks }) => {
+            (skipped_tasks_ending(&skipped_tasks), Tone::Operator)
+        }
         Ok(SessionEnd::NeedsOperator(effect)) => (
             format!(
                 "Stopped at {}. The branch and worktree are kept.",
@@ -671,6 +743,10 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
         ),
         Ok(SessionEnd::StoppedAtBudget) => (
             "Stopped at the Budget Cap. The branch and worktree are kept.".to_owned(),
+            Tone::Operator,
+        ),
+        Ok(SessionEnd::Aborted) => (
+            "Session aborted. The branch and worktree are kept.".to_owned(),
             Tone::Operator,
         ),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
@@ -688,6 +764,22 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
     DriverMessage::Ended(message, tone)
 }
 
+fn skipped_tasks_ending(skipped_tasks: &[usize]) -> String {
+    let task_numbers: Vec<String> = skipped_tasks
+        .iter()
+        .map(|task| (task + 1).to_string())
+        .collect();
+    let tasks = if task_numbers.len() == 1 {
+        "Task"
+    } else {
+        "Tasks"
+    };
+    format!(
+        "Session finished with {tasks} {} skipped; the branch lacks that part of the Request.",
+        task_numbers.join(", ")
+    )
+}
+
 /// The event log line for the Human Operator's decision at a Checkpoint.
 fn decision_note(decision: &Decision) -> String {
     match decision {
@@ -703,8 +795,15 @@ fn decision_note(decision: &Decision) -> String {
             )
         }
         Decision::Reject(feedback) => format!("Rejected the Checkpoint: {feedback}"),
+        Decision::EditPlan(_) => "Edited the Plan by hand.".to_owned(),
         Decision::Fixed => "Fixed it by hand; checking the fix.".to_owned(),
         Decision::Replan => "Sent the Task to the Planner.".to_owned(),
+        Decision::RetryWithHint { tier, hint } => {
+            format!("Ran the {tier:?} again with a hint: {hint}")
+        }
+        Decision::RetryWithStrongerWriter => "Sent the Work Unit to a stronger Writer.".to_owned(),
+        Decision::Skip => "Skipped the Task.".to_owned(),
+        Decision::Abort => "Aborted the Session.".to_owned(),
         Decision::Stop => "Stopped at the Checkpoint.".to_owned(),
         Decision::SetBudgetCap(Some(cap)) => {
             format!("Raised the Budget Cap to ${:.2}.", cap.dollars())
@@ -838,5 +937,20 @@ mod tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let newline = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
         assert_eq!(as_pasted(enter, Focus::Prompt), newline);
+    }
+
+    #[test]
+    fn a_session_with_skipped_tasks_ends_naming_them_not_as_plainly_finished() {
+        let skipped_end = Ok(SessionEnd::FinishedWithSkippedTasks {
+            skipped_tasks: vec![1, 2],
+        });
+        let DriverMessage::Ended(message, tone) = ending(skipped_end) else {
+            panic!("a finished Session ends the run");
+        };
+        assert_eq!(
+            message,
+            "Session finished with Tasks 2, 3 skipped; the branch lacks that part of the Request."
+        );
+        assert!(matches!(tone, Tone::Operator));
     }
 }

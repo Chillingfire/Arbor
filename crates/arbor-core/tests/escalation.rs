@@ -15,7 +15,10 @@ fn apply_all(session: &mut Session, events: &[Event]) -> Vec<Effect> {
 
 fn write_and_commit(id: u32, commit: &str) -> [Event; 2] {
     [
-        Event::WorkUnitPassed { id: WorkUnitId(id) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(id),
+            model: None,
+        },
         Event::WorkUnitCommitted {
             id: WorkUnitId(id),
             commit: commit.into(),

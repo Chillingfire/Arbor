@@ -108,6 +108,7 @@ fn run_for<'a>(
         task_work_units,
         first_new_id: WorkUnitId(9),
         tool_call_budget: 15,
+        hint: None,
     }
 }
 
