@@ -1,4 +1,61 @@
-# Agents
+# AGENTS.md
+
+How to write code here. Each bold term is a principle name: when a human says "apply *boundary discipline*", it means the rule under that heading. In your reply, name each principle you applied and the decision it changed.
+
+## Workflow
+
+1. **Understand first.** Read every file the change touches and the tests that cover it. Look in existing modules, helpers, constants, and dependencies for the thing you are about to write; reuse it when it exists. Done when you can say where the change goes and what it reuses.
+2. **Spec non-trivial features.** For a feature with open product questions, write a short spec in `docs/` first: goal, a decisions table, behaviour, scope that is out. Build once the human has settled the decisions.
+3. **Build in verifiable units.** Each unit is known-good state, one change, run the tests. Advance only when green.
+4. **Simplify.** Before showing code, make up to three passes whose only goal is making it shorter and plainer. Done when a pass finds nothing to cut.
+5. **Present for review.** In an interactive session, show source changes file by file and wait for approval before writing them. Test files land directly; mention what changed. An AFK agent working a `ready-for-agent` issue has no one to wait for: it commits locally and presents the finished branch instead.
+6. **Prove it works.** "It compiles" and "the tests I wrote pass" are proxies. Run the test suite and, where you can, the real feature, read the actual output, and report what you ran and what you saw.
+7. **Commit** with a single subject line in the imperative ("Add X", "Fix Y"), and nothing else. Keep each commit to at most about 1000 changed lines, not counting generated files such as `Cargo.lock`. Split larger work into several commits that each build and pass the tests.
+
+## Code style
+
+- **Zero comments.** Code carries its intent through names and structure, tests included. When a line seems to need a comment, rename, extract a function, or reshape the data until it reads plainly. This covers every `.rs` file, `///` and `//!` doc comments included, and the TOML and YAML files in the repo; Markdown docs are prose, not comments. Comments already on `main` are removed in one sweep; until then, add none and delete the ones in any code you rewrite.
+- **Descriptive names.** Every variable, parameter, and callback argument says what it holds: `teamOne`, `mapIndex`, `interaction`, `serverId`, in loops and callbacks too. In this Rust codebase that means `chat_response`, `check_output`, `tool_results`, or `file_text`, not `response`, `output`, `results`, or `text`. Avoid single letters outside short numeric ranges, and don't use `value`, `data`, `item`, `result`, `tmp`, `buf`, or `out` as names. Struct fields that mirror an external format, such as a JSON key or a logged event, keep that format's name.
+- **Boring code.** Plain if-chains, early returns, and small named helpers. Choose the version a tired reviewer understands in one read over a clever table, curried function, or generated regex.
+- **Reuse before writing.** Existing dependencies, runtime built-ins, and project helpers come first. Add a dependency only when the human agrees it earns its place.
+- **Config, not constants.** Operator-specific settings such as the API key, models, and budget cap come from `arbor-config` (the user config and the project's `arbor.toml`). Fixed protocol values such as `OPENROUTER_BASE_URL` and the client's connect timeout stay as named constants beside the code that uses them. Code and user-facing text stay generic so Arbor works for any operator and any repo.
+
+## Design principles
+
+**Laziness protocol.** Make the smallest change that solves the problem. Fewer lines beat elegant boilerplate. Put each decision in one place and pass the result along.
+
+**Subtract before you add.** Delete dead code, stale guards, and stub references first, then build on the simpler base. Design for observed usage; speculative options, validators, and edge cases wait until something needs them.
+
+**Foundational thinking.** Choose the data shape before writing logic. Trace how the data is read and written, and pick the structure that makes the common path obvious.
+
+**Model the domain.** When a feature grows another branch in an if/else chain or a second boolean that must stay in sync with the first, encode the rule in a data structure instead: a map, a state machine, a typed record. Keep plain code when the shape is local and stable.
+
+**Minimize reader load.** A reader should answer "where does X come from?" and "what can change X?" in under 30 seconds. Inline wrappers with one caller. Prefer return values over mutation and locals over module state. Derive values instead of syncing copies.
+
+**Boundary discipline.** Validate, time out, and handle errors where data crosses into the system: HTTP APIs, config, user input, files on disk. Parse raw responses into the shape the rest of the code uses (`{ partyId, partyCode }`, not the raw payload; in Rust, a typed struct such as `ModelInfo`, not a `serde_json::Value`) and throw one error type per boundary that carries what callers branch on, such as an HTTP status. In Rust that is one error enum returned per boundary, as `LlmError` is for OpenRouter. Inside, trust the data.
+
+**Make operations idempotent.** Every state-changing operation reaches the same end state however many times it runs and wherever a previous run stopped. Write files to a temp path and rename into place. Serialize writes to one target through a single queue. Derive each step from current state, not from what the last run intended.
+
+**Degrade gracefully.** When an optional resource is missing (a data volume, an API key, a cache), log once and keep the core feature running in a reduced mode.
+
+**Redesign from first principles.** When a new requirement arrives, ask what you would build if it had been there from day one, and build that. Migrate every caller and delete the old path in the same change.
+
+**Fix root causes.** Reproduce the bug first, then ask "why" until the answer is a wrong decision in the code. Fix it there and every place with the same fault. A guard, retry, or swallowed error is a fix only when the state it handles is legitimate.
+
+**Attack the premise.** After two fixes that share an assumption have failed, write the assumption down as one sentence and test it directly before writing a third.
+
+## Testing
+
+**Test behaviour, not implementation.** A test asserts what callers observe: return values, thrown or returned errors, state read back, and what an external service receives. Judge each test against two edits: break the behaviour (the test must fail) and change the internals while keeping results (the test must pass).
+
+- Name each test as a sentence describing the behaviour: `"readRecords returns an empty list when the file does not exist"`. In Rust the sentence is the function name in snake_case, such as `no_newline_marker_inside_a_hunk_is_skipped`.
+- Mock only at the system boundary (network, clock). Use real temp directories for file I/O and clean them up after each test.
+- Derive expected values from the requirement, never from the code under test.
+- Pair every "this never happens" with a case where it would happen.
+- Shared fixtures and mocks live in helper modules; any module-level cache gets a clear function that the helpers reset between tests.
+## Lessons
+
+**Encode lessons in structure.** When the same correction comes up twice, turn it into a test, lint rule, or script instead of another line in this file. Add a line here only for a rule that needs judgement.
 
 ## Agent skills
 
@@ -17,15 +74,3 @@ Single-context: one root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.
 ### GitHub text
 
 End every issue body, PR description, and comment you post on GitHub with the line `_AI-assisted comment_`.
-
-### Commits
-
-Keep each commit to at most about 1000 changed lines, not counting generated files such as `Cargo.lock`. Split larger work into several commits that each build and pass the tests.
-
-### Comments
-
-Write code that reads without comments: clear names, small functions, and types that say what they hold. Comment only the why a reader can't see in the code, such as a non-obvious constraint, a workaround, or the ADR behind a decision. Don't write comment blocks that restate what a function, field, or type does. A one-line doc comment on a public item is fine when it adds something its name doesn't.
-
-### Naming
-
-Name each variable, parameter, and closure argument for what it holds, not its kind: `chat_response`, `check_output`, `tool_results`, or `file_text`, not `response`, `output`, `results`, or `text`. Avoid single letters outside short numeric ranges, and don't use `value`, `data`, `item`, `result`, `tmp`, `buf`, or `out` as names. Struct fields that mirror an external format, such as a JSON key or a logged event, keep that format's name.
