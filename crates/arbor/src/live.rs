@@ -14,12 +14,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
 use arbor_core::{Effect, Phase, Request, Tier};
-use arbor_git::{Repo, SessionBranch, Worktree};
+use arbor_git::{Repo, SESSIONS_DIR, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{
     Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, SessionEnd,
 };
-use arbor_tui::{App, Confirmation, Focus, KeyOutcome, Modal, StatusInfo, Tone};
+use arbor_tui::{App, Confirmation, Focus, KeyOutcome, Modal, StatusInfo, Tone, UnfinishedSession};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event as TerminalEvent, KeyCode, KeyEvent,
@@ -28,11 +28,14 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use tokio::sync::oneshot;
 
+use crate::leaving::{self, StartedSession};
+use crate::startup;
+
+/// The Session worktree's folder inside its Session folder.
+const WORKTREE_DIR: &str = "worktree";
+
 /// How often the screen redraws while waiting, so the spinner moves.
 const FRAME: Duration = Duration::from_millis(100);
-
-/// Where Sessions live, relative to the project root.
-const SESSIONS_DIR: &str = ".arbor/sessions";
 
 /// What the Session thread sends to the screen.
 enum DriverMessage {
@@ -101,6 +104,8 @@ struct RunningSession {
     cancel: Option<oneshot::Sender<()>>,
     driver: JoinHandle<()>,
     awaited_reply: Option<AwaitedReply>,
+    /// Set once the Session's branch and worktree exist.
+    started: Option<StartedSession>,
 }
 
 struct Project {
@@ -125,6 +130,7 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    startup::check(&project.root, &project.config);
     let roles = &project.config.roles;
     let mut app = App::new(StatusInfo {
         models: [
@@ -144,7 +150,10 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
         looped
     });
     match outcome {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(started_sessions) => {
+            leaving::warn_on_stderr(&started_sessions);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("arbor: the terminal failed: {err}");
             ExitCode::FAILURE
@@ -174,7 +183,7 @@ fn event_loop(
     app: &mut App,
     project: &Project,
     initial_request: Option<Request>,
-) -> io::Result<()> {
+) -> io::Result<Vec<StartedSession>> {
     let mut run = Run::default();
     match initial_request {
         Some(request) => run.start(app, project, request),
@@ -203,7 +212,7 @@ fn event_loop(
                     .push_note("Stopping the Session before leaving…", Tone::Operator);
                 terminal.draw(|frame| app.draw(frame))?;
                 run.stop();
-                return Ok(());
+                return Ok(run.started_sessions);
             }
         }
     }
@@ -242,6 +251,8 @@ fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
 #[derive(Default)]
 struct Run {
     session: Option<RunningSession>,
+    /// The Sessions that have ended, to warn about any left unfinished.
+    started_sessions: Vec<StartedSession>,
 }
 
 impl Run {
@@ -257,10 +268,27 @@ impl Run {
         if let Some(session) = &mut self.session
             && !drain_messages(app, session)
         {
-            self.session = None;
+            let started = self.session.take().and_then(|session| session.started);
             app.stop_working();
             app.ui_state.confirming = None;
             app.ui_state.modal = None;
+            if let Some(unfinished) = started.as_ref().and_then(|ended| ended.unfinished(false)) {
+                app.view
+                    .push_note(unfinished.warning().join(" "), Tone::Operator);
+            }
+            self.started_sessions.extend(started);
+        }
+    }
+
+    /// What leaving now would leave unfinished: the running Session, or the last one that ended.
+    fn leaving_warning(&self) -> Option<UnfinishedSession> {
+        match &self.session {
+            Some(session) => session.started.as_ref()?.unfinished(true),
+            None => self
+                .started_sessions
+                .iter()
+                .rev()
+                .find_map(|ended| ended.unfinished(false)),
         }
     }
 
@@ -276,16 +304,40 @@ impl Run {
     /// worktree is put back before the process exits.
     fn stop(&mut self) {
         self.cancel();
-        if let Some(session) = self.session.take() {
-            let _ = session.driver.join();
+        let Some(RunningSession {
+            messages,
+            driver,
+            mut started,
+            ..
+        }) = self.session.take()
+        else {
+            return;
+        };
+        let _ = driver.join();
+        for message in messages.try_iter() {
+            match message {
+                DriverMessage::Started {
+                    branch,
+                    session_dir,
+                } => started = Some(started_session(branch, &session_dir)),
+                DriverMessage::Ended(_, tone) => mark_ended(&mut started, tone),
+                _ => {}
+            }
         }
+        self.started_sessions.extend(started);
     }
 
     fn handle_key(&mut self, app: &mut App, project: &Project, key: KeyEvent) -> ControlFlow<()> {
         match app.ui_state.handle_key(key, &app.view) {
             KeyOutcome::Handled => {}
-            KeyOutcome::Quit if self.session.is_none() => return ControlFlow::Break(()),
-            KeyOutcome::Quit => app.ui_state.confirming = Some(Confirmation::Quit),
+            KeyOutcome::Quit => {
+                let leaving = self.leaving_warning();
+                if self.session.is_none() && leaving.is_none() {
+                    return ControlFlow::Break(());
+                }
+                app.ui_state.leaving = leaving;
+                app.ui_state.confirming = Some(Confirmation::Quit);
+            }
             KeyOutcome::Cancel if self.session.is_some() => {
                 app.ui_state.confirming = Some(Confirmation::Cancel);
             }
@@ -338,6 +390,7 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
                 branch,
                 session_dir,
             }) => {
+                session.started = Some(started_session(branch.clone(), &session_dir));
                 app.status.branch = Some(branch);
                 app.view.push_note(
                     format!("Session folder {}", session_dir.display()),
@@ -360,12 +413,28 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
                 session.awaited_reply = Some(AwaitedReply::Answers(reply));
             }
             Ok(DriverMessage::Ended(message, tone)) => {
+                mark_ended(&mut session.started, tone);
                 app.view.push_note(message, tone);
                 return false;
             }
             Err(TryRecvError::Empty) => return true,
             Err(TryRecvError::Disconnected) => return false,
         }
+    }
+}
+
+fn started_session(branch: String, session_dir: &Path) -> StartedSession {
+    StartedSession {
+        branch,
+        worktree: session_dir.join(WORKTREE_DIR),
+        finished: false,
+    }
+}
+
+/// Only a Session that ended with success is finished; any other ending leaves it unfinished.
+fn mark_ended(started: &mut Option<StartedSession>, tone: Tone) {
+    if let Some(started) = started {
+        started.finished = tone == Tone::Success;
     }
 }
 
@@ -400,6 +469,7 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
         cancel: Some(cancel),
         driver,
         awaited_reply: None,
+        started: None,
     })
 }
 
@@ -436,7 +506,7 @@ fn try_drive(
     fs::create_dir_all(&session_dir)
         .map_err(|err| format!("Could not create {}: {err}", session_dir.display()))?;
     let worktree = repo
-        .create_worktree(&mainline, &branch, &session_dir.join("worktree"))
+        .create_worktree(&mainline, &branch, &session_dir.join(WORKTREE_DIR))
         .map_err(|err| format!("Could not create the Session worktree: {err}"))?;
     let event_file = fs::File::create(session_dir.join("events.jsonl"))
         .map_err(|err| format!("Could not create the event log: {err}"))?;

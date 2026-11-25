@@ -2,12 +2,14 @@
 
 mod app;
 mod input;
+mod leaving;
 mod modal;
 mod ui;
 mod view;
 
 pub use app::App;
 pub use input::KeyOutcome;
+pub use leaving::UnfinishedSession;
 pub use modal::{CheckpointModal, Modal, QuestionsModal, TaskRow};
 pub use ui::{
     Confirmation, DetailTab, Focus, RunningActivity, StatusInfo, TreeNode, UiState, draw,
