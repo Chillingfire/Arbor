@@ -1,6 +1,15 @@
 use arbor_config::{ClarificationMode, Config, ConfigError, RoleConfig};
 
 #[test]
+fn retention_comes_from_the_user_config_unless_the_project_sets_it() {
+    let user = "retention_days = 7\n";
+    let from_user = Config::from_toml(Some(user), None).unwrap();
+    assert_eq!(from_user.retention_days, 7);
+    let from_project = Config::from_toml(Some(user), Some("retention_days = 90\n")).unwrap();
+    assert_eq!(from_project.retention_days, 90);
+}
+
+#[test]
 fn defaults_apply_when_neither_file_exists() {
     let config = Config::from_toml(None, None).unwrap();
     assert_eq!(
