@@ -10,7 +10,7 @@ How to write code here. Each bold term is a principle name: when a human says "a
 4. **Simplify.** Before showing code, make up to three passes whose only goal is making it shorter and plainer. Done when a pass finds nothing to cut.
 5. **Present for review.** In an interactive session, show source changes file by file and wait for approval before writing them. Test files land directly; mention what changed. An AFK agent working a `ready-for-agent` issue has no one to wait for: it commits locally and presents the finished branch instead.
 6. **Prove it works.** "It compiles" and "the tests I wrote pass" are proxies. Run the test suite and, where you can, the real feature, read the actual output, and report what you ran and what you saw.
-7. **Commit** with a single subject line in the imperative ("Add X", "Fix Y"), and nothing else. Keep each commit to at most about 1000 changed lines, not counting generated files such as `Cargo.lock`. Split larger work into several commits that each build and pass the tests.
+7. **Commit** with a single subject line in the imperative ("Add X", "Fix Y"), and nothing else. Give a PR one to three commits, one per coherent part of the change, not one per TDD slice or work step. Each commit stays under about 1000 changed lines, not counting generated files such as `Cargo.lock`, and builds and passes the tests on its own. Review fixes and base-branch updates get no commits of their own: fold each fix into the commit it corrects, rebase onto the updated base instead of merging it in, and push with `--force-with-lease`.
 
 ## Code style
 
@@ -53,6 +53,7 @@ How to write code here. Each bold term is a principle name: when a human says "a
 - Derive expected values from the requirement, never from the code under test.
 - Pair every "this never happens" with a case where it would happen.
 - Shared fixtures and mocks live in helper modules; any module-level cache gets a clear function that the helpers reset between tests.
+
 ## Lessons
 
 **Encode lessons in structure.** When the same correction comes up twice, turn it into a test, lint rule, or script instead of another line in this file. Add a line here only for a rule that needs judgement.
