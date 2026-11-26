@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cost::{Usage, Usd};
 use crate::revision::{Revision, WorkUnitFailure};
-use crate::types::{LeftoverMarker, Plan, Replan, Request, Tier, WorkUnit, WorkUnitId};
+use crate::types::{
+    ClarificationMode, LeftoverMarker, Plan, Replan, Request, Tier, WorkUnit, WorkUnitId,
+};
 
 /// Something that happened in a Session. The event log is the Session's source of truth (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +14,10 @@ pub enum Event {
         request: Request,
     },
     PlanSubmitted {
+        plan: Plan,
+    },
+    /// The Human Operator edited the Plan by hand at its Checkpoint, which shows it again.
+    PlanEdited {
         plan: Plan,
     },
     /// The Human Operator approved the Plan. `task_order` lists the Plan's Task indices to run,
@@ -33,9 +39,12 @@ pub enum Event {
     SkeletonCommitted {
         commit: Option<String>,
     },
-    /// The Writer's code was spliced and its Work Unit's Checks passed.
+    /// The Writer's code was spliced and its Work Unit's Checks passed. `model` is the model that
+    /// wrote it, so the log shows which Work Units a stronger model wrote.
     WorkUnitPassed {
         id: WorkUnitId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// The Writer failed its Work Unit: it used up its retries, or sent a Missing Response.
     WorkUnitFailed {
@@ -61,6 +70,11 @@ pub enum Event {
         revision: Revision,
         reason: String,
     },
+    /// The Human Operator switched the Clarification Mode mid-Session. Tier runs from here on use
+    /// it instead of the configured one.
+    ClarificationModeSet {
+        mode: ClarificationMode,
+    },
     /// Turns the Checkpoint after each Revision on or off. Off by default.
     RevisionCheckpointsSet {
         enabled: bool,
@@ -74,6 +88,24 @@ pub enum Event {
     RevisionDiscarded,
     /// At the escalation Checkpoint, the Human Operator sends the failed Task to the Planner.
     ReplanRequested,
+    /// At the Escalation Checkpoint, the Human Operator runs `tier` again with a hint: the Writer
+    /// writes the failed Work Unit again, the Scaffolder makes one more Revision, or the Planner
+    /// makes the Task's Replan.
+    RetryWithHint {
+        tier: Tier,
+        hint: String,
+    },
+    /// At the Escalation Checkpoint, the Human Operator has the failed Work Unit written again in
+    /// the Writer role by `model`, with the same Context Pack and a Failure Brief.
+    StrongerWriterRequested {
+        model: String,
+    },
+    /// At the Escalation Checkpoint, the Human Operator drops the failed Task: its work is reset
+    /// and the Session goes on with the next Task.
+    TaskSkipped,
+    /// At the Escalation Checkpoint, the Human Operator ends the Session for good. The branch and
+    /// worktree are kept as they are.
+    SessionAborted,
     ReplanSubmitted {
         replan: Replan,
     },
@@ -107,4 +139,25 @@ pub enum Event {
     },
     /// The Human Operator chose to stop at a budget Checkpoint.
     SessionStopped,
+    /// A run of the unfinished Session ended, and why. A resume carries on from the events before
+    /// it, which it leaves as they were.
+    RunEnded {
+        outcome: RunOutcome,
+    },
+    /// The Human Operator rewound the Session to how it stood after its first `event_count`
+    /// events, at a Checkpoint. The events in between stay in the log as the abandoned
+    /// transcript, and what their model calls cost still counts.
+    Rewound {
+        event_count: usize,
+    },
+}
+
+/// Why a run ended before its Session finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// The Human Operator stopped the run: cancelled it, left arbor, or stopped at a Checkpoint.
+    Cancelled,
+    /// A Tier gave up, a Check or git command failed, or the model call failed.
+    Failed { reason: String },
 }

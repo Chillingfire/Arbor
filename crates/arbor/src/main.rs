@@ -5,6 +5,7 @@ mod hooks;
 mod init;
 mod leaving;
 mod live;
+mod plan_editor;
 mod startup;
 
 use std::io::IsTerminal;

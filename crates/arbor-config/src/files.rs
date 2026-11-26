@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::{Checks, Config, ConfigError, ConfigFile, UserFile, parse};
+use crate::config::{Checks, Config, ConfigError, ConfigFile, Roles, UserFile, parse};
 
 /// The project config file, at the repository root.
 pub const PROJECT_CONFIG_FILE: &str = "arbor.toml";
@@ -77,6 +77,60 @@ pub fn save_api_key(path: &Path, key: &str) -> Result<(), ConfigError> {
         fs::create_dir_all(dir).map_err(io_error)?;
     }
     write_private(path, &doc.to_string()).map_err(io_error)
+}
+
+/// Writes the roles in `chosen` that differ from `previous` into the user config at `path`,
+/// keeping everything else in the file as it was. A role changed back to its recommended model
+/// and temperature loses its entry instead, so a later Arbor release's recommendation reaches it.
+pub fn save_changed_roles(
+    path: &Path,
+    chosen: &Roles,
+    previous: &Roles,
+) -> Result<(), ConfigError> {
+    let io_error = |source| ConfigError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let existing_toml = read_optional(path)?.unwrap_or_default();
+    // Refuse to rewrite a file we can't read, so a typo never costs the operator their settings.
+    parse::<UserFile>(Some(&existing_toml), ConfigFile::User)?;
+    let mut doc: DocumentMut = existing_toml
+        .parse()
+        .expect("valid TOML parses as a document");
+    let recommended = Roles::recommended();
+    let role_pairs = chosen
+        .named()
+        .into_iter()
+        .zip(previous.named())
+        .zip(recommended.named());
+    for (((role_name, chosen_role), (_, previous_role)), (_, recommended_role)) in role_pairs {
+        if chosen_role == previous_role {
+            continue;
+        }
+        let role_key = role_name.to_lowercase();
+        if chosen_role == recommended_role {
+            remove_role(&mut doc, &role_key);
+        } else {
+            let role_item = &mut doc["roles"][role_key.as_str()];
+            role_item["model"] = value(chosen_role.model.as_str());
+            role_item["temperature"] = value(chosen_role.temperature);
+        }
+    }
+
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io_error)?;
+    }
+    write_private(path, &doc.to_string()).map_err(io_error)
+}
+
+fn remove_role(doc: &mut DocumentMut, role_key: &str) {
+    let Some(roles_table) = doc.get_mut("roles").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    roles_table.remove(role_key);
+    if roles_table.is_empty() {
+        doc.remove("roles");
+    }
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {

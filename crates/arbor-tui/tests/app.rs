@@ -85,6 +85,7 @@ fn a_running_model_call_shows_a_spinner_with_tier_model_and_label() {
 
     app.apply_update(AutopilotUpdate::Event(Event::WorkUnitPassed {
         id: WorkUnitId(1),
+        model: None,
     }));
     assert!(!app.is_working());
 }

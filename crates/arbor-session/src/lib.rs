@@ -3,48 +3,85 @@
 //! and a Tier's clarifying questions go to an [`Operator`]; by default [`ApproveEverything`]. The
 //! run stops where the Operator says so.
 
+mod cleanup;
 mod operator;
+mod redo;
+mod store;
 
 use std::fmt;
 use std::io::Write;
 
-use arbor_config::Config;
+use arbor_config::{Config, RoleConfig, max_temperature};
 use arbor_core::{
-    Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, Session, Task, Tier, Usd,
-    WorkUnit, WorkUnitId,
+    ClarificationMode, Effect, Event, EventLog, Phase, Plan, Request, RevisionCause, RunOutcome,
+    Session, StrongerWriter, Task, Tier, Usd, WorkUnit, WorkUnitFailure, WorkUnitId,
 };
 use arbor_git::{CommitId, CommitMessage, Mainline, Worktree};
 use arbor_llm::{LlmClient, ModelInfo};
 use arbor_prompts::{
     Conventions, PlannerInputs, Prompts, ReplanInputs, RevisionInputs, ScaffolderInputs,
-    WriterInputs,
+    WriterInputs, estimate_tokens,
 };
 use arbor_tiers::{
-    Agent, Attempt, AttemptError, AttemptOutcome, MARKER_FIX_SUBJECT, Outcome, PlannerRun,
-    Rejection, ReplanRun, RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, Writer, WriterError,
-    WriterRun, check_markers, check_operator_fix, commit_operator_fix, commit_revision,
-    commit_skeleton, discard_revision, reset_task, review_revision, run_task_check,
-    strip_work_unit_markers, task_diff,
+    Agent, Attempt, AttemptError, AttemptOutcome, MARKER_FIX_SUBJECT, MAX_WRITER_ATTEMPTS, Outcome,
+    PlannerRun, Rejection, ReplanRun, RevisionRun, ScaffolderRun, TASK_FIX_SUBJECT, Writer,
+    WriterError, WriterRun, check_markers, check_operator_fix, commit_operator_fix,
+    commit_revision, commit_skeleton, discard_revision, failure_brief, hint_input, reset_task,
+    review_revision, run_task_check, strip_work_unit_markers, task_diff, validate_plan,
 };
 
 use arbor_tools::{CheckName, Tools, Toolset, run_check};
-pub use operator::{ApproveEverything, Checkpoint, Decision, Operator, Pending};
+pub use cleanup::{
+    PruneReport, PrunedSession, branch_markers, delete_session, list_sessions, prune_sessions,
+};
+pub use operator::{
+    ApproveEverything, Checkpoint, Decision, Operator, Pending, StrongerWriterOffer,
+};
+pub use redo::resume_resets_worktree;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+pub use store::{
+    RunLock, SessionFolder, SessionStatus, SessionSummary, StoreError, retention, rewind_session,
+    session_folders, summarize,
+};
 
 /// How an [`Autopilot`] run ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEnd {
     /// The Session finished: every Task is done and no Markers are left.
     Finished,
+    /// The Session reached its end, but without these Tasks, skipped at the Escalation Checkpoint.
+    FinishedWithSkippedTasks { skipped_tasks: Vec<usize> },
     /// The Human Operator stopped the Session at the Budget Checkpoint. The branch is kept.
     StoppedAtBudget,
+    /// The Human Operator aborted the Session at the Escalation Checkpoint. The branch is kept.
+    Aborted,
     /// The Operator stopped the run at this Checkpoint, where the Session waits.
     NeedsOperator(Effect),
     /// A Tier ended its run without submitting, by escalating or asking questions.
     TierStopped { tier: Tier, reason: String },
     /// The Scaffold Check failed on a Skeleton the Scaffolder had already checked.
     ScaffoldChecksFailed { check_output: String },
+}
+
+impl SessionEnd {
+    /// What the log records about how the run ended, or `None` when the Session finished or was
+    /// aborted, which its own events already record.
+    pub fn run_outcome(&self) -> Option<RunOutcome> {
+        match self {
+            Self::Finished | Self::FinishedWithSkippedTasks { .. } | Self::Aborted => None,
+            Self::StoppedAtBudget | Self::NeedsOperator(_) => Some(RunOutcome::Cancelled),
+            Self::TierStopped { tier, reason } => Some(RunOutcome::Failed {
+                reason: format!("the {tier:?} {reason}"),
+            }),
+            Self::ScaffoldChecksFailed { check_output } => Some(RunOutcome::Failed {
+                reason: format!(
+                    "the Scaffold Check failed: {}",
+                    check_output.lines().last().unwrap_or_default()
+                ),
+            }),
+        }
+    }
 }
 
 /// A step the run couldn't carry out, such as a failed model call or git command.
@@ -220,6 +257,36 @@ impl<'a> Autopilot<'a> {
         for setting in self.configured_settings() {
             effects = self.apply(setting)?;
         }
+        self.carry_out_from(effects).await
+    }
+
+    /// Carries on the Session whose log holds `events`, which aren't written again. Work that
+    /// was in flight, such as a model call, is redone from the last commit, and its cost counted
+    /// again. The settings from the config are left as the log has them.
+    pub async fn resume(&mut self, events: Vec<Event>) -> Result<SessionEnd, AutopilotError> {
+        self.session = Session::replay(&events).map_err(failed("replaying the event log"))?;
+        self.events = events;
+        self.prepare_to_redo()?;
+        let effects = self.session.pending();
+        self.carry_out_from(effects).await
+    }
+
+    /// Records in the log why the run ended, unless the Session has finished, was aborted, or never
+    /// started.
+    pub fn record_run_end(&mut self, outcome: RunOutcome) -> Result<(), AutopilotError> {
+        if matches!(
+            self.session.phase(),
+            Phase::NotStarted | Phase::Done | Phase::Aborted
+        ) {
+            return Ok(());
+        }
+        self.apply(Event::RunEnded { outcome }).map(drop)
+    }
+
+    async fn carry_out_from(
+        &mut self,
+        mut effects: Vec<Effect>,
+    ) -> Result<SessionEnd, AutopilotError> {
         loop {
             let [effect] = effects.as_slice() else {
                 return Err(AutopilotError {
@@ -321,6 +388,14 @@ impl<'a> Autopilot<'a> {
             Effect::EndSession if *self.session.phase() == Phase::Stopped => {
                 return Ok(Step::End(SessionEnd::StoppedAtBudget));
             }
+            Effect::EndSession if *self.session.phase() == Phase::Aborted => {
+                return Ok(Step::End(SessionEnd::Aborted));
+            }
+            Effect::EndSession if !self.session.skipped_tasks().is_empty() => {
+                return Ok(Step::End(SessionEnd::FinishedWithSkippedTasks {
+                    skipped_tasks: self.session.skipped_tasks().to_vec(),
+                }));
+            }
             Effect::EndSession => return Ok(Step::End(SessionEnd::Finished)),
         };
         Ok(Step::Events(events))
@@ -342,6 +417,13 @@ impl<'a> Autopilot<'a> {
                 Checkpoint::Plan { .. } | Checkpoint::Replan { .. },
                 Decision::ApproveTasks(task_order),
             ) => Event::PlanApproved { task_order },
+            (Checkpoint::Plan { .. }, Decision::EditPlan(plan)) => {
+                validate_plan(&plan).map_err(|problems| AutopilotError {
+                    step: "reading the edited Plan",
+                    message: problems,
+                })?;
+                Event::PlanEdited { plan }
+            }
             (Checkpoint::Scaffold { .. }, Decision::Approve) => Event::ScaffoldApproved,
             (Checkpoint::Revision { .. }, Decision::Approve) => Event::RevisionApproved,
             (Checkpoint::Markers { .. }, Decision::Approve) => Event::MarkersApproved,
@@ -356,13 +438,25 @@ impl<'a> Autopilot<'a> {
         Ok(Step::Events(vec![decided]))
     }
 
-    /// Asks the Operator at the Escalation Checkpoint until they send the Task to the Planner,
-    /// stop, or fix it by hand in a way that passes the Checks.
+    /// Asks the Operator at the Escalation Checkpoint until they choose how the Session goes on, or
+    /// fix it by hand in a way that passes the Checks.
     async fn escalation(
         &mut self,
         task: usize,
         cause: RevisionCause,
     ) -> Result<Step, AutopilotError> {
+        let later_tasks: Vec<String> = self
+            .plan_tasks()?
+            .iter()
+            .skip(task + 1)
+            .map(|later| later.title.clone())
+            .collect();
+        let stronger_writer = match &cause {
+            RevisionCause::WorkUnitFailed(failure) => {
+                Some(self.stronger_writer_offer(failure).await?)
+            }
+            RevisionCause::TaskChecksFailed { .. } => None,
+        };
         let mut failed_fix = None;
         loop {
             let checkpoint = Checkpoint::Escalation {
@@ -370,22 +464,87 @@ impl<'a> Autopilot<'a> {
                 cause: cause.clone(),
                 may_replan: self.session.may_replan(task),
                 failed_fix: failed_fix.take(),
+                later_tasks: later_tasks.clone(),
+                stronger_writer: stronger_writer.clone(),
             };
-            match self.operator.decide(&checkpoint).await {
+            let chosen = match self.operator.decide(&checkpoint).await {
                 Decision::Stop => return Ok(self.stopped_here()),
-                Decision::Replan if self.session.may_replan(task) => {
-                    return Ok(Step::Events(vec![Event::ReplanRequested]));
+                Decision::Replan if self.session.may_replan(task) => Event::ReplanRequested,
+                Decision::RetryWithHint { tier, hint } => Event::RetryWithHint { tier, hint },
+                Decision::RetryWithStrongerWriter if stronger_writer.is_some() => {
+                    let model = stronger_writer.clone().map(|offer| offer.model);
+                    Event::StrongerWriterRequested {
+                        model: model.unwrap_or_default(),
+                    }
                 }
+                Decision::Skip => Event::TaskSkipped,
+                Decision::Abort => Event::SessionAborted,
                 Decision::Fixed => match self.check_fix(&cause).await? {
-                    Some(check_output) => failed_fix = Some(check_output),
+                    Some(check_output) => {
+                        failed_fix = Some(check_output);
+                        continue;
+                    }
                     None => {
                         self.task_fix_checked = cause.work_unit().is_none();
-                        return Ok(Step::Events(vec![self.commit_fix(&cause)?]));
+                        self.commit_fix(&cause)?
                     }
                 },
                 decision => return Err(misplaced(&checkpoint, &decision)),
-            }
+            };
+            return Ok(Step::Events(vec![chosen]));
         }
+    }
+
+    /// The Scaffolder's model in the Writer role (grilling log, Round 3 decision 2), priced for the
+    /// failed Work Unit's prompt with its Failure Brief.
+    async fn stronger_writer_offer(
+        &self,
+        failure: &WorkUnitFailure,
+    ) -> Result<StrongerWriterOffer, AutopilotError> {
+        let model = self.config.roles.scaffolder.model.clone();
+        let pricing = self.model(&model).await?.pricing;
+        let work_unit = self.work_unit(failure.id)?;
+        let prompt = self
+            .prompts
+            .writer(&WriterInputs {
+                work_unit: &work_unit,
+            })
+            .map_err(failed("rendering the Writer prompt"))?;
+        let brief = failure_brief(
+            failure,
+            self.session.revisions(),
+            self.config.failure_brief_tokens,
+        );
+        let input_tokens = estimate_tokens(&prompt.text()) + estimate_tokens(&brief);
+        let dollars = f64::from(input_tokens) * pricing.prompt
+            + f64::from(ESTIMATED_WRITER_REPLY_TOKENS) * pricing.completion;
+        Ok(StrongerWriterOffer {
+            model,
+            cost_per_attempt: Usd::from_dollars(dollars),
+            max_attempts: MAX_WRITER_ATTEMPTS,
+        })
+    }
+
+    /// The hint and Failure Brief a Writer gets when its Work Unit is retried from the Escalation
+    /// Checkpoint.
+    fn escalation_notes(
+        &self,
+        id: WorkUnitId,
+        stronger: Option<&StrongerWriter>,
+    ) -> Option<String> {
+        let hint = self
+            .session
+            .hint_for(Tier::Writer, Some(id))
+            .map(hint_input);
+        let brief = stronger.map(|stronger| {
+            failure_brief(
+                &stronger.failure,
+                self.session.revisions(),
+                self.config.failure_brief_tokens,
+            )
+        });
+        let notes: Vec<String> = hint.into_iter().chain(brief).collect();
+        (!notes.is_empty()).then(|| notes.join("\n\n"))
     }
 
     /// The output of the first Check the Human Operator's fix fails, or `None` when it passes.
@@ -414,6 +573,22 @@ impl<'a> Autopilot<'a> {
         }
         let message = CommitMessage::new(TASK_FIX_SUBJECT).map_err(failed("committing the fix"))?;
         commit_operator_fix(self.worktree, &message).map_err(failed("committing the fix"))
+    }
+
+    /// The configured Clarification Mode, or the one the Human Operator last switched to. A switch
+    /// since the last Tier run is recorded first.
+    fn clarification_mode(&mut self) -> Result<ClarificationMode, AutopilotError> {
+        let current = self
+            .session
+            .clarification_mode()
+            .unwrap_or(self.config.clarification_mode);
+        match self.operator.clarification_mode_change() {
+            Some(mode) if mode != current => {
+                self.apply(Event::ClarificationModeSet { mode })?;
+                Ok(mode)
+            }
+            _ => Ok(current),
+        }
     }
 
     /// The settings from the config that the event log records, applied as the Session starts.
@@ -553,7 +728,7 @@ impl<'a> Autopilot<'a> {
     async fn plan(&mut self, feedback: Option<String>) -> Result<Step, AutopilotError> {
         let request = self.request()?;
         let rejected_plan = self.session.plan().cloned();
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let inputs = PlannerInputs {
             request: &request,
             clarification_mode: mode,
@@ -600,7 +775,7 @@ impl<'a> Autopilot<'a> {
     ) -> Result<Step, AutopilotError> {
         let request = self.request()?;
         let plan = self.session_plan()?.clone();
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let cap_tokens = self.config.writer_cap_tokens;
         let inputs = ScaffolderInputs {
             request: &request,
@@ -681,18 +856,25 @@ impl<'a> Autopilot<'a> {
                 work_unit: &work_unit,
             })
             .map_err(failed("rendering the Writer prompt"))?;
-        let role = self.config.roles.writer.clone();
-        let supported_parameters = self.model(&role.model).await?.supported_parameters;
+        let stronger = self.session.stronger_writer(id).cloned();
+        let escalation_notes = self.escalation_notes(id, stronger.as_ref());
+        let role = match &stronger {
+            Some(stronger) => stronger_writer_role(&self.config.roles.scaffolder, &stronger.model),
+            None => self.config.roles.writer.clone(),
+        };
+        let model_id = role.model;
+        let supported_parameters = self.model(&model_id).await?.supported_parameters;
         let mut writer = WriterRun {
             prompt: &prompt,
             work_unit: &work_unit,
-            model: role.model.clone(),
+            model: model_id.clone(),
             temperature: role.temperature,
             supported_parameters,
             worktree: self.worktree.path(),
             checks: self.config.checks.clone(),
             cap_tokens: self.config.writer_cap_tokens,
             missing_response_allowed: self.session.may_send_missing_response(id),
+            escalation_notes,
         }
         .start();
         self.writer_runs.push(WriterRunAttempts {
@@ -704,7 +886,7 @@ impl<'a> Autopilot<'a> {
             attempt_number += 1;
             self.working(
                 Some(Tier::Writer),
-                Some(&role.model),
+                Some(&model_id),
                 format!("Writing {id}, attempt {attempt_number}"),
             );
             let client = self.client;
@@ -736,7 +918,11 @@ impl<'a> Autopilot<'a> {
             if let AttemptOutcome::Passed { commit, .. } = attempt.outcome {
                 // The Writer committed already, so `CommitWorkUnit` only records it.
                 self.passed_commit = Some(commit);
-                return Ok(Step::Events(vec![Event::WorkUnitPassed { id }, usage]));
+                let passed = Event::WorkUnitPassed {
+                    id,
+                    model: Some(attempt.model),
+                };
+                return Ok(Step::Events(vec![passed, usage]));
             }
             if let Some(failure) = writer.work_unit_failure() {
                 return Ok(Step::Events(vec![Event::WorkUnitFailed { failure }, usage]));
@@ -773,9 +959,13 @@ impl<'a> Autopilot<'a> {
         let plan = self.session_plan()?.clone();
         let work_units = self.session.work_units().to_vec();
         let earlier = self.session.revisions().to_vec();
+        let hint = self
+            .session
+            .hint_for(Tier::Scaffolder, None)
+            .map(str::to_owned);
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let cap_tokens = self.config.writer_cap_tokens;
         let inputs = ScaffolderInputs {
             request: &request,
@@ -807,6 +997,7 @@ impl<'a> Autopilot<'a> {
             task_work_units: &work_units,
             first_new_id: self.session.next_work_unit_id(),
             tool_call_budget: self.config.revision_tool_call_budget,
+            hint: hint.as_deref(),
         }
         .start()
         .map_err(failed("starting the Revision"))?;
@@ -838,9 +1029,13 @@ impl<'a> Autopilot<'a> {
         let request = self.request()?;
         let plan = self.session_plan()?.clone();
         let revisions = self.session.revisions().to_vec();
+        let hint = self
+            .session
+            .hint_for(Tier::Planner, None)
+            .map(str::to_owned);
         let diff = task_diff(self.worktree, self.session.task_commits())
             .map_err(failed("reading the Task diff"))?;
-        let mode = self.config.clarification_mode;
+        let mode = self.clarification_mode()?;
         let inputs = PlannerInputs {
             request: &request,
             clarification_mode: mode,
@@ -864,6 +1059,7 @@ impl<'a> Autopilot<'a> {
             clarification_mode: mode,
             tools: self.tools(Toolset::Planner),
             feedback: feedback.as_deref(),
+            hint: hint.as_deref(),
         }
         .start()
         .map_err(failed("starting the Replan"))?;
@@ -949,6 +1145,19 @@ impl<'a> Autopilot<'a> {
     }
 }
 
+/// The reply length a stronger Writer's estimated cost assumes: a Region with its context lines.
+const ESTIMATED_WRITER_REPLY_TOKENS: u32 = 1_000;
+
+/// The stronger Writer runs at the Scaffolder's temperature, the pair the model probe checked, not
+/// the Writer's. A model logged before the Scaffolder's was changed keeps that temperature within
+/// its own range.
+fn stronger_writer_role(scaffolder: &RoleConfig, model: &str) -> RoleConfig {
+    RoleConfig {
+        model: model.to_owned(),
+        temperature: scaffolder.temperature.clamp(0.0, max_temperature(model)),
+    }
+}
+
 fn misplaced(checkpoint: &Checkpoint, decision: &Decision) -> AutopilotError {
     AutopilotError {
         step: "reading the Operator's decision",
@@ -959,4 +1168,29 @@ fn misplaced(checkpoint: &Checkpoint, decision: &Decision) -> AutopilotError {
 enum Submitted<T> {
     Accepted(T, Event),
     Stopped(SessionEnd),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scaffolder(temperature: f64) -> RoleConfig {
+        RoleConfig {
+            model: "openai/gpt-6".to_owned(),
+            temperature,
+        }
+    }
+
+    #[test]
+    fn a_stronger_writer_takes_the_scaffolders_temperature_with_its_model() {
+        let role = stronger_writer_role(&scaffolder(1.5), "openai/gpt-6");
+        assert_eq!(role.model, "openai/gpt-6");
+        assert_eq!(role.temperature, 1.5);
+    }
+
+    #[test]
+    fn a_stronger_writer_temperature_stays_in_its_models_range() {
+        let role = stronger_writer_role(&scaffolder(1.5), "anthropic/claude-sonnet-5.5");
+        assert_eq!(role.temperature, 1.0);
+    }
 }

@@ -15,3 +15,4 @@ crates/arbor-tiers/src/markers.rs
 crates/arbor-tiers/src/scaffold_check.rs
 crates/arbor/src/leaving.rs
 crates/arbor/src/startup.rs
+crates/arbor/src/live/browsing.rs

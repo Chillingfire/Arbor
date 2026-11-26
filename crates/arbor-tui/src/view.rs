@@ -2,7 +2,8 @@
 //! keeps only the current Task's Work Units, so the tree's history is built here.
 
 use arbor_core::{
-    ApplyError, Event, Phase, Plan, Session, Task, Tier, WorkUnit, WorkUnitFailure, WorkUnitId,
+    ApplyError, Event, Phase, Plan, RunOutcome, Session, Task, Tier, WorkUnit, WorkUnitFailure,
+    WorkUnitId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,8 @@ pub struct SessionView {
     session: Session,
     tasks: Vec<TaskView>,
     log: Vec<LogEntry>,
+    /// Every event applied so far, which a Rewind rebuilds the tree from.
+    events: Vec<Event>,
 }
 
 impl SessionView {
@@ -103,6 +106,30 @@ impl SessionView {
 
     /// Applies the event to the Session and updates the tree and the event log to match.
     pub fn apply(&mut self, event: &Event) -> Result<(), ApplyError> {
+        if let Event::Rewound { event_count } = *event {
+            self.rewind(event_count)?;
+        } else {
+            self.apply_forward(event)?;
+        }
+        self.events.push(event.clone());
+        Ok(())
+    }
+
+    /// Puts the tree back as it stood at the Checkpoint. The event log keeps the abandoned lines.
+    fn rewind(&mut self, event_count: usize) -> Result<(), ApplyError> {
+        let session = self.session.rewound(&self.events, event_count)?;
+        let restored = Self::from_events(&self.events[..event_count])?;
+        self.session = session;
+        self.tasks = restored.tasks;
+        self.log.push(LogEntry {
+            text: describe(&Event::Rewound { event_count }),
+            tier: None,
+            tone: Tone::Operator,
+        });
+        Ok(())
+    }
+
+    fn apply_forward(&mut self, event: &Event) -> Result<(), ApplyError> {
         let task_before = phase_task(self.session.phase());
         let escalated_unit = match self.session.phase() {
             Phase::EscalationCheckpoint { cause, .. } => cause.work_unit(),
@@ -119,7 +146,7 @@ impl SessionView {
             Event::WorkUnitsSubmitted { .. } | Event::RevisionSubmitted { .. } => {
                 self.sync_work_units();
             }
-            Event::WorkUnitPassed { id } => self.set_work_unit_status(*id, Status::Done),
+            Event::WorkUnitPassed { id, .. } => self.set_work_unit_status(*id, Status::Done),
             Event::WorkUnitCommitted { id, commit } => {
                 self.set_work_unit_status(*id, Status::Done);
                 if let Some(work_unit_view) = self.work_unit_mut(*id) {
@@ -300,9 +327,12 @@ impl SessionView {
         );
         let current = phase_task(phase);
         let writing = matches!(phase, Phase::Writing { .. });
+        let skipped_tasks = self.session.skipped_tasks();
         for (task_index, task_view) in self.tasks.iter_mut().enumerate() {
             let is_finished = done || current.is_some_and(|current_task| task_index < current_task);
-            task_view.status = if is_finished {
+            task_view.status = if skipped_tasks.contains(&task_index) {
+                Status::Failed
+            } else if is_finished {
                 Status::Done
             } else if current == Some(task_index) {
                 Status::Active
@@ -344,7 +374,8 @@ pub fn phase_task(phase: &Phase) -> Option<usize> {
         | Phase::EscalationCheckpoint { task, .. }
         | Phase::Replanning { task, .. }
         | Phase::ReplanCheckpoint { task, .. }
-        | Phase::ResettingTask { task } => Some(*task),
+        | Phase::ResettingTask { task }
+        | Phase::SkippingTask { task } => Some(*task),
         _ => None,
     }
 }
@@ -359,6 +390,9 @@ pub fn describe(event: &Event) -> String {
             "Planner submitted a Plan with {}",
             counted(plan.tasks.len(), "Task")
         ),
+        Event::PlanEdited { plan } => {
+            format!("Plan edited by hand: {}", counted(plan.tasks.len(), "Task"))
+        }
         Event::PlanApproved { task_order } => {
             format!("Plan approved: {}", counted(task_order.len(), "Task"))
         }
@@ -372,7 +406,7 @@ pub fn describe(event: &Event) -> String {
         Event::ScaffoldChecksPassed => "Scaffold Check passed".to_owned(),
         Event::ScaffoldApproved => "Skeleton approved".to_owned(),
         Event::SkeletonCommitted { commit } => committed("Skeleton", commit.as_deref()),
-        Event::WorkUnitPassed { id } => format!("{id} passed its Checks"),
+        Event::WorkUnitPassed { id, model } => passed_text(*id, model.as_deref()),
         Event::WorkUnitFailed { failure } => {
             match (&failure.broken_region, &failure.missing_response) {
                 (Some(broken), _) => {
@@ -396,6 +430,7 @@ pub fn describe(event: &Event) -> String {
         Event::RevisionRejected { reason, .. } => {
             format!("Revision rejected: {}", first_line(reason))
         }
+        Event::ClarificationModeSet { mode } => format!("Clarification Mode switched to {mode:?}"),
         Event::RevisionCheckpointsSet { enabled } => format!(
             "Revision Checkpoints turned {}",
             if *enabled { "on" } else { "off" }
@@ -409,6 +444,14 @@ pub fn describe(event: &Event) -> String {
             counted(replan.tasks.len(), "Task")
         ),
         Event::TaskReset => "Task reset to where it started".to_owned(),
+        Event::RetryWithHint { tier, hint } => {
+            format!("{tier:?} runs again with a hint: {}", first_line(hint))
+        }
+        Event::StrongerWriterRequested { model } => {
+            format!("Failed Work Unit goes to a stronger Writer: {model}")
+        }
+        Event::TaskSkipped => "Task skipped".to_owned(),
+        Event::SessionAborted => "Session aborted; the branch is kept".to_owned(),
         Event::OperatorFixed { commit } => committed("Operator's fix", commit.as_deref()),
         Event::MarkersChecked { remaining } if remaining.is_empty() => {
             "No Markers left in the branch".to_owned()
@@ -428,6 +471,22 @@ pub fn describe(event: &Event) -> String {
         }
         Event::BudgetCapSet { cap: None } => "Budget Cap removed".to_owned(),
         Event::SessionStopped => "Session stopped at the Budget Cap".to_owned(),
+        Event::RunEnded {
+            outcome: RunOutcome::Cancelled,
+        } => "Run cancelled; the Session can be resumed".to_owned(),
+        Event::RunEnded {
+            outcome: RunOutcome::Failed { reason },
+        } => format!("Run failed: {}", first_line(reason)),
+        Event::Rewound { event_count } => {
+            format!("Rewound to the Checkpoint after event {event_count}")
+        }
+    }
+}
+
+fn passed_text(id: WorkUnitId, model: Option<&str>) -> String {
+    match model {
+        Some(model) => format!("{id} passed its Checks, written by {model}"),
+        None => format!("{id} passed its Checks"),
     }
 }
 
@@ -490,17 +549,28 @@ pub fn event_tone(event: &Event) -> Tone {
         Event::WorkUnitFailed { .. }
         | Event::TaskChecksFailed { .. }
         | Event::RevisionRejected { .. }
-        | Event::SessionStopped => Tone::Failure,
+        | Event::SessionStopped
+        | Event::SessionAborted
+        | Event::RunEnded {
+            outcome: RunOutcome::Failed { .. },
+        } => Tone::Failure,
         Event::MarkersChecked { remaining } if !remaining.is_empty() => Tone::Failure,
         Event::PlanApproved { .. }
+        | Event::PlanEdited { .. }
         | Event::ScaffoldApproved
         | Event::RevisionApproved
         | Event::CheckpointRejected { .. }
         | Event::ReplanRequested
+        | Event::RetryWithHint { .. }
+        | Event::StrongerWriterRequested { .. }
+        | Event::TaskSkipped
         | Event::OperatorFixed { .. }
         | Event::MarkersApproved
         | Event::BudgetCapSet { .. }
-        | Event::RevisionCheckpointsSet { .. } => Tone::Operator,
+        | Event::RevisionCheckpointsSet { .. }
+        | Event::ClarificationModeSet { .. }
+        | Event::RunEnded { .. }
+        | Event::Rewound { .. } => Tone::Operator,
         _ => Tone::Progress,
     }
 }

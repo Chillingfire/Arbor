@@ -2,6 +2,8 @@
 //! thread with the Autopilot and streams its updates to the screen. At a Checkpoint or a Tier's
 //! questions it waits for the Human Operator's reply from a modal.
 
+mod setup;
+
 use std::env;
 use std::fs;
 use std::io;
@@ -10,14 +12,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
-use arbor_config::{API_KEY_ENV, Config, ConfigError, Platform, load_api_key, user_config_path};
-use arbor_core::{Effect, Phase, Request, Tier};
-use arbor_git::{Repo, SESSIONS_DIR, SessionBranch, Worktree};
+use arbor_config::{
+    API_KEY_ENV, ClarificationMode, Config, ConfigError, Platform, load_api_key, user_config_path,
+};
+use arbor_core::{Effect, Event, Phase, Plan, Request, RunOutcome, Tier};
+use arbor_git::{Mainline, Repo, SESSIONS_DIR, SessionBranch, Worktree};
 use arbor_llm::OpenRouterClient;
 use arbor_session::{
-    Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, SessionEnd,
+    Autopilot, AutopilotUpdate, Checkpoint, Decision, Operator, Pending, RunLock, SessionEnd,
+    SessionFolder,
 };
 use arbor_tui::{App, Confirmation, Focus, KeyOutcome, Modal, StatusInfo, Tone, UnfinishedSession};
 use ratatui::DefaultTerminal;
@@ -28,14 +33,27 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use tokio::sync::oneshot;
 
-use crate::leaving::{self, StartedSession};
-use crate::startup;
+mod browsing;
 
-/// The Session worktree's folder inside its Session folder.
-const WORKTREE_DIR: &str = "worktree";
+use crate::leaving::{self, StartedSession};
+use crate::plan_editor::{PlanEdit, edit_plan};
+use crate::startup;
 
 /// How often the screen redraws while waiting, so the spinner moves.
 const FRAME: Duration = Duration::from_millis(100);
+
+/// What the Session thread runs: a new Session for a Request, or a stored one carried on.
+enum SessionStart {
+    New(Request),
+    Resume(Resumed),
+}
+
+/// A stored Session claimed for a resumed run, with its event log as replayed on the screen.
+struct Resumed {
+    folder: SessionFolder,
+    lock: RunLock,
+    events: Vec<Event>,
+}
 
 /// What the Session thread sends to the screen.
 enum DriverMessage {
@@ -66,6 +84,7 @@ enum AwaitedReply {
 /// Session waits for the reply.
 struct ScreenOperator {
     sender: Sender<DriverMessage>,
+    mode_switches: Receiver<ClarificationMode>,
 }
 
 /// Without a screen left to reply, the Session waits until it is cancelled rather than go on
@@ -96,6 +115,10 @@ impl Operator for ScreenOperator {
         });
         Box::pin(screen_reply(replied))
     }
+
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        self.mode_switches.try_iter().last()
+    }
 }
 
 /// The Session running behind the screen.
@@ -104,6 +127,7 @@ struct RunningSession {
     cancel: Option<oneshot::Sender<()>>,
     driver: JoinHandle<()>,
     awaited_reply: Option<AwaitedReply>,
+    mode_switches: Sender<ClarificationMode>,
     /// Set once the Session's branch and worktree exist.
     started: Option<StartedSession>,
 }
@@ -112,18 +136,27 @@ struct Project {
     root: PathBuf,
     config: Config,
     user_config: Option<PathBuf>,
+    /// A key the Operator typed at startup, used ahead of the configured one.
+    typed_api_key: Option<String>,
 }
 
 impl Project {
     /// Read again for each Session, so a key set after a failed start is picked up.
     fn api_key(&self) -> Result<Option<String>, ConfigError> {
-        let api_key = load_api_key(self.user_config.as_deref())?;
+        if let Some(typed_api_key) = &self.typed_api_key {
+            return Ok(Some(typed_api_key.clone()));
+        }
+        let api_key = load_api_key(self.user_config.as_deref(), |name| env::var(name).ok())?;
         Ok(api_key.map(|key| key.expose().to_owned()))
+    }
+
+    fn repo(&self) -> Result<Repo, String> {
+        Repo::open(&self.root).map_err(|err| err.to_string())
     }
 }
 
 pub fn run(initial_request: Option<Request>) -> ExitCode {
-    let project = match load_project() {
+    let mut project = match load_project() {
         Ok(project) => project,
         Err(message) => {
             eprintln!("arbor: {message}");
@@ -142,10 +175,16 @@ pub fn run(initial_request: Option<Request>) -> ExitCode {
         branch: None,
         activity: None,
     });
+    browsing::prune_at_startup(&project, &mut app);
     let outcome = ratatui::run(|terminal| {
         // The legacy Windows console can't do bracketed paste; there a paste arrives as keys.
         let _ = execute!(io::stdout(), EnableBracketedPaste);
-        let looped = event_loop(terminal, &mut app, &project, initial_request);
+        let looped = match setup::settle(terminal, &mut app, &mut project) {
+            Ok(ControlFlow::Continue(())) => {
+                event_loop(terminal, &mut app, &project, initial_request)
+            }
+            settled => settled.map(|_| Vec::new()),
+        };
         let _ = execute!(io::stdout(), DisableBracketedPaste);
         looped
     });
@@ -173,6 +212,7 @@ fn load_project() -> Result<Project, String> {
         root,
         config,
         user_config,
+        typed_api_key: None,
     };
     project.api_key().map_err(|err| err.to_string())?;
     Ok(project)
@@ -191,6 +231,7 @@ fn event_loop(
     }
     loop {
         run.follow(app);
+        app.ui_state.nothing_running = run.session.is_none();
         terminal.draw(|frame| app.draw(frame))?;
         let waiting_events = read_waiting_events()?;
         for (position, terminal_event) in waiting_events.iter().enumerate() {
@@ -207,7 +248,11 @@ fn event_loop(
             } else {
                 key
             };
-            if run.handle_key(app, project, key).is_break() {
+            let key_flow = run.handle_key(app, project, key);
+            if let Some(plan) = run.plan_to_edit.take() {
+                run.send_edited_plan(app, edit_plan(terminal, &plan)?);
+            }
+            if key_flow.is_break() {
                 app.view
                     .push_note("Stopping the Session before leaving…", Tone::Operator);
                 terminal.draw(|frame| app.draw(frame))?;
@@ -251,6 +296,8 @@ fn as_pasted(key: KeyEvent, focus: Focus) -> KeyEvent {
 #[derive(Default)]
 struct Run {
     session: Option<RunningSession>,
+    /// The Plan the Human Operator asked to edit at its Checkpoint, until the editor opens.
+    plan_to_edit: Option<Plan>,
     /// The Sessions that have ended, to warn about any left unfinished.
     started_sessions: Vec<StartedSession>,
 }
@@ -260,7 +307,15 @@ impl Run {
         if app.view.session().phase() != &Phase::NotStarted {
             app.start_over();
         }
-        self.session = start_session(app, project, request);
+        self.session = start_session(app, project, SessionStart::New(request));
+    }
+
+    /// Carries on a stored Session, already replayed on the screen.
+    fn resume(&mut self, app: &mut App, project: &Project, resumed: Resumed) {
+        self.session = start_session(app, project, SessionStart::Resume(resumed));
+        if self.session.is_some() {
+            app.ui_state.focus = Focus::Tree;
+        }
     }
 
     /// Applies what the Session thread sent, and forgets the Session once it has ended.
@@ -356,8 +411,50 @@ impl Run {
             ),
             KeyOutcome::Decided(decision) => self.send_decision(app, decision),
             KeyOutcome::Answered(answers) => self.send_answers(app, answers),
+            KeyOutcome::SwitchClarificationMode => self.switch_clarification_mode(app),
+            KeyOutcome::EditPlan(plan) => self.plan_to_edit = Some(plan),
+            KeyOutcome::OpenBrowser => browsing::open(app, project),
+            KeyOutcome::Browser(outcome) => {
+                let running_here = self.session.is_some();
+                if let Some(resumed) = browsing::act(app, project, outcome, running_here) {
+                    self.resume(app, project, resumed);
+                }
+            }
         }
         ControlFlow::Continue(())
+    }
+
+    /// An edited Plan goes back to the Plan Checkpoint, which shows it again. An edit that changed
+    /// nothing or can't be used leaves the modal open.
+    fn send_edited_plan(&mut self, app: &mut App, plan_edit: PlanEdit) {
+        match plan_edit {
+            Ok(Some(edited)) => {
+                app.ui_state.modal = None;
+                self.send_decision(app, Decision::EditPlan(edited));
+            }
+            Ok(None) => app.view.push_note("The Plan is unchanged.", Tone::Progress),
+            Err(message) => app.view.push_note(message, Tone::Failure),
+        }
+    }
+
+    /// A running Session takes the new mode from its next Planner or Scaffolder run; otherwise
+    /// the next Session starts with it.
+    fn switch_clarification_mode(&mut self, app: &mut App) {
+        let mode = match app.status.clarification_mode {
+            ClarificationMode::Ask => ClarificationMode::Assume,
+            ClarificationMode::Assume => ClarificationMode::Ask,
+        };
+        app.status.clarification_mode = mode;
+        let applies_from = match &self.session {
+            Some(session) if session.mode_switches.send(mode).is_ok() => {
+                "the next Planner or Scaffolder run"
+            }
+            _ => "the next Session",
+        };
+        app.view.push_note(
+            format!("Clarification Mode {mode:?} from {applies_from}."),
+            Tone::Operator,
+        );
     }
 
     fn take_awaited_reply(&mut self) -> Option<AwaitedReply> {
@@ -426,7 +523,7 @@ fn drain_messages(app: &mut App, session: &mut RunningSession) -> bool {
 fn started_session(branch: String, session_dir: &Path) -> StartedSession {
     StartedSession {
         branch,
-        worktree: session_dir.join(WORKTREE_DIR),
+        worktree: SessionFolder::new(session_dir).worktree_path(),
         finished: false,
     }
 }
@@ -438,7 +535,7 @@ fn mark_ended(started: &mut Option<StartedSession>, tone: Tone) {
     }
 }
 
-fn start_session(app: &mut App, project: &Project, request: Request) -> Option<RunningSession> {
+fn start_session(app: &mut App, project: &Project, start: SessionStart) -> Option<RunningSession> {
     let api_key = match project.api_key() {
         Ok(Some(api_key)) => api_key,
         Ok(None) => {
@@ -458,10 +555,16 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
     };
     let (sender, messages) = mpsc::channel();
     let (cancel, cancelled) = oneshot::channel();
+    let (mode_switches, switched_modes) = mpsc::channel();
     let root = project.root.clone();
-    let config = project.config.clone();
+    let mut config = project.config.clone();
+    config.clarification_mode = app.status.clarification_mode;
     let driver = thread::spawn(move || {
-        let ending = drive(&root, config, &api_key, request, &sender, cancelled);
+        let operator = ScreenOperator {
+            sender: sender.clone(),
+            mode_switches: switched_modes,
+        };
+        let ending = drive(&root, config, &api_key, start, operator, cancelled);
         let _ = sender.send(ending);
     });
     Some(RunningSession {
@@ -469,21 +572,47 @@ fn start_session(app: &mut App, project: &Project, request: Request) -> Option<R
         cancel: Some(cancel),
         driver,
         awaited_reply: None,
+        mode_switches,
         started: None,
     })
 }
 
-/// Creates the Session branch and worktree and runs the Session. Returns the last message.
+/// Runs the Session, new or resumed. Returns the last message.
 fn drive(
     root: &Path,
     config: Config,
     api_key: &str,
-    request: Request,
-    sender: &Sender<DriverMessage>,
+    start: SessionStart,
+    operator: ScreenOperator,
     cancelled: oneshot::Receiver<()>,
 ) -> DriverMessage {
-    try_drive(root, config, api_key, request, sender, cancelled)
+    try_drive(root, config, api_key, start, operator, cancelled)
         .unwrap_or_else(|message| DriverMessage::Ended(message, Tone::Failure))
+}
+
+/// What the Autopilot starts from.
+enum RunFrom {
+    Request(Request),
+    Log(Vec<Event>),
+}
+
+/// A new Session's branch, folder and worktree, claimed for its first run.
+fn create_session(
+    repo: &Repo,
+    mainline: &Mainline,
+    request: &Request,
+) -> Result<(Worktree, SessionFolder, RunLock), String> {
+    let branch = free_branch(repo, &request.text)?;
+    let folder = SessionFolder::for_new_session(repo.root(), SystemTime::now(), branch.as_str());
+    exclude_sessions(repo)
+        .map_err(|message| format!("Could not keep {SESSIONS_DIR} out of git: {message}"))?;
+    fs::create_dir_all(folder.dir())
+        .map_err(|err| format!("Could not create {}: {err}", folder.dir().display()))?;
+    let lock = folder.lock_run().map_err(|err| err.to_string())?;
+    let worktree = repo
+        .create_worktree(mainline, &branch, &folder.worktree_path())
+        .map_err(|err| format!("Could not create the Session worktree: {err}"))?;
+    Ok((worktree, folder, lock))
 }
 
 /// `Err` holds the message for a Session that couldn't start.
@@ -491,35 +620,40 @@ fn try_drive(
     root: &Path,
     config: Config,
     api_key: &str,
-    request: Request,
-    sender: &Sender<DriverMessage>,
+    start: SessionStart,
+    operator: ScreenOperator,
     cancelled: oneshot::Receiver<()>,
 ) -> Result<DriverMessage, String> {
+    let sender = operator.sender.clone();
     let repo = Repo::open(root).map_err(|err| format!("Could not open the repository: {err}"))?;
     let mainline = repo
         .mainline(config.mainline.as_deref())
         .map_err(|err| format!("Could not find the mainline: {err}"))?;
-    let branch = free_branch(&repo, &request.text)?;
-    let session_dir = root.join(SESSIONS_DIR).join(session_id(&branch));
-    exclude_sessions(&repo)
-        .map_err(|message| format!("Could not keep {SESSIONS_DIR} out of git: {message}"))?;
-    fs::create_dir_all(&session_dir)
-        .map_err(|err| format!("Could not create {}: {err}", session_dir.display()))?;
-    let worktree = repo
-        .create_worktree(&mainline, &branch, &session_dir.join(WORKTREE_DIR))
-        .map_err(|err| format!("Could not create the Session worktree: {err}"))?;
-    let event_file = fs::File::create(session_dir.join("events.jsonl"))
-        .map_err(|err| format!("Could not create the event log: {err}"))?;
+    let (worktree, folder, _lock, run_from) = match start {
+        SessionStart::New(request) => {
+            let (worktree, folder, lock) = create_session(&repo, &mainline, &request)?;
+            (worktree, folder, lock, RunFrom::Request(request))
+        }
+        SessionStart::Resume(Resumed {
+            folder,
+            lock,
+            events,
+        }) => {
+            let worktree = Worktree::open(folder.worktree_path())
+                .map_err(|err| format!("Could not open the Session worktree: {err}"))?;
+            (worktree, folder, lock, RunFrom::Log(events))
+        }
+    };
+    let event_file = folder
+        .append_to_log()
+        .map_err(|err| format!("Could not open the event log: {err}"))?;
     let _ = sender.send(DriverMessage::Started {
-        branch: branch.as_str().to_owned(),
-        session_dir: session_dir.clone(),
+        branch: worktree.branch().to_owned(),
+        session_dir: folder.dir().to_owned(),
     });
 
     let client = OpenRouterClient::new(api_key);
     let observer_sender = sender.clone();
-    let operator = ScreenOperator {
-        sender: sender.clone(),
-    };
     let mut autopilot = Autopilot::new(&worktree, &mainline, &client, config)
         .map_err(|err| err.to_string())?
         .with_operator(operator)
@@ -534,15 +668,32 @@ fn try_drive(
     // Dropping the run future at a cancel kills a running Check (`kill_on_drop`); the worktree is
     // put back after that, below.
     let session_end = runtime.block_on(async {
+        let run = async {
+            match run_from {
+                RunFrom::Request(request) => autopilot.run(request).await,
+                RunFrom::Log(events) => autopilot.resume(events).await,
+            }
+        };
         tokio::select! {
-            session_end = autopilot.run(request) => Some(session_end),
+            session_end = run => Some(session_end),
             _ = cancelled => None,
         }
     });
-    Ok(match session_end {
-        Some(session_end) => ending(session_end),
-        None => cancelled_ending(autopilot.session().phase(), &worktree),
-    })
+    let Some(session_end) = session_end else {
+        let message = cancelled_ending(autopilot.session().phase(), &worktree);
+        let _ = autopilot.record_run_end(RunOutcome::Cancelled);
+        return Ok(message);
+    };
+    let run_outcome = match &session_end {
+        Ok(end) => end.run_outcome(),
+        Err(err) => Some(RunOutcome::Failed {
+            reason: err.to_string(),
+        }),
+    };
+    if let Some(run_outcome) = run_outcome {
+        let _ = autopilot.record_run_end(run_outcome);
+    }
+    Ok(ending(session_end))
 }
 
 /// After a cancel, puts the worktree back to its last commit when the cancelled step had written
@@ -580,6 +731,9 @@ fn cancelled_ending(phase: &Phase, worktree: &Worktree) -> DriverMessage {
 fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> DriverMessage {
     let (message, tone) = match session_end {
         Ok(SessionEnd::Finished) => ("Session finished.".to_owned(), Tone::Success),
+        Ok(SessionEnd::FinishedWithSkippedTasks { skipped_tasks }) => {
+            (skipped_tasks_ending(&skipped_tasks), Tone::Operator)
+        }
         Ok(SessionEnd::NeedsOperator(effect)) => (
             format!(
                 "Stopped at {}. The branch and worktree are kept.",
@@ -589,6 +743,10 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
         ),
         Ok(SessionEnd::StoppedAtBudget) => (
             "Stopped at the Budget Cap. The branch and worktree are kept.".to_owned(),
+            Tone::Operator,
+        ),
+        Ok(SessionEnd::Aborted) => (
+            "Session aborted. The branch and worktree are kept.".to_owned(),
             Tone::Operator,
         ),
         Ok(SessionEnd::TierStopped { tier, reason }) => {
@@ -606,6 +764,22 @@ fn ending(session_end: Result<SessionEnd, arbor_session::AutopilotError>) -> Dri
     DriverMessage::Ended(message, tone)
 }
 
+fn skipped_tasks_ending(skipped_tasks: &[usize]) -> String {
+    let task_numbers: Vec<String> = skipped_tasks
+        .iter()
+        .map(|task| (task + 1).to_string())
+        .collect();
+    let tasks = if task_numbers.len() == 1 {
+        "Task"
+    } else {
+        "Tasks"
+    };
+    format!(
+        "Session finished with {tasks} {} skipped; the branch lacks that part of the Request.",
+        task_numbers.join(", ")
+    )
+}
+
 /// The event log line for the Human Operator's decision at a Checkpoint.
 fn decision_note(decision: &Decision) -> String {
     match decision {
@@ -621,8 +795,15 @@ fn decision_note(decision: &Decision) -> String {
             )
         }
         Decision::Reject(feedback) => format!("Rejected the Checkpoint: {feedback}"),
+        Decision::EditPlan(_) => "Edited the Plan by hand.".to_owned(),
         Decision::Fixed => "Fixed it by hand; checking the fix.".to_owned(),
         Decision::Replan => "Sent the Task to the Planner.".to_owned(),
+        Decision::RetryWithHint { tier, hint } => {
+            format!("Ran the {tier:?} again with a hint: {hint}")
+        }
+        Decision::RetryWithStrongerWriter => "Sent the Work Unit to a stronger Writer.".to_owned(),
+        Decision::Skip => "Skipped the Task.".to_owned(),
+        Decision::Abort => "Aborted the Session.".to_owned(),
         Decision::Stop => "Stopped at the Checkpoint.".to_owned(),
         Decision::SetBudgetCap(Some(cap)) => {
             format!("Raised the Budget Cap to ${:.2}.", cap.dollars())
@@ -674,14 +855,6 @@ fn free_branch(repo: &Repo, request_text: &str) -> Result<SessionBranch, String>
         }
     }
     Err("every Session branch name for this Request is taken".to_owned())
-}
-
-fn session_id(branch: &SessionBranch) -> String {
-    let started = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since_epoch| since_epoch.as_secs());
-    let slug = branch.as_str().trim_start_matches("arbor/");
-    format!("{started}-{slug}")
 }
 
 /// Adds the Sessions folder to the `info/exclude` every worktree shares, so the worktrees inside
@@ -764,5 +937,20 @@ mod tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let newline = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
         assert_eq!(as_pasted(enter, Focus::Prompt), newline);
+    }
+
+    #[test]
+    fn a_session_with_skipped_tasks_ends_naming_them_not_as_plainly_finished() {
+        let skipped_end = Ok(SessionEnd::FinishedWithSkippedTasks {
+            skipped_tasks: vec![1, 2],
+        });
+        let DriverMessage::Ended(message, tone) = ending(skipped_end) else {
+            panic!("a finished Session ends the run");
+        };
+        assert_eq!(
+            message,
+            "Session finished with Tasks 2, 3 skipped; the branch lacks that part of the Request."
+        );
+        assert!(matches!(tone, Tone::Operator));
     }
 }

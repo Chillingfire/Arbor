@@ -1,6 +1,23 @@
-use arbor_config::{KeySource, resolve_api_key};
+use arbor_config::{API_KEY_ENV, KeySource, load_api_key, resolve_api_key};
 
 const USER: &str = r#"api_key = "sk-or-user""#;
+
+#[test]
+fn loading_reads_the_injected_env_before_the_user_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_config = dir.path().join("config.toml");
+    std::fs::write(&user_config, USER).unwrap();
+    let env_with_key = |name: &str| (name == API_KEY_ENV).then(|| "sk-or-env".to_owned());
+
+    let key = load_api_key(Some(&user_config), env_with_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.source(), KeySource::Env);
+
+    let key = load_api_key(Some(&user_config), |_| None).unwrap().unwrap();
+    assert_eq!(key.expose(), "sk-or-user");
+    assert!(load_api_key(None, |_| None).unwrap().is_none());
+}
 
 #[test]
 fn the_env_var_comes_first() {

@@ -2,6 +2,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+pub use arbor_core::ClarificationMode;
 use serde::Deserialize;
 
 /// The merged configuration: defaults, then the user config, then the project's `arbor.toml`.
@@ -18,7 +19,8 @@ pub struct Config {
     pub writer_cap_tokens: u32,
     /// The Failure Brief allowance, on top of the Writer Cap.
     pub failure_brief_tokens: u32,
-    /// Sessions idle this long are pruned. 0 means never.
+    /// Sessions whose last event is older than this many days are pruned at startup, keeping
+    /// their branch. 0 means never. Set in the user config or `arbor.toml`, which wins.
     pub retention_days: u32,
     /// The tool calls one Scaffolder Revision may make before it must submit.
     pub revision_tool_call_budget: u32,
@@ -40,14 +42,6 @@ pub struct Roles {
 pub struct RoleConfig {
     pub model: String,
     pub temperature: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClarificationMode {
-    #[default]
-    Ask,
-    Assume,
 }
 
 /// Commands from `arbor.toml`. `unit_filtered` contains `{filter}`, replaced by a Work Unit's
@@ -165,6 +159,7 @@ pub(crate) struct UserFile {
     #[serde(default)]
     roles: RolesFile,
     budget_cap_usd: Option<f64>,
+    retention_days: Option<u32>,
 }
 
 /// The project's `arbor.toml`.
@@ -304,7 +299,7 @@ impl Config {
         if let Some(tokens) = project.failure_brief_tokens {
             config.failure_brief_tokens = tokens;
         }
-        if let Some(days) = project.retention_days {
+        if let Some(days) = project.retention_days.or(user.retention_days) {
             config.retention_days = days;
         }
         if let Some(budget) = project.revisions.tool_call_budget {

@@ -18,6 +18,7 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
+use crate::browser::{SessionBrowser, draw_browser};
 use crate::leaving::UnfinishedSession;
 use crate::modal::{Modal, draw_modal};
 use crate::view::{
@@ -122,6 +123,10 @@ pub struct UiState {
     pub modal: Option<Modal>,
     /// The modal is hidden so the Human Operator can look around the Session first.
     pub modal_hidden: bool,
+    /// The Session browser, while open. It takes the keys.
+    pub browser: Option<SessionBrowser>,
+    /// The Session on screen has no run behind it, so the prompt takes a new Request.
+    pub nothing_running: bool,
 }
 
 impl UiState {
@@ -191,6 +196,9 @@ pub fn draw(frame: &mut Frame, view: &SessionView, ui_state: &UiState, status: &
     draw_status(frame, status_area, view, status);
     if let Some(modal) = ui_state.shown_modal() {
         draw_modal(frame, modal);
+    }
+    if let Some(browser) = &ui_state.browser {
+        draw_browser(frame, browser);
     }
     if let Some(confirmation) = ui_state.confirming {
         draw_confirmation(frame, confirmation, status, ui_state.leaving.as_ref());
@@ -825,6 +833,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, view: &SessionView, ui_state: &UiS
     let content = if ui_state.prompt.is_empty() {
         let placeholder = match view.session().phase() {
             Phase::NotStarted => "Describe the change you want, then press Enter",
+            _ if ui_state.nothing_running => "Describe the next change you want, then press Enter",
             _ => "A new Request can start once this Session ends",
         };
         Line::from(vec![
@@ -850,6 +859,8 @@ fn key_hints(focus: Focus) -> &'static [(&'static str, &'static str)] {
             ("↑↓", "move"),
             ("←→", "fold"),
             ("/", "prompt"),
+            ("b", "sessions"),
+            ("m", "mode"),
             ("q", "quit"),
         ],
         Focus::Detail => &[
@@ -885,7 +896,11 @@ fn typed_tail(typed: &str, room: usize) -> String {
 }
 
 fn phase_label(view: &SessionView) -> String {
-    let phase = view.session().phase();
+    phase_name(view.session().phase())
+}
+
+/// The phase in a few words, e.g. `Scaffold Checkpoint · Task 2`.
+pub(crate) fn phase_name(phase: &Phase) -> String {
     let task = phase_task(phase)
         .map(|task| format!(" · Task {}", task + 1))
         .unwrap_or_default();
@@ -908,10 +923,12 @@ fn phase_label(view: &SessionView) -> String {
         Phase::Replanning { .. } => "Replanning",
         Phase::ReplanCheckpoint { .. } => "Replan Checkpoint",
         Phase::ResettingTask { .. } => "Resetting Task",
+        Phase::SkippingTask { .. } => "Skipping Task",
         Phase::CheckingMarkers => "Marker check",
         Phase::MarkerCheckpoint { .. } => "Marker Checkpoint",
         Phase::Done => "Done",
         Phase::Stopped => "Stopped",
+        Phase::Aborted => "Aborted",
     };
     format!("{name}{task}")
 }

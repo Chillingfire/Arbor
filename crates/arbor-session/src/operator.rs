@@ -4,7 +4,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arbor_core::{LeftoverMarker, Plan, Replan, Revision, RevisionCause, Tier, Usd, WorkUnit};
+use arbor_core::{
+    ClarificationMode, LeftoverMarker, Plan, Replan, Revision, RevisionCause, Tier, Usd, WorkUnit,
+};
 
 /// A future the Operator resolves once the Human Operator has decided, e.g. in a TUI modal.
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -32,6 +34,12 @@ pub enum Checkpoint {
         may_replan: bool,
         /// The Checks' output when the Human Operator's last fix didn't pass them.
         failed_fix: Option<String>,
+        /// The titles of the Plan's Tasks after this one, which may depend on it if it is
+        /// skipped.
+        later_tasks: Vec<String>,
+        /// The stronger model that can write a failed Work Unit again, or `None` after a failed
+        /// Task Check, which has no single Work Unit to write.
+        stronger_writer: Option<StrongerWriterOffer>,
     },
     /// The Tasks the Planner would put in place of the failed one. Decided like a Plan.
     Replan {
@@ -51,6 +59,16 @@ pub enum Checkpoint {
     },
 }
 
+/// What a retry of the failed Work Unit with a stronger model would use and cost, shown before
+/// the Human Operator chooses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrongerWriterOffer {
+    pub model: String,
+    /// Estimated from the Writer prompt with its Failure Brief and a typical reply.
+    pub cost_per_attempt: Usd,
+    pub max_attempts: usize,
+}
+
 /// The Human Operator's choice at a [`Checkpoint`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -60,11 +78,27 @@ pub enum Decision {
     ApproveTasks(Vec<usize>),
     /// The same Tier runs again with this feedback.
     Reject(String),
+    /// At a Plan Checkpoint only: the Plan as the Human Operator edited it by hand. The
+    /// Checkpoint shows it again.
+    EditPlan(Plan),
     /// At an Escalation or Marker Checkpoint: the Human Operator fixed the work by hand in the
     /// worktree, so Arbor checks the fix and commits it.
     Fixed,
     /// At an Escalation Checkpoint only: send the failed Task to the Planner.
     Replan,
+    /// At an Escalation Checkpoint only: run `tier` again with this hint. The Writer needs a
+    /// failed Work Unit, and the Planner the Task's unused Replan.
+    RetryWithHint {
+        tier: Tier,
+        hint: String,
+    },
+    /// At an Escalation Checkpoint only: write the failed Work Unit again with the offered
+    /// stronger model.
+    RetryWithStrongerWriter,
+    /// At an Escalation Checkpoint only: drop the Task's work and go on with the next Task.
+    Skip,
+    /// At an Escalation Checkpoint only: end the Session for good, keeping the branch.
+    Abort,
     /// End the run here, keeping the branch and worktree as they are. At the Budget Checkpoint
     /// this stops the Session for good.
     Stop,
@@ -79,6 +113,12 @@ pub trait Operator {
     /// The answers to a Tier's clarifying questions, or `None` when nobody can answer them, which
     /// ends the run.
     fn answer<'a>(&'a mut self, tier: Tier, questions: &'a str) -> Pending<'a, Option<String>>;
+
+    /// The Clarification Mode the Human Operator switched to since the last call, if they did.
+    /// Asked before each Planner and Scaffolder run, so a switch applies from the next run on.
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        None
+    }
 }
 
 /// Approves every Checkpoint as it is and answers no questions, for runs nobody is watching, such

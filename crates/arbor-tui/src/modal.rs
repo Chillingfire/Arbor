@@ -2,7 +2,7 @@
 //! an Escalation, leftover Markers or the Budget Cap to settle, and a Tier's clarifying questions
 //! to answer (grilling log Round 1 decision 7, Round 3 decisions 2 and 9).
 
-use arbor_core::{LeftoverMarker, RevisionCause, Task, Tier, Usd, assumptions_in, is_assumption};
+use arbor_core::{LeftoverMarker, Plan, Task, Tier, Usd, assumptions_in, is_assumption};
 use arbor_session::{Checkpoint, Decision};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 use std::cell::Cell;
 
+use crate::escalation::{HintDraft, escalation_hints, escalation_lines};
 use crate::ui::{ACCENT, BAR, FAINT, MUTED, YELLOW};
 
 /// What a key in a modal asks for, beyond changing the modal itself.
@@ -20,11 +21,13 @@ pub(crate) enum ModalOutcome {
     Hide,
     Decided(Decision),
     Answered(String),
+    /// `e` at the Plan Checkpoint: edit this Plan in the Human Operator's editor.
+    EditPlan(Plan),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
-    Checkpoint(CheckpointModal),
+    Checkpoint(Box<CheckpointModal>),
     Questions(QuestionsModal),
 }
 
@@ -41,6 +44,10 @@ pub struct CheckpointModal {
     pub budget_cap_text: String,
     /// Whether the first digit or point replaces the suggested cap instead of adding to it.
     pub budget_cap_suggested: bool,
+    /// At the Escalation Checkpoint, the hint being typed, or `None` while choosing.
+    pub hint_draft: Option<HintDraft>,
+    /// At the Escalation Checkpoint, a skip or abort waiting for the Human Operator to confirm it.
+    pub confirming: Option<Decision>,
     pub scroll: ModalScroll,
 }
 
@@ -128,15 +135,17 @@ impl Modal {
             Checkpoint::Budget { cap, .. } => format!("{:.2}", cap.dollars() * 2.0),
             _ => String::new(),
         };
-        Self::Checkpoint(CheckpointModal {
+        Self::Checkpoint(Box::new(CheckpointModal {
             checkpoint,
             task_rows,
             selected_row: 0,
             feedback: None,
             budget_cap_text,
             budget_cap_suggested: true,
+            hint_draft: None,
+            confirming: None,
             scroll: ModalScroll::default(),
-        })
+        }))
     }
 
     pub fn questions(tier: Tier, questions: String) -> Self {
@@ -158,12 +167,17 @@ impl Modal {
 
     pub(crate) fn paste(&mut self, pasted: &str) {
         let typed = match self {
-            Self::Checkpoint(CheckpointModal {
-                feedback: Some(feedback),
-                ..
-            }) => feedback,
+            Self::Checkpoint(checkpoint_modal) => {
+                match (
+                    &mut checkpoint_modal.feedback,
+                    &mut checkpoint_modal.hint_draft,
+                ) {
+                    (Some(feedback), _) => feedback,
+                    (None, Some(draft)) => &mut draft.hint,
+                    (None, None) => return,
+                }
+            }
             Self::Questions(questions_modal) => &mut questions_modal.answers,
-            Self::Checkpoint(_) => return,
         };
         typed.push_str(&pasted.replace("\r\n", "\n").replace('\r', "\n"));
     }
@@ -184,7 +198,7 @@ impl CheckpointModal {
             return None;
         }
         match self.checkpoint {
-            Checkpoint::Escalation { may_replan, .. } => return escalation_key(key, may_replan),
+            Checkpoint::Escalation { .. } => return self.escalation_key(key),
             Checkpoint::Markers { .. } => return markers_key(key),
             Checkpoint::Budget { spent, .. } => return self.budget_key(key, spent),
             _ => {}
@@ -206,6 +220,11 @@ impl CheckpointModal {
             KeyCode::Esc => return Some(ModalOutcome::Hide),
             KeyCode::Char('a') | KeyCode::Enter => return self.approval(),
             KeyCode::Char('r') => self.feedback = Some(String::new()),
+            KeyCode::Char('e') => {
+                if let Checkpoint::Plan { plan } = &self.checkpoint {
+                    return Some(ModalOutcome::EditPlan(plan.clone()));
+                }
+            }
             KeyCode::Char('K') => self.move_selected_task(-1),
             KeyCode::Char('J') => self.move_selected_task(1),
             KeyCode::Up if moving => self.move_selected_task(-1),
@@ -311,19 +330,6 @@ fn markers_key(key: KeyEvent) -> Option<ModalOutcome> {
     Some(ModalOutcome::Decided(decision))
 }
 
-/// An Escalation has nothing to approve: the Human Operator fixes the work, sends it to the
-/// Planner, or stops.
-fn escalation_key(key: KeyEvent, may_replan: bool) -> Option<ModalOutcome> {
-    let decision = match key.code {
-        KeyCode::Esc => return Some(ModalOutcome::Hide),
-        KeyCode::Char('f') => Decision::Fixed,
-        KeyCode::Char('p') if may_replan => Decision::Replan,
-        KeyCode::Char('s') => Decision::Stop,
-        _ => return None,
-    };
-    Some(ModalOutcome::Decided(decision))
-}
-
 impl QuestionsModal {
     fn handle_key(&mut self, key: KeyEvent) -> Option<ModalOutcome> {
         if self.scroll.handle_key(key) {
@@ -337,14 +343,14 @@ impl QuestionsModal {
     }
 }
 
-enum TextEdit {
+pub(crate) enum TextEdit {
     Send,
     Leave,
     Typed,
 }
 
 /// Enter sends non-empty text; Alt+Enter or Shift+Enter starts a new line; Esc leaves.
-fn edit_text(typed: &mut String, key: KeyEvent) -> TextEdit {
+pub(crate) fn edit_text(typed: &mut String, key: KeyEvent) -> TextEdit {
     match key.code {
         KeyCode::Esc => return TextEdit::Leave,
         KeyCode::Enter
@@ -375,7 +381,7 @@ pub(crate) fn draw_modal(frame: &mut Frame, modal: &Modal) {
         Modal::Questions(questions_modal) => (
             format!("The {:?} asks", questions_modal.tier),
             question_content(questions_modal),
-            TYPING_HINTS,
+            TYPING_HINTS.to_vec(),
             &questions_modal.scroll,
         ),
     };
@@ -448,7 +454,7 @@ struct ModalContent {
     focus: Option<usize>,
 }
 
-const TYPING_HINTS: &[(&str, &str)] = &[
+pub(crate) const TYPING_HINTS: &[(&str, &str)] = &[
     ("Enter", "send"),
     ("Alt+Enter", "new line"),
     ("Esc", "back"),
@@ -466,8 +472,11 @@ fn checkpoint_title(checkpoint: &Checkpoint) -> String {
     }
 }
 
-fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> &'static [(&'static str, &'static str)] {
-    if let Checkpoint::Markers { .. } = checkpoint_modal.checkpoint {
+fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> Vec<(&'static str, &'static str)> {
+    if let Checkpoint::Escalation { .. } = checkpoint_modal.checkpoint {
+        return escalation_hints(checkpoint_modal);
+    }
+    let hints: &[(&str, &str)] = if let Checkpoint::Markers { .. } = checkpoint_modal.checkpoint {
         &[
             ("a", "approve as they are"),
             ("f", "I removed them"),
@@ -481,17 +490,6 @@ fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> &'static [(&'static s
             ("s", "stop"),
             ("Esc", "look around"),
         ]
-    } else if let Checkpoint::Escalation { may_replan, .. } = checkpoint_modal.checkpoint {
-        if may_replan {
-            &[
-                ("f", "I fixed it"),
-                ("p", "replan"),
-                ("s", "stop"),
-                ("Esc", "look around"),
-            ]
-        } else {
-            &[("f", "I fixed it"), ("s", "stop"), ("Esc", "look around")]
-        }
     } else if checkpoint_modal.feedback.is_some() {
         TYPING_HINTS
     } else if checkpoint_modal.task_rows.is_empty() {
@@ -500,12 +498,14 @@ fn checkpoint_hints(checkpoint_modal: &CheckpointModal) -> &'static [(&'static s
         &[
             ("a", "approve"),
             ("r", "reject"),
+            ("e", "edit"),
             ("↑↓", "select"),
             ("Space", "keep/drop"),
             ("Shift+↑↓", "move"),
             ("Esc", "look around"),
         ]
-    }
+    };
+    hints.to_vec()
 }
 
 fn checkpoint_content(checkpoint_modal: &CheckpointModal) -> ModalContent {
@@ -531,12 +531,11 @@ fn checkpoint_content(checkpoint_modal: &CheckpointModal) -> ModalContent {
             lines.extend(task_lines(checkpoint_modal, &replan.tasks, "Replan"));
             lines
         }
-        Checkpoint::Escalation {
-            cause,
-            may_replan,
-            failed_fix,
-            ..
-        } => escalation_lines(cause, *may_replan, failed_fix.as_deref()),
+        Checkpoint::Escalation { .. } => {
+            let (lines, typing_focus) = escalation_lines(checkpoint_modal);
+            focus = typing_focus;
+            lines
+        }
         Checkpoint::Markers { remaining } => marker_lines(remaining),
         Checkpoint::Budget { cap, spent } => {
             let lines = budget_lines(*cap, *spent, &checkpoint_modal.budget_cap_text);
@@ -617,59 +616,6 @@ fn task_lines(
 /// Check output is long; its last lines usually say what failed.
 const CHECK_OUTPUT_LINES: usize = 8;
 
-fn escalation_lines(
-    cause: &RevisionCause,
-    may_replan: bool,
-    failed_fix: Option<&str>,
-) -> Vec<Line<'static>> {
-    let mut lines = match cause {
-        RevisionCause::TaskChecksFailed { output } => {
-            let mut lines = vec![Line::raw(
-                "The Task's Unit Check still fails after the Scaffolder's Revisions.",
-            )];
-            lines.extend(output_tail(output));
-            lines
-        }
-        RevisionCause::WorkUnitFailed(failure) => {
-            let mut lines = vec![Line::raw(format!(
-                "The Writer still can't make {} pass after the Scaffolder's Revisions.",
-                failure.id
-            ))];
-            for missing in failure.missing_response.iter().flatten() {
-                lines.push(labelled("Missing", missing));
-            }
-            if let Some(last_attempt) = failure.attempts.last() {
-                lines.extend(output_tail(&last_attempt.error));
-            }
-            lines
-        }
-    };
-    if let Some(check_output) = failed_fix {
-        lines.push(Line::default());
-        lines.push(Line::styled(
-            "Your fix didn't pass the Checks:",
-            Style::new().fg(YELLOW),
-        ));
-        lines.extend(output_tail(check_output));
-    }
-    lines.push(Line::default());
-    lines.push(Line::styled(
-        "f  Fix it yourself in the worktree; Arbor runs the Checks and commits the fix.",
-        Style::new().fg(MUTED),
-    ));
-    let replan_line = if may_replan {
-        "p  Send the Task to the Planner, which replaces it with revised Tasks."
-    } else {
-        "   The Task was replanned once already, so it can't go to the Planner again."
-    };
-    lines.push(Line::styled(replan_line, Style::new().fg(MUTED)));
-    lines.push(Line::styled(
-        "s  Stop here, keeping the branch and worktree.",
-        Style::new().fg(MUTED),
-    ));
-    lines
-}
-
 /// More Markers than this are counted, not listed.
 const LISTED_MARKERS: usize = 12;
 
@@ -737,7 +683,7 @@ fn budget_lines(cap: Usd, spent: Usd, budget_cap_text: &str) -> Vec<Line<'static
     lines
 }
 
-fn output_tail(check_output: &str) -> Vec<Line<'static>> {
+pub(crate) fn output_tail(check_output: &str) -> Vec<Line<'static>> {
     let output_lines: Vec<&str> = check_output.trim_end().lines().collect();
     let start = output_lines.len().saturating_sub(CHECK_OUTPUT_LINES);
     output_lines[start..]
@@ -759,7 +705,7 @@ fn question_content(questions_modal: &QuestionsModal) -> ModalContent {
     ModalContent { lines, focus }
 }
 
-fn labelled(name: &str, labelled_text: &str) -> Line<'static> {
+pub(crate) fn labelled(name: &str, labelled_text: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{name}  "), Style::new().fg(MUTED)),
         Span::raw(labelled_text.to_owned()),
@@ -807,7 +753,7 @@ fn task_row_line(row: &TaskRow, title: &str, selected: bool) -> Line<'static> {
 }
 
 /// What the Human Operator is typing, with a cursor after it.
-fn typed_lines(typed: &str) -> Vec<Line<'static>> {
+pub(crate) fn typed_lines(typed: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = typed
         .split('\n')
         .map(|typed_line| {

@@ -57,12 +57,14 @@ dependencies = [
  "ratatui",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]
 name = "arbor-config"
 version = "0.1.0"
 dependencies = [
+ "arbor-core",
  "serde",
  "tempfile",
  "toml",

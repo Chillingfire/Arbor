@@ -196,4 +196,18 @@ impl fmt::Display for LlmError {
     }
 }
 
+impl LlmError {
+    /// OpenRouter couldn't be reached, was overloaded, or couldn't bill the call, so it said
+    /// nothing about the key or the request, and the same call may pass later.
+    pub fn is_temporary(&self) -> bool {
+        matches!(
+            self,
+            Self::Network { .. }
+                | Self::Server { .. }
+                | Self::RateLimited { .. }
+                | Self::InsufficientCredits { .. }
+        )
+    }
+}
+
 impl std::error::Error for LlmError {}

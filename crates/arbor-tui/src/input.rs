@@ -1,8 +1,10 @@
 //! What each key does to the [`UiState`].
 
+use arbor_core::Plan;
 use arbor_session::Decision;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::browser::BrowserOutcome;
 use crate::modal::ModalOutcome;
 use crate::ui::{
     Confirmation, DetailTab, Focus, TreeNode, UiState, confirmation_key, selected_row, tree_nodes,
@@ -26,6 +28,15 @@ pub enum KeyOutcome {
     Decided(Decision),
     /// The Human Operator answered a Tier's questions.
     Answered(String),
+    /// `m` outside the prompt: switch the Clarification Mode between Ask and Assume.
+    SwitchClarificationMode,
+    /// `e` at the Plan Checkpoint: edit this Plan in the Human Operator's editor. The modal stays
+    /// open until the edit is sent.
+    EditPlan(Plan),
+    /// `b`: open the Session browser, which the program fills with the stored Sessions.
+    OpenBrowser,
+    /// The Human Operator chose an action in the Session browser.
+    Browser(BrowserOutcome),
 }
 
 const LOG_PAGE: usize = 10;
@@ -37,6 +48,16 @@ impl UiState {
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return KeyOutcome::Quit;
+        }
+        if let Some(browser) = &mut self.browser {
+            return match browser.handle_key(key) {
+                None => KeyOutcome::Handled,
+                Some(BrowserOutcome::Close) => {
+                    self.browser = None;
+                    KeyOutcome::Handled
+                }
+                Some(outcome) => KeyOutcome::Browser(outcome),
+            };
         }
         if self.shown_modal().is_some() {
             return self.handle_modal_key(key);
@@ -61,8 +82,10 @@ impl UiState {
         }
         match key.code {
             KeyCode::Char('q') => return KeyOutcome::Quit,
+            KeyCode::Char('m') => return KeyOutcome::SwitchClarificationMode,
             KeyCode::Esc => return KeyOutcome::Cancel,
             KeyCode::Char('/' | 'i') => self.focus = Focus::Prompt,
+            KeyCode::Char('b') => return KeyOutcome::OpenBrowser,
             KeyCode::Left if self.focus == Focus::Tree => self.collapse_selected(),
             KeyCode::Right if self.focus == Focus::Tree => self.expand_selected(),
             KeyCode::Enter | KeyCode::Char(' ') if self.focus == Focus::Tree => {
@@ -121,6 +144,7 @@ impl UiState {
                 self.modal = None;
                 KeyOutcome::Answered(answers)
             }
+            Some(ModalOutcome::EditPlan(plan)) => KeyOutcome::EditPlan(plan),
         }
     }
 

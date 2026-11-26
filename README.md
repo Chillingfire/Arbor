@@ -28,6 +28,18 @@ repository to write them: Arbor detects the project type from `Cargo.toml`, `go.
 configuration and proposes commands for you to accept or skip. Running `arbor init` again replaces
 only the `[checks]` table.
 
+## Sessions
+
+Each Session keeps its event log and worktree in `.arbor/sessions/<id>/`. Press `b` in the TUI to
+browse them: each shows its status, cost, age, whether its branch still holds Markers, and how long
+until it is pruned. From there you can inspect, resume, rewind to a Checkpoint, or delete one.
+Delete is the only way Arbor deletes a Session branch, and it asks first, naming the branch.
+
+On startup Arbor prunes Sessions whose last event is older than `retention_days`: their folder and
+worktree are removed, their `arbor/*` branch is always kept, and a Session whose worktree has
+uncommitted changes is skipped with a warning. The default is **30 days**. Set `retention_days` in
+`arbor.toml` or in the user config (`arbor.toml` wins); `0` keeps Sessions forever.
+
 ## Keep Markers out of the mainline
 
 Arbor brackets the code each Writer fills with Marker comments (`ARBOR:BEGIN WU-7` …
