@@ -2,6 +2,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+pub use arbor_core::ClarificationMode;
 use serde::Deserialize;
 
 /// The merged configuration: defaults, then the user config, then the project's `arbor.toml`.
@@ -41,14 +42,6 @@ pub struct Roles {
 pub struct RoleConfig {
     pub model: String,
     pub temperature: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClarificationMode {
-    #[default]
-    Ask,
-    Assume,
 }
 
 /// Commands from `arbor.toml`. `unit_filtered` contains `{filter}`, replaced by a Work Unit's

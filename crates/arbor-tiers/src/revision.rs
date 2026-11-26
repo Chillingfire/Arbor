@@ -11,6 +11,7 @@ use arbor_prompts::Prompt;
 use arbor_tools::{Tools, Toolset};
 
 use crate::agent::{Agent, AgentSettings, Submission, UnsupportedModel, append_input};
+use crate::failure_brief::hint_input;
 use crate::scaffold_check::ScaffoldCheck;
 
 pub const SUBMIT_REVISION: &str = "submit_revision";
@@ -33,6 +34,8 @@ pub struct RevisionRun<'a> {
     pub first_new_id: WorkUnitId,
     /// `Config::revision_tool_call_budget`.
     pub tool_call_budget: u32,
+    /// The Human Operator's hint, when they ran this Revision from the Escalation Checkpoint.
+    pub hint: Option<&'a str>,
 }
 
 /// Which Work Units a Revision may touch.
@@ -57,6 +60,9 @@ impl RevisionRun<'_> {
                 self.first_new_id
             ),
         );
+        if let Some(hint) = self.hint {
+            append_input(&mut messages, hint_input(hint));
+        }
         let scope = self.scope();
         let settings = AgentSettings {
             tier: Tier::Scaffolder,

@@ -51,7 +51,10 @@ fn events() -> Vec<Event> {
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
         Event::SkeletonCommitted { commit: None },
-        Event::WorkUnitPassed { id: WorkUnitId(1) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(1),
+            model: None,
+        },
         Event::UsageRecorded {
             tier: Tier::Writer,
             usage: Usage {
@@ -73,7 +76,10 @@ fn events() -> Vec<Event> {
         Event::ScaffoldChecksPassed,
         Event::ScaffoldApproved,
         Event::SkeletonCommitted { commit: None },
-        Event::WorkUnitPassed { id: WorkUnitId(2) },
+        Event::WorkUnitPassed {
+            id: WorkUnitId(2),
+            model: None,
+        },
     ]
 }
 
@@ -242,6 +248,24 @@ fn typing_in_the_prompt_submits_on_enter() {
 }
 
 #[test]
+fn m_outside_the_prompt_switches_the_clarification_mode_and_inside_it_is_typed() {
+    let view = SessionView::new();
+    let mut ui_state = UiState::default();
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    assert_eq!(
+        ui_state.handle_key(key(KeyCode::Char('m')), &view),
+        KeyOutcome::SwitchClarificationMode
+    );
+    ui_state.handle_key(key(KeyCode::Char('/')), &view);
+    assert_eq!(
+        ui_state.handle_key(key(KeyCode::Char('m')), &view),
+        KeyOutcome::Handled
+    );
+    assert_eq!(ui_state.prompt, "m");
+}
+
+#[test]
 fn collapsing_a_task_hides_its_units_and_selects_the_task() {
     let view = SessionView::from_events(&events()).unwrap();
     let mut ui_state = UiState {
@@ -319,6 +343,26 @@ fn rendered_with(view: &SessionView, ui_state: &UiState) -> String {
         .draw(|frame| draw(frame, view, ui_state, &status))
         .unwrap();
     terminal.backend().to_string()
+}
+
+#[test]
+fn the_prompt_asks_for_the_next_request_once_nothing_runs() {
+    let view = SessionView::from_events(&events()).unwrap();
+    let running = rendered_with(&view, &UiState::default());
+    assert!(
+        running.contains("A new Request can start once this Session ends"),
+        "{running}"
+    );
+
+    let ended = UiState {
+        nothing_running: true,
+        ..UiState::default()
+    };
+    let ended_screen = rendered_with(&view, &ended);
+    assert!(
+        ended_screen.contains("Describe the next change you want"),
+        "{ended_screen}"
+    );
 }
 
 #[test]

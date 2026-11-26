@@ -67,6 +67,7 @@ fn committed_edits(later_events: &[Event]) -> Option<Option<String>> {
             Event::UsageRecorded { .. }
                 | Event::BudgetCapSet { .. }
                 | Event::RevisionCheckpointsSet { .. }
+                | Event::ClarificationModeSet { .. }
                 | Event::RunEnded { .. }
         )
     });

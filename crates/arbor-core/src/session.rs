@@ -7,7 +7,8 @@ use crate::revision::{
     MAX_REVISIONS, Revision, RevisionCause, RevisionRound, WorkUnitFailure, revisions_for,
 };
 use crate::types::{
-    CommitOrigin, LeftoverMarker, Plan, Replan, Request, SessionCommit, WorkUnit, WorkUnitId,
+    ClarificationMode, CommitOrigin, LeftoverMarker, Plan, Replan, Request, SessionCommit, Tier,
+    WorkUnit, WorkUnitId,
 };
 
 /// What the outer crates should do next.
@@ -165,6 +166,10 @@ pub enum Phase {
     ResettingTask {
         task: usize,
     },
+    /// The Human Operator skipped the Task; its work is reset before the next Task starts.
+    SkippingTask {
+        task: usize,
+    },
     CheckingMarkers,
     MarkerCheckpoint {
         remaining: Vec<LeftoverMarker>,
@@ -172,6 +177,8 @@ pub enum Phase {
     Done,
     /// The Human Operator stopped the Session at a budget Checkpoint.
     Stopped,
+    /// The Human Operator aborted the Session at the Escalation Checkpoint.
+    Aborted,
 }
 
 /// An event that doesn't fit the Session's current state. The state is left unchanged.
@@ -205,6 +212,8 @@ pub enum ApplyError {
     ReplanUsed {
         task: usize,
     },
+    /// The Escalation is for a failed Task Check, so there is no failed Work Unit to write again.
+    NoFailedWorkUnit,
     /// A Budget Cap at or below what the Session has already spent, which would pause at once.
     BudgetCapReached {
         cap: Usd,
@@ -247,6 +256,9 @@ impl fmt::Display for ApplyError {
             }
             Self::ReplanUsed { task } => {
                 write!(f, "Task {} has already been replanned once", task + 1)
+            }
+            Self::NoFailedWorkUnit => {
+                write!(f, "the Escalation has no failed Work Unit to write again")
             }
             Self::BudgetCapReached { cap, spent } => write!(
                 f,
@@ -293,6 +305,30 @@ pub struct Session {
     replanned: Vec<bool>,
     usage: UsageTotals,
     budget_cap: Option<Usd>,
+    /// The Human Operator's hint from the current Task's last Escalation.
+    hint: Option<OperatorHint>,
+    stronger_writer: Option<StrongerWriter>,
+    /// Indices of the approved Plan's Tasks the Human Operator skipped.
+    skipped_tasks: Vec<usize>,
+    /// Set once the Human Operator switches the mode; until then the configured one holds.
+    clarification_mode: Option<ClarificationMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OperatorHint {
+    tier: Tier,
+    /// The failed Work Unit, which is the only one a Writer hint is for.
+    work_unit: Option<WorkUnitId>,
+    text: String,
+}
+
+/// A failed Work Unit the Human Operator had written again by a stronger model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrongerWriter {
+    pub work_unit: WorkUnitId,
+    pub model: String,
+    /// The failure that sent it to the Escalation Checkpoint, which its Failure Brief sums up.
+    pub failure: WorkUnitFailure,
 }
 
 impl Session {
@@ -334,6 +370,7 @@ impl Session {
         restored.usage = self.usage.clone();
         restored.budget_cap = self.budget_cap;
         restored.revision_checkpoints = self.revision_checkpoints;
+        restored.clarification_mode = self.clarification_mode;
         restored.highest_id = self.highest_id;
         Ok(restored)
     }
@@ -379,6 +416,33 @@ impl Session {
         !self.missing_responses.contains(&id)
     }
 
+    /// The Human Operator's hint for `tier`, from the current Task's last Escalation. A Writer
+    /// hint is only for the Work Unit that failed.
+    pub fn hint_for(&self, tier: Tier, work_unit: Option<WorkUnitId>) -> Option<&str> {
+        self.hint
+            .as_ref()
+            .filter(|hint| {
+                hint.tier == tier && (tier != Tier::Writer || hint.work_unit == work_unit)
+            })
+            .map(|hint| hint.text.as_str())
+    }
+
+    /// Set when the Human Operator chose a stronger model for this Work Unit's Writer.
+    pub fn stronger_writer(&self, work_unit: WorkUnitId) -> Option<&StrongerWriter> {
+        self.stronger_writer
+            .as_ref()
+            .filter(|stronger| stronger.work_unit == work_unit)
+    }
+
+    pub fn skipped_tasks(&self) -> &[usize] {
+        &self.skipped_tasks
+    }
+
+    /// The Clarification Mode the Human Operator switched to, or `None` to use the configured one.
+    pub fn clarification_mode(&self) -> Option<ClarificationMode> {
+        self.clarification_mode
+    }
+
     /// The lowest ID no Work Unit in the Session has used.
     pub fn next_work_unit_id(&self) -> WorkUnitId {
         self.highest_id
@@ -409,7 +473,7 @@ impl Session {
                 .is_some_and(|cap| self.usage.total().cost >= cap)
     }
 
-    /// Finished with every Task done. A Session stopped at a budget Checkpoint is not done.
+    /// Finished with every Task done or skipped. A stopped or aborted Session is not done.
     pub fn is_done(&self) -> bool {
         self.phase == Phase::Done
     }
@@ -458,6 +522,10 @@ impl Session {
                     feedback: None,
                 }
             }
+            (Phase::PlanCheckpoint, Event::PlanEdited { plan }) => {
+                self.plan = Some(plan.clone());
+                Phase::PlanCheckpoint
+            }
             (Phase::PlanCheckpoint, Event::CheckpointRejected { feedback }) => Phase::Planning {
                 feedback: Some(feedback.clone()),
             },
@@ -486,7 +554,7 @@ impl Session {
                 self.record_optional_commit(commit, CommitOrigin::Skeleton);
                 self.write_from(task, 0)
             }
-            (&Phase::Writing { task, unit }, Event::WorkUnitPassed { id }) => {
+            (&Phase::Writing { task, unit }, Event::WorkUnitPassed { id, .. }) => {
                 self.expect_work_unit(unit, *id)?;
                 Phase::Committing { task, unit }
             }
@@ -502,15 +570,9 @@ impl Session {
             }
             (&Phase::TaskChecking { task }, Event::TaskChecksPassed) => {
                 self.revisions.clear();
+                self.clear_escalation_choices();
                 self.task_commits_start = self.commits.len();
-                if task + 1 < self.task_count() {
-                    Phase::Scaffolding {
-                        task: task + 1,
-                        feedback: None,
-                    }
-                } else {
-                    Phase::CheckingMarkers
-                }
+                self.next_task(task)
             }
             (&Phase::TaskChecking { task }, Event::TaskChecksFailed { output }) => {
                 let cause = RevisionCause::TaskChecksFailed {
@@ -590,16 +652,37 @@ impl Session {
                 }
             }
             (Phase::EscalationCheckpoint { task, cause }, Event::ReplanRequested) => {
-                let task = *task;
-                if !self.may_replan(task) {
-                    return Err(ApplyError::ReplanUsed { task });
-                }
-                Phase::Replanning {
-                    task,
-                    cause: cause.clone(),
-                    feedback: None,
-                }
+                let (task, cause) = (*task, cause.clone());
+                let next = self.replanning(task, cause)?;
+                self.clear_escalation_choices();
+                next
             }
+            (Phase::EscalationCheckpoint { task, cause }, Event::RetryWithHint { tier, hint }) => {
+                let (task, cause) = (*task, cause.clone());
+                self.retry_with_hint(task, cause, *tier, hint)?
+            }
+            (
+                Phase::EscalationCheckpoint { task, cause },
+                Event::StrongerWriterRequested { model },
+            ) => {
+                let task = *task;
+                let RevisionCause::WorkUnitFailed(failure) = cause else {
+                    return Err(ApplyError::NoFailedWorkUnit);
+                };
+                let stronger_unit = failure.id;
+                let stronger = StrongerWriter {
+                    work_unit: stronger_unit,
+                    model: model.clone(),
+                    failure: failure.clone(),
+                };
+                self.clear_escalation_choices();
+                self.stronger_writer = Some(stronger);
+                self.write_again(task, stronger_unit)
+            }
+            (&Phase::EscalationCheckpoint { task, .. }, Event::TaskSkipped) => {
+                Phase::SkippingTask { task }
+            }
+            (Phase::EscalationCheckpoint { .. }, Event::SessionAborted) => Phase::Aborted,
             (Phase::Replanning { task, cause, .. }, Event::ReplanSubmitted { replan }) => {
                 Phase::ReplanCheckpoint {
                     task: *task,
@@ -627,6 +710,11 @@ impl Session {
                     feedback: None,
                 }
             }
+            (&Phase::SkippingTask { task }, Event::TaskReset) => {
+                self.reset_task();
+                self.skipped_tasks.push(task);
+                self.next_task(task)
+            }
             (Phase::CheckingMarkers, Event::MarkersChecked { remaining }) => {
                 if remaining.is_empty() {
                     Phase::Done
@@ -653,6 +741,10 @@ impl Session {
                     return Err(ApplyError::BudgetCapReached { cap, spent });
                 }
                 self.budget_cap = cap;
+                phase.clone()
+            }
+            (phase, &Event::ClarificationModeSet { mode }) if is_live(phase) => {
+                self.clarification_mode = Some(mode);
                 phase.clone()
             }
             (phase, &Event::RevisionCheckpointsSet { enabled }) if is_live(phase) => {
@@ -720,18 +812,79 @@ impl Session {
                 task: *task,
                 replan: replan.clone(),
             },
-            &Phase::ResettingTask { task } => Effect::ResetTask { task },
+            &Phase::ResettingTask { task } | &Phase::SkippingTask { task } => {
+                Effect::ResetTask { task }
+            }
             Phase::CheckingMarkers => Effect::CheckMarkers,
             Phase::MarkerCheckpoint { remaining } => Effect::ShowMarkerCheckpoint {
                 remaining: remaining.clone(),
             },
-            Phase::Done | Phase::Stopped => Effect::EndSession,
+            Phase::Done | Phase::Stopped | Phase::Aborted => Effect::EndSession,
         };
         vec![effect]
     }
 
     fn task_count(&self) -> usize {
         self.plan.as_ref().map_or(0, |plan| plan.tasks.len())
+    }
+
+    fn next_task(&self, task: usize) -> Phase {
+        if task + 1 < self.task_count() {
+            Phase::Scaffolding {
+                task: task + 1,
+                feedback: None,
+            }
+        } else {
+            Phase::CheckingMarkers
+        }
+    }
+
+    fn replanning(&self, task: usize, cause: RevisionCause) -> Result<Phase, ApplyError> {
+        if !self.may_replan(task) {
+            return Err(ApplyError::ReplanUsed { task });
+        }
+        Ok(Phase::Replanning {
+            task,
+            cause,
+            feedback: None,
+        })
+    }
+
+    /// Runs `tier` again from the Escalation Checkpoint, with the Human Operator's hint.
+    fn retry_with_hint(
+        &mut self,
+        task: usize,
+        cause: RevisionCause,
+        tier: Tier,
+        hint: &str,
+    ) -> Result<Phase, ApplyError> {
+        let failed_unit = cause.work_unit();
+        if tier == Tier::Writer && failed_unit.is_none() {
+            return Err(ApplyError::NoFailedWorkUnit);
+        }
+        let next = match (tier, failed_unit) {
+            (Tier::Writer, Some(failed)) => self.write_again(task, failed),
+            (Tier::Planner, _) => self.replanning(task, cause)?,
+            _ => Phase::Revising { task, cause },
+        };
+        self.clear_escalation_choices();
+        self.hint = Some(OperatorHint {
+            tier,
+            work_unit: failed_unit,
+            text: hint.to_owned(),
+        });
+        Ok(next)
+    }
+
+    /// Writes the failed Work Unit again, then the rest of the queue after it.
+    fn write_again(&mut self, task: usize, failed: WorkUnitId) -> Phase {
+        self.write_queue = self.queue_after(failed, &[failed]);
+        self.write_from(task, 0)
+    }
+
+    fn clear_escalation_choices(&mut self) {
+        self.hint = None;
+        self.stronger_writer = None;
     }
 
     /// Writes the queued Work Units from `unit` on, or checks the Task when none are left.
@@ -775,6 +928,7 @@ impl Session {
         self.work_units.clear();
         self.write_queue.clear();
         self.revisions.clear();
+        self.clear_escalation_choices();
     }
 
     /// The Human Operator's Checkpoint comes before anything goes to the Planner.
@@ -912,7 +1066,10 @@ pub(crate) fn is_rewind_target(phase: &Phase) -> bool {
 
 /// Started and not yet finished, so LLM calls can happen.
 fn is_live(phase: &Phase) -> bool {
-    !matches!(phase, Phase::NotStarted | Phase::Done | Phase::Stopped)
+    !matches!(
+        phase,
+        Phase::NotStarted | Phase::Done | Phase::Stopped | Phase::Aborted
+    )
 }
 
 fn first_duplicate(work_units: &[WorkUnit]) -> Option<WorkUnitId> {

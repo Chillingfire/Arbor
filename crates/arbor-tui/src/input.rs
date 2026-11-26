@@ -1,5 +1,6 @@
 //! What each key does to the [`UiState`].
 
+use arbor_core::Plan;
 use arbor_session::Decision;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -27,6 +28,11 @@ pub enum KeyOutcome {
     Decided(Decision),
     /// The Human Operator answered a Tier's questions.
     Answered(String),
+    /// `m` outside the prompt: switch the Clarification Mode between Ask and Assume.
+    SwitchClarificationMode,
+    /// `e` at the Plan Checkpoint: edit this Plan in the Human Operator's editor. The modal stays
+    /// open until the edit is sent.
+    EditPlan(Plan),
     /// `b`: open the Session browser, which the program fills with the stored Sessions.
     OpenBrowser,
     /// The Human Operator chose an action in the Session browser.
@@ -76,6 +82,7 @@ impl UiState {
         }
         match key.code {
             KeyCode::Char('q') => return KeyOutcome::Quit,
+            KeyCode::Char('m') => return KeyOutcome::SwitchClarificationMode,
             KeyCode::Esc => return KeyOutcome::Cancel,
             KeyCode::Char('/' | 'i') => self.focus = Focus::Prompt,
             KeyCode::Char('b') => return KeyOutcome::OpenBrowser,
@@ -137,6 +144,7 @@ impl UiState {
                 self.modal = None;
                 KeyOutcome::Answered(answers)
             }
+            Some(ModalOutcome::EditPlan(plan)) => KeyOutcome::EditPlan(plan),
         }
     }
 

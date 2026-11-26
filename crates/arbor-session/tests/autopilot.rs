@@ -8,7 +8,8 @@ use std::sync::Mutex;
 
 use arbor_config::Config;
 use arbor_core::{
-    Effect, Event, Phase, Plan, Request, RunOutcome, Task, Tier, Usd, WorkUnit, WorkUnitId,
+    ClarificationMode, Effect, Event, Phase, Plan, Request, RunOutcome, Task, Tier, Usd, WorkUnit,
+    WorkUnitId,
 };
 use arbor_git::{Mainline, Repo, Worktree};
 use arbor_llm::{
@@ -193,6 +194,21 @@ impl ScriptedModel {
         }
     }
 
+    /// The text of the `index`th request's system message.
+    fn system_text(&self, index: usize) -> String {
+        self.requests.lock().unwrap()[index]
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::System { content } => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .map(|part| part.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// The text of every user message in the `index`th request, joined.
     fn user_text(&self, index: usize) -> String {
         self.requests.lock().unwrap()[index]
@@ -275,6 +291,8 @@ struct ScriptedOperator {
     decisions: VecDeque<Decision>,
     answers: VecDeque<Option<String>>,
     shown: Rc<RefCell<Vec<String>>>,
+    /// Switched to before the next Tier run asks.
+    mode_switch: Option<ClarificationMode>,
 }
 
 impl Operator for ScriptedOperator {
@@ -290,6 +308,10 @@ impl Operator for ScriptedOperator {
             .push(format!("{tier:?} asked: {questions}"));
         let answers = self.answers.pop_front().expect("scripted answers");
         Box::pin(async move { answers })
+    }
+
+    fn clarification_mode_change(&mut self) -> Option<ClarificationMode> {
+        self.mode_switch.take()
     }
 }
 
@@ -343,6 +365,104 @@ async fn the_operators_answers_and_rejection_feedback_reach_the_planner() {
     assert!(autopilot.events().contains(&Event::CheckpointRejected {
         feedback: "Print details first".to_owned()
     }));
+}
+
+#[tokio::test]
+async fn a_clarification_mode_switched_mid_session_is_logged_and_reaches_the_next_tier_run() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    assert_eq!(config.clarification_mode, ClarificationMode::Ask);
+    let model = ScriptedModel::new([submitted_plan(&two_task_plan())]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::Stop].into(),
+        mode_switch: Some(ClarificationMode::Assume),
+        ..ScriptedOperator::default()
+    };
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    autopilot.run(request()).await.unwrap();
+
+    assert_eq!(
+        autopilot.events()[1],
+        Event::ClarificationModeSet {
+            mode: ClarificationMode::Assume
+        }
+    );
+    let instructions = model.system_text(0);
+    assert!(
+        instructions.contains("Clarification Mode is Assume"),
+        "{instructions}"
+    );
+    assert_eq!(
+        autopilot.session().clarification_mode(),
+        Some(ClarificationMode::Assume)
+    );
+}
+
+#[tokio::test]
+async fn a_plan_edited_at_its_checkpoint_is_shown_again_and_approved_as_edited() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let mut edited = two_task_plan();
+    edited.tasks.truncate(1);
+    edited.goal = "Add a --verbose flag, parsed only".to_owned();
+    let model = ScriptedModel::new([submitted_plan(&two_task_plan()), question(QUESTION)]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::EditPlan(edited.clone()), Decision::Approve].into(),
+        answers: [None].into(),
+        ..ScriptedOperator::default()
+    };
+    let shown = Rc::clone(&operator.shown);
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    autopilot.run(request()).await.unwrap();
+
+    assert_eq!(
+        shown.borrow()[1],
+        format!(
+            "{:?}",
+            Checkpoint::Plan {
+                plan: edited.clone()
+            }
+        )
+    );
+    assert!(autopilot.events().contains(&Event::PlanEdited {
+        plan: edited.clone()
+    }));
+    assert_eq!(autopilot.session().plan(), Some(&edited));
+}
+
+#[tokio::test]
+async fn an_edited_plan_without_tasks_ends_the_run_without_recording_it() {
+    let dir = tempdir().unwrap();
+    let (worktree, mainline) = session_worktree(dir.path());
+    let config = Config::load(None, worktree.path()).unwrap();
+    let mut emptied = two_task_plan();
+    emptied.tasks.clear();
+    let model = ScriptedModel::new([submitted_plan(&two_task_plan())]);
+    let operator = ScriptedOperator {
+        decisions: [Decision::EditPlan(emptied)].into(),
+        ..ScriptedOperator::default()
+    };
+    let mut autopilot = Autopilot::new(&worktree, &mainline, &model, config)
+        .unwrap()
+        .with_operator(operator);
+
+    let err = autopilot.run(request()).await.unwrap_err();
+
+    assert_eq!(err.step, "reading the edited Plan");
+    assert!(
+        !autopilot
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::PlanEdited { .. }))
+    );
 }
 
 #[tokio::test]
@@ -691,7 +811,10 @@ async fn a_work_unit_committed_by_a_killed_writer_is_logged_as_passed_not_writte
     assert_eq!(
         autopilot.events()[killed_log.len()..killed_log.len() + 2],
         [
-            Event::WorkUnitPassed { id: WorkUnitId(1) },
+            Event::WorkUnitPassed {
+                id: WorkUnitId(1),
+                model: None
+            },
             Event::WorkUnitCommitted {
                 id: WorkUnitId(1),
                 commit: written.clone()

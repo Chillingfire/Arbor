@@ -151,6 +151,16 @@ pub struct LeftoverMarker {
     pub text: String,
 }
 
+/// Whether the Planner and Scaffolder ask the Human Operator about ambiguities or make recorded
+/// assumptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClarificationMode {
+    #[default]
+    Ask,
+    Assume,
+}
+
 /// One of the three LLM roles a Session splits work across (ADR-0001).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
