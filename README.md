@@ -16,8 +16,8 @@ Or build it with Cargo:
 cargo install --git https://github.com/Chillingfire/Arbor --locked arbor
 ```
 
-TODO: decide how `cargo install` should work. The names `arbor` and `arbor-core` are taken on
-crates.io, so publishing would need different package names. Revisit once the repo is public.
+Arbor is not published to crates.io: the names `arbor` and `arbor-core` are taken there, so
+installing from this repository is the Cargo route.
 
 ## Set up a project
 
